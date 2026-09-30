@@ -19,7 +19,7 @@ use crate::platform::{
     Autostart, Hotkey, HotkeyError, Microphone, Overlay, OverlayView, SecretError, SecretStore, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
-use crate::startup::{Paths, StartupNotice};
+use crate::startup::{self, Paths, StartupNotice};
 
 /// Error shape every invoke command returns to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
@@ -109,6 +109,9 @@ pub struct AppCore {
     notices: Mutex<Vec<StartupNotice>>,
     /// Serializes read-modify-write of config.json.
     config_lock: Mutex<()>,
+    /// Start-up loaded defaults but could not move the damaged config.json aside (it may be
+    /// fine, just locked). While set, saving must not overwrite that file.
+    bad_config_kept: AtomicBool,
 }
 
 impl AppCore {
@@ -123,6 +126,7 @@ impl AppCore {
         system_locale: Option<String>,
         notices: Vec<StartupNotice>,
     ) -> Self {
+        let bad_config_kept = notices.iter().any(|n| matches!(n, StartupNotice::ConfigReset { backup: None, .. }));
         Self {
             paths,
             settings,
@@ -135,6 +139,7 @@ impl AppCore {
             hotkey_error: Mutex::default(),
             notices: Mutex::new(notices),
             config_lock: Mutex::default(),
+            bad_config_kept: AtomicBool::new(bad_config_kept),
         }
     }
 
@@ -187,6 +192,9 @@ impl AppCore {
     pub fn save_config(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
         config.normalize();
+        if self.bad_config_kept.load(Ordering::SeqCst) {
+            self.move_bad_config_aside()?;
+        }
         let old = self.config();
         config.save(&self.paths.config)?;
         self.rebuild(config.clone());
@@ -201,6 +209,25 @@ impl AppCore {
         }
         info!("config saved");
         Ok(config)
+    }
+
+    /// Retries the start-up move-aside of the damaged config.json; refuses while it still fails.
+    /// A file that is gone meanwhile has nothing left to protect.
+    fn move_bad_config_aside(&self) -> Result<(), CommandError> {
+        match startup::move_config_aside(&self.paths.config, crate::now_ms()) {
+            Ok(_) => info!("damaged config.json moved aside"),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => info!("damaged config.json is gone"),
+            Err(err) => {
+                warn!(error = %err, "damaged config.json still cannot be moved aside; not saving");
+                return Err(CommandError::new(
+                    "config",
+                    "the damaged config.json could not be moved aside, so it was not overwritten; \
+                     close any program that uses it and try again",
+                ));
+            }
+        }
+        self.bad_config_kept.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn set_active_profile(&self, id: &str) -> Result<(), CommandError> {
@@ -377,7 +404,10 @@ mod tests {
     }
 
     fn fixture() -> Fixture {
-        let dir = tempfile::tempdir().unwrap();
+        fixture_with(tempfile::tempdir().unwrap(), Vec::new())
+    }
+
+    fn fixture_with(dir: tempfile::TempDir, notices: Vec<StartupNotice>) -> Fixture {
         let paths = Paths::under(dir.path().join("opit"));
         let settings = SettingsHandle::new(Settings::build(AppConfig::default(), None, Some("en-US")).0);
         let history =
@@ -391,8 +421,64 @@ mod tests {
             overlay: overlay.clone(),
             autostart: autostart.clone(),
         };
-        let core = AppCore::new(paths, settings, channel().0, Some(history), platform, None, None, Vec::new());
+        let core = AppCore::new(paths, settings, channel().0, Some(history), platform, None, None, notices);
         Fixture { _dir: dir, core, hotkey, overlay, autostart, secrets }
+    }
+
+    /// A damaged config.json that start-up could not move aside, because another program
+    /// holds it open without sharing. Returns the fixture and that lock.
+    fn fixture_with_a_kept_bad_config() -> (Fixture, std::fs::File) {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path().join("opit"));
+        std::fs::create_dir_all(&paths.root).unwrap();
+        std::fs::write(&paths.config, "{damaged").unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&paths.config).unwrap();
+        let loaded = crate::startup::load_config(&paths.config, 1);
+        assert!(matches!(loaded.notice, Some(StartupNotice::ConfigReset { backup: None, .. })));
+        (fixture_with(dir, loaded.notice.into_iter().collect()), lock)
+    }
+
+    fn bad_config_backups(paths: &Paths) -> Vec<String> {
+        std::fs::read_dir(&paths.root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with("config.json.bad-"))
+            .map(|path| std::fs::read_to_string(path).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_config_that_could_not_be_moved_aside_is_never_overwritten() {
+        let (f, lock) = fixture_with_a_kept_bad_config();
+        let mut config = f.core.config();
+        config.paste.trailing_space = false;
+
+        let err = f.core.save_config(config.clone()).unwrap_err();
+        assert_eq!(err.code, "config");
+        assert!(err.message.contains("moved aside"), "{}", err.message);
+        drop(lock);
+        assert_eq!(std::fs::read_to_string(&f.core.paths.config).unwrap(), "{damaged");
+        assert!(f.core.settings.current().config.paste.trailing_space, "a refused save is not applied");
+
+        // Once the file can be moved, saving backs it up first and then writes.
+        let saved = f.core.save_config(config).unwrap();
+        assert_eq!(bad_config_backups(&f.core.paths), ["{damaged"]);
+        assert_eq!(AppConfig::load(&f.core.paths.config).unwrap(), saved);
+
+        // Done once: later saves just save.
+        f.core.set_active_profile("openai").unwrap();
+        assert_eq!(bad_config_backups(&f.core.paths).len(), 1);
+    }
+
+    #[test]
+    fn a_kept_bad_config_that_is_gone_no_longer_blocks_saving() {
+        let (f, lock) = fixture_with_a_kept_bad_config();
+        drop(lock);
+        std::fs::remove_file(&f.core.paths.config).unwrap();
+        let saved = f.core.save_config(f.core.config()).unwrap();
+        assert_eq!(AppConfig::load(&f.core.paths.config).unwrap(), saved);
+        assert!(bad_config_backups(&f.core.paths).is_empty());
     }
 
     #[test]

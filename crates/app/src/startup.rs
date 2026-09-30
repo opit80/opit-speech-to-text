@@ -71,17 +71,24 @@ pub fn load_config(path: &Path, now_ms: i64) -> LoadedConfig {
         }
         Err(err) => {
             warn!(error = %err, "config.json is unusable; starting from defaults");
-            let backup = path.with_file_name(format!("config.json.bad-{now_ms}"));
-            let moved = std::fs::rename(path, &backup).is_ok();
+            let backup = move_config_aside(path, now_ms).ok();
             let config = AppConfig::default();
             // Never overwrite a file we could not move aside: it may be fine, just locked.
-            if moved && let Err(err) = config.save(path) {
+            if backup.is_some()
+                && let Err(err) = config.save(path)
+            {
                 warn!(error = %err, "could not write the default config");
             }
-            let notice = StartupNotice::ConfigReset { backup: moved.then_some(backup), reason: err.to_string() };
+            let notice = StartupNotice::ConfigReset { backup, reason: err.to_string() };
             LoadedConfig { config, created: false, notice: Some(notice) }
         }
     }
+}
+
+/// Moves an unusable config file to `config.json.bad-<now_ms>` next to it; returns the new path.
+pub fn move_config_aside(path: &Path, now_ms: i64) -> std::io::Result<PathBuf> {
+    let backup = path.with_file_name(format!("config.json.bad-{now_ms}"));
+    std::fs::rename(path, &backup).map(|()| backup)
 }
 
 /// The personal pack, or `None` when it does not exist or cannot be parsed.

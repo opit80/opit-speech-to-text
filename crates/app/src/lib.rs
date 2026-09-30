@@ -173,6 +173,6 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     info!(first_run = loaded.created, "ready");
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
