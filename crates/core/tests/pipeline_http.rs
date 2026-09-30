@@ -1,5 +1,6 @@
 //! Full pipeline against a fake OpenAI-compatible server.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use opit_core::audio::Recording;
@@ -88,4 +89,30 @@ async fn http_fallback_after_two_server_errors() {
     assert!(transcript.used_fallback);
     assert_eq!(transcript.profile_id, "gpu");
     assert_eq!(transcript.text, "yedekten geldi");
+}
+
+#[tokio::test]
+async fn a_shared_client_works_inside_a_spawned_task() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/audio/transcriptions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"text": "paylaşılan istemci"})))
+        .mount(&server)
+        .await;
+    let profile = presets::custom("local", "Local", &format!("{}/v1", server.uri()), "m");
+    let client = Arc::new(OpenAiCompatible::new(profile, None).unwrap());
+    let rules = Arc::new(RuleSet::empty());
+    let audio = Arc::new(pipeline::prepare(&speech()).unwrap());
+
+    let task = tokio::spawn(async move {
+        let ctx = PipelineContext {
+            primary: &client,
+            fallback: None,
+            rules: &rules,
+            prompt_context: "",
+            retry_delay: Duration::ZERO,
+        };
+        pipeline::transcribe(&audio, &ctx).await
+    });
+    assert_eq!(task.await.unwrap().unwrap().text, "paylaşılan istemci");
 }

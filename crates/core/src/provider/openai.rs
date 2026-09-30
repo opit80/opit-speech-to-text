@@ -45,11 +45,27 @@ impl OpenAiCompatible {
         format!("{}/audio/transcriptions", self.profile.base_url.trim().trim_end_matches('/'))
     }
 
+    fn models_url(&self) -> String {
+        format!("{}/models", self.profile.base_url.trim().trim_end_matches('/'))
+    }
+
+    /// Opens (and pools) the connection while the user is still speaking, so the upload
+    /// does not pay for DNS + TLS. Best effort: every error is ignored.
+    pub async fn warm_up(&self) {
+        let mut request = self.client.get(self.models_url()).timeout(Duration::from_secs(5));
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
+        }
+        if let Ok(response) = request.send().await {
+            // Reading the body hands the connection back to the pool.
+            let _ = response.bytes().await;
+        }
+    }
+
     /// Checks the base URL and key with `GET {base_url}/models`. Servers without
     /// that endpoint get a 1 s silent transcription instead.
     pub async fn test_connection(&self) -> Result<(), ProviderError> {
-        let url = format!("{}/models", self.profile.base_url.trim().trim_end_matches('/'));
-        let mut request = self.client.get(url).timeout(Duration::from_secs(10));
+        let mut request = self.client.get(self.models_url()).timeout(Duration::from_secs(10));
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
         }
@@ -424,5 +440,19 @@ mod tests {
         send(profile_for(&server), Some("sk-test\r\n"), None, &[]).await.unwrap();
         let request = only_request(&server).await;
         assert_eq!(request.headers.get("authorization").unwrap(), "Bearer sk-test");
+    }
+
+    #[tokio::test]
+    async fn warm_up_calls_models_with_the_key_and_ignores_errors() {
+        let server = connection_server(500, 500).await;
+        let client = OpenAiCompatible::new(profile_for(&server), Some("sk-warm".into())).unwrap();
+        client.warm_up().await;
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "no transcription is attempted");
+        assert_eq!(requests[0].url.path(), "/v1/models");
+        assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer sk-warm");
+
+        let closed = OpenAiCompatible::new(presets::custom("x", "x", "http://127.0.0.1:9/v1", "m"), None).unwrap();
+        closed.warm_up().await;
     }
 }
