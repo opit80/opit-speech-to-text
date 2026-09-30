@@ -566,7 +566,11 @@ impl<P: Providers> Controller<P> {
             }
             PasteOutcome::Failed(reason) => {
                 warn!(session, %reason, "paste failed");
-                return self.fail(ErrorKind::Paste, lang);
+                return self.fail_with_message(
+                    ErrorKind::Paste,
+                    lang,
+                    lang.paste_failed(job.settings.config.history.enabled).to_string(),
+                );
             }
         }
         self.set_state(DictationState::Idle);
@@ -630,8 +634,11 @@ impl<P: Providers> Controller<P> {
     }
 
     fn fail(&mut self, kind: ErrorKind, lang: Lang) {
+        self.fail_with_message(kind, lang, lang.error(kind).to_string());
+    }
+
+    fn fail_with_message(&mut self, kind: ErrorKind, lang: Lang, message: String) {
         self.env.hotkey.set_capture_escape(false);
-        let message = lang.error(kind).to_string();
         let button = if kind.needs_settings() {
             Some(OverlayButton { action: OverlayAction::OpenSettings, label: lang.open_settings().into() })
         } else if self.retry.is_some() {

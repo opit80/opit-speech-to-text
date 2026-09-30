@@ -20,11 +20,26 @@ use crate::{events, tray};
 type Core<'a> = State<'a, Arc<AppCore>>;
 type Result<T> = std::result::Result<T, CommandError>;
 
+/// Runs blocking `AppCore` work on the blocking pool so the WebView's main thread stays free.
+async fn blocking<T, F>(core: Arc<AppCore>, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&AppCore) -> Result<T> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(&core))
+        .await
+        .map_err(|_| CommandError::new("unavailable", "the operation stopped unexpectedly"))?
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
     pub version: &'static str,
     pub data_dir: String,
     pub log_dir: String,
+    /// OS locale such as "tr-TR"; the UI resolves its language from it like `i18n::resolve`.
+    pub system_locale: Option<String>,
+    /// Debug builds use a no-op autostart, so the UI disables that toggle.
+    pub debug_build: bool,
 }
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
@@ -36,6 +51,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         retry_dictation,
         get_config,
         save_config,
+        set_active_profile,
         list_microphones,
         has_api_key,
         set_api_key,
@@ -61,6 +77,8 @@ fn app_info(core: Core<'_>) -> AppInfo {
         version: env!("CARGO_PKG_VERSION"),
         data_dir: core.paths.root.display().to_string(),
         log_dir: core.paths.logs.display().to_string(),
+        system_locale: core.system_locale().map(str::to_string),
+        debug_build: cfg!(debug_assertions),
     }
 }
 
@@ -90,8 +108,17 @@ fn get_config(core: Core<'_>) -> AppConfig {
 }
 
 #[tauri::command]
-fn save_config(app: AppHandle, core: Core<'_>, config: AppConfig) -> Result<AppConfig> {
-    let saved = core.save_config(config)?;
+async fn save_config(app: AppHandle, core: Core<'_>, config: AppConfig) -> Result<AppConfig> {
+    let core = core.inner().clone();
+    let saved = blocking(core.clone(), move |core| core.save_config(config)).await?;
+    events::config_changed(&app, &saved);
+    events::hotkey_state(&app, &core.hotkey_state());
+    Ok(saved)
+}
+
+#[tauri::command]
+async fn set_active_profile(app: AppHandle, core: Core<'_>, id: String) -> Result<AppConfig> {
+    let saved = blocking(core.inner().clone(), move |core| core.set_active_profile(&id)).await?;
     events::config_changed(&app, &saved);
     Ok(saved)
 }
@@ -102,22 +129,22 @@ async fn list_microphones(core: Core<'_>) -> Result<Vec<String>> {
     let core = core.inner().clone();
     tauri::async_runtime::spawn_blocking(move || core.microphones())
         .await
-        .map_err(|e| CommandError::new("unavailable", e.to_string()))
+        .map_err(|_| CommandError::new("unavailable", "the microphone list could not be read"))
 }
 
 #[tauri::command]
-fn has_api_key(core: Core<'_>, key_ref: String) -> Result<bool> {
-    core.has_api_key(&key_ref)
+async fn has_api_key(core: Core<'_>, key_ref: String) -> Result<bool> {
+    blocking(core.inner().clone(), move |core| core.has_api_key(&key_ref)).await
 }
 
 #[tauri::command]
-fn set_api_key(core: Core<'_>, key_ref: String, key: String) -> Result<()> {
-    core.set_api_key(&key_ref, &key)
+async fn set_api_key(core: Core<'_>, key_ref: String, key: String) -> Result<()> {
+    blocking(core.inner().clone(), move |core| core.set_api_key(&key_ref, &key)).await
 }
 
 #[tauri::command]
-fn delete_api_key(core: Core<'_>, key_ref: String) -> Result<()> {
-    core.delete_api_key(&key_ref)
+async fn delete_api_key(core: Core<'_>, key_ref: String) -> Result<()> {
+    blocking(core.inner().clone(), move |core| core.delete_api_key(&key_ref)).await
 }
 
 /// `api_key: null` tests with the stored key.
@@ -127,18 +154,18 @@ async fn test_connection(core: Core<'_>, profile: Profile, api_key: Option<Strin
 }
 
 #[tauri::command]
-fn get_user_rules(core: Core<'_>) -> Result<String> {
-    core.user_rules_yaml()
+async fn get_user_rules(core: Core<'_>) -> Result<String> {
+    blocking(core.inner().clone(), AppCore::user_rules_yaml).await
 }
 
 #[tauri::command]
-fn save_user_rules(core: Core<'_>, yaml: String) -> Result<Vec<RuleWarning>> {
-    core.save_user_rules(&yaml)
+async fn save_user_rules(core: Core<'_>, yaml: String) -> Result<Vec<RuleWarning>> {
+    blocking(core.inner().clone(), move |core| core.save_user_rules(&yaml)).await
 }
 
 #[tauri::command]
-fn rules_preview(core: Core<'_>, text: String, draft_yaml: Option<String>) -> Result<RulesPreview> {
-    core.rules_preview(&text, draft_yaml.as_deref())
+async fn rules_preview(core: Core<'_>, text: String, draft_yaml: Option<String>) -> Result<RulesPreview> {
+    blocking(core.inner().clone(), move |core| core.rules_preview(&text, draft_yaml.as_deref())).await
 }
 
 #[tauri::command]
@@ -147,23 +174,23 @@ fn prompt_budget(core: Core<'_>) -> BuiltPrompt {
 }
 
 #[tauri::command]
-fn history_recent(core: Core<'_>, limit: usize, before_id: Option<i64>) -> Result<Vec<Dictation>> {
-    core.history_recent(limit, before_id)
+async fn history_recent(core: Core<'_>, limit: usize, before_id: Option<i64>) -> Result<Vec<Dictation>> {
+    blocking(core.inner().clone(), move |core| core.history_recent(limit, before_id)).await
 }
 
 #[tauri::command]
-fn history_search(core: Core<'_>, query: String, limit: usize) -> Result<Vec<Dictation>> {
-    core.history_search(&query, limit)
+async fn history_search(core: Core<'_>, query: String, limit: usize) -> Result<Vec<Dictation>> {
+    blocking(core.inner().clone(), move |core| core.history_search(&query, limit)).await
 }
 
 #[tauri::command]
-fn history_delete(core: Core<'_>, id: i64) -> Result<()> {
-    core.history_delete(id)
+async fn history_delete(core: Core<'_>, id: i64) -> Result<()> {
+    blocking(core.inner().clone(), move |core| core.history_delete(id)).await
 }
 
 #[tauri::command]
-fn history_clear(core: Core<'_>) -> Result<()> {
-    core.history_clear()
+async fn history_clear(core: Core<'_>) -> Result<()> {
+    blocking(core.inner().clone(), AppCore::history_clear).await
 }
 
 #[tauri::command]
@@ -175,7 +202,9 @@ fn get_hotkey_state(core: Core<'_>) -> HotkeyState {
 fn set_hotkey_paused(app: AppHandle, core: Core<'_>, paused: bool) -> HotkeyState {
     core.set_hotkey_paused(paused);
     tray::refresh(&app);
-    core.hotkey_state()
+    let state = core.hotkey_state();
+    events::hotkey_state(&app, &state);
+    state
 }
 
 #[tauri::command]
