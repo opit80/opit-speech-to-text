@@ -1,0 +1,12 @@
+[package]
+name = "opit-core"
+description = "Core dictation logic for Opit Speech to Text: audio prep, provider client, rules, history"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
