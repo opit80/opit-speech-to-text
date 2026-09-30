@@ -1,0 +1,32 @@
+schema: 1
+id: fivem
+name: FiveM – server development
+language: tr
+
+terms:
+  - FiveM
+  - Cfx.re
+  - Qbox
+  - QBCore
+  - ox_lib
+  - ox_target
+  - ox_inventory
+  - oxmysql
+  - Lua
+  - NUI
+  - noclip
+  - aduty
+
+corrections:
+  FiveM: [five em, fife m]
+  Cfx.re: [cfx re, c f x re]
+  Qbox: [q box, cubox]
+  QBCore: [qb core]
+  ox_lib: [ox lib, oxlib]
+  ox_target: [ox target, oxtarget]
+  ox_inventory: [ox inventory]
+  oxmysql: [ox mysql]
+  NUI: [en yu ay]
+  noclip: [no glip]
+  noclip'teki: [no glipteki]
+  aduty: [aduti]
