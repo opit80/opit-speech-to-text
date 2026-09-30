@@ -3,6 +3,8 @@
 #[cfg(test)]
 pub mod fake;
 pub mod keys;
+#[cfg(windows)]
+pub mod windows;
 
 use std::sync::Arc;
 use std::time::Duration;
