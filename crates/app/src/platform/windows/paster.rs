@@ -43,7 +43,7 @@ impl Paster for WinPaster {
             Err(e) => return PasteOutcome::Failed(e),
         };
         wait_for_modifiers_released(MODIFIER_WAIT);
-        if foreground_is_higher_integrity() == Some(true) {
+        if ctrl_v_blocked(foreground_is_higher_integrity(), has_foreground_window()) {
             // UIPI would drop the input silently; leave the text on the clipboard for the user.
             return PasteOutcome::ClipboardOnly;
         }
@@ -60,6 +60,19 @@ impl Paster for WinPaster {
         }
         PasteOutcome::Pasted
     }
+}
+
+/// Whether Ctrl+V must be skipped. Fail closed: a foreground window whose integrity we cannot
+/// read (typically an elevated process of another user) is treated as elevated, because UIPI
+/// would drop our keys silently and the restore would then erase the dictation. Without any
+/// foreground window there is nothing to block, so we paste as before.
+fn ctrl_v_blocked(higher_integrity: Option<bool>, has_foreground_window: bool) -> bool {
+    higher_integrity.unwrap_or(has_foreground_window)
+}
+
+fn has_foreground_window() -> bool {
+    // SAFETY: plain FFI call.
+    !unsafe { GetForegroundWindow() }.is_invalid()
 }
 
 /// Backs up the clipboard (when `backup`), writes `text` marked private and returns the
@@ -212,6 +225,14 @@ mod tests {
             })
             .collect();
         assert_eq!(got, vec![(0x11, 0), (0x56, 0), (0x56, KEYEVENTF_KEYUP.0), (0x11, KEYEVENTF_KEYUP.0)]);
+    }
+
+    #[test]
+    fn unknown_integrity_blocks_ctrl_v_only_with_a_foreground_window() {
+        assert!(ctrl_v_blocked(Some(true), true));
+        assert!(!ctrl_v_blocked(Some(false), true));
+        assert!(ctrl_v_blocked(None, true));
+        assert!(!ctrl_v_blocked(None, false));
     }
 
     #[test]
