@@ -60,11 +60,19 @@ pub fn sentence_start(before: &str) -> bool {
 /// Capitalizes `target` when it starts lowercase and the text it replaces
 /// (`source`) started uppercase or sat at a sentence start.
 pub fn capitalize_like(target: &str, source: &str, at_sentence_start: bool, turkish: bool) -> String {
-    if starts_lowercase(target) && (at_sentence_start || starts_uppercase(source)) {
+    if starts_lowercase(target) && !is_identifier_like(target) && (at_sentence_start || starts_uppercase(source)) {
         upper_first(target, turkish)
     } else {
         target.to_string()
     }
+}
+
+/// True when the first word of `target` is a code-style identifier or brand
+/// spelling (`iOS`, `ox_lib`, `Node.js`, `em-dash`) whose case must never change.
+pub fn is_identifier_like(target: &str) -> bool {
+    let first = target.split_whitespace().next().unwrap_or("");
+    let word = first.trim_end_matches(['.', ',', '!', '?', ';', ':', '…']);
+    word.chars().any(|c| c.is_uppercase() || c.is_ascii_digit() || matches!(c, '_' | '.' | '-' | '/' | '+' | '#'))
 }
 
 #[cfg(test)]
@@ -124,5 +132,16 @@ mod tests {
         assert_eq!(capitalize_like("hâlâ", "hala", true, true), "Hâlâ");
         assert_eq!(capitalize_like("GitHub", "github", true, false), "GitHub");
         assert_eq!(capitalize_like("", "X", true, true), "");
+    }
+
+    #[test]
+    fn identifier_like_targets() {
+        assert!(is_identifier_like("iOS"));
+        assert!(is_identifier_like("ox_lib"));
+        assert!(is_identifier_like("Node.js"));
+        assert!(is_identifier_like("em-dash"));
+        assert!(!is_identifier_like("hâlâ"));
+        assert!(!is_identifier_like("iki tabağa"));
+        assert!(!is_identifier_like("keybinding'i"));
     }
 }

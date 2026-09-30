@@ -7,9 +7,13 @@ pub const FRAME_MS: u64 = 30;
 pub const MIN_RECORDING_MS: u64 = 400;
 pub const MIN_SPEECH_MS: u64 = 300;
 
-const MIN_THRESHOLD: f32 = 0.008;
-const MAX_THRESHOLD: f32 = 0.03;
-const NOISE_FLOOR_FACTOR: f32 = 3.0;
+/// Frames quieter than this are never speech.
+const MIN_LEVEL: f32 = 0.008;
+/// A frame this far above the noise floor (≈ +6 dB) is speech.
+const NOISE_MARGIN: f32 = 2.0;
+/// A frame this loud is speech regardless of the floor, so speech without pauses
+/// (which becomes its own "noise floor") still passes.
+const LOUD_SPEECH_LEVEL: f32 = 0.02;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateVerdict {
@@ -33,16 +37,20 @@ pub fn check(samples_16k: &[f32]) -> GateVerdict {
     }
     let frame_len = (u64::from(TARGET_RATE) * FRAME_MS / 1000) as usize;
     let levels: Vec<f32> = samples_16k.chunks(frame_len).map(rms).collect();
-    let threshold = speech_threshold(&levels);
-    let speech_ms = levels.iter().filter(|&&level| level > threshold).count() as u64 * FRAME_MS;
+    let floor = noise_floor(&levels);
+    let speech_ms = levels.iter().filter(|&&level| is_speech(level, floor)).count() as u64 * FRAME_MS;
     if speech_ms < MIN_SPEECH_MS { GateVerdict::NoSpeech } else { GateVerdict::Speech { speech_ms } }
 }
 
-fn speech_threshold(levels: &[f32]) -> f32 {
+/// 10th-percentile frame level: the room's background noise.
+fn noise_floor(levels: &[f32]) -> f32 {
     let mut sorted = levels.to_vec();
     sorted.sort_by(f32::total_cmp);
-    let noise_floor = sorted[sorted.len() / 10];
-    (noise_floor * NOISE_FLOOR_FACTOR).clamp(MIN_THRESHOLD, MAX_THRESHOLD)
+    sorted[sorted.len() / 10]
+}
+
+fn is_speech(level: f32, floor: f32) -> bool {
+    level > MIN_LEVEL && (level > floor * NOISE_MARGIN || level > LOUD_SPEECH_LEVEL)
 }
 
 #[cfg(test)]
@@ -109,5 +117,18 @@ mod tests {
         let mut samples = silence(1.8);
         samples.extend(tone(0.2, 0.3));
         assert_eq!(check(&samples), GateVerdict::NoSpeech);
+    }
+
+    #[test]
+    fn speech_over_moderate_noise_passes() {
+        let mut samples = noise(1.0, 0.02);
+        let speech: Vec<f32> = tone(1.0, 0.035).iter().zip(noise(1.0, 0.02)).map(|(s, n)| s + n).collect();
+        samples.extend(speech);
+        assert!(matches!(check(&samples), GateVerdict::Speech { .. }), "{:?}", check(&samples));
+    }
+
+    #[test]
+    fn continuous_quiet_speech_passes() {
+        assert!(matches!(check(&tone(1.0, 0.035)), GateVerdict::Speech { .. }));
     }
 }

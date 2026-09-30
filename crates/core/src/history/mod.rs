@@ -15,7 +15,7 @@ use crate::text::{fold, is_word_char};
 const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
-CREATE TABLE dictations (
+CREATE TABLE IF NOT EXISTS dictations (
     id            INTEGER PRIMARY KEY,
     created_at_ms INTEGER NOT NULL,
     profile_id    TEXT    NOT NULL,
@@ -29,20 +29,20 @@ CREATE TABLE dictations (
     search_text   TEXT    NOT NULL,
     search_raw    TEXT    NOT NULL
 );
-CREATE INDEX dictations_created ON dictations(created_at_ms);
-CREATE VIRTUAL TABLE dictations_fts USING fts5(
+CREATE INDEX IF NOT EXISTS dictations_created ON dictations(created_at_ms);
+CREATE VIRTUAL TABLE IF NOT EXISTS dictations_fts USING fts5(
     search_text, search_raw,
     content = 'dictations', content_rowid = 'id',
     tokenize = 'unicode61 remove_diacritics 2'
 );
-CREATE TRIGGER dictations_ai AFTER INSERT ON dictations BEGIN
+CREATE TRIGGER IF NOT EXISTS dictations_ai AFTER INSERT ON dictations BEGIN
     INSERT INTO dictations_fts(rowid, search_text, search_raw) VALUES (new.id, new.search_text, new.search_raw);
 END;
-CREATE TRIGGER dictations_ad AFTER DELETE ON dictations BEGIN
+CREATE TRIGGER IF NOT EXISTS dictations_ad AFTER DELETE ON dictations BEGIN
     INSERT INTO dictations_fts(dictations_fts, rowid, search_text, search_raw)
     VALUES ('delete', old.id, old.search_text, old.search_raw);
 END;
-CREATE TRIGGER dictations_au AFTER UPDATE OF search_text, search_raw ON dictations BEGIN
+CREATE TRIGGER IF NOT EXISTS dictations_au AFTER UPDATE OF search_text, search_raw ON dictations BEGIN
     INSERT INTO dictations_fts(dictations_fts, rowid, search_text, search_raw)
     VALUES ('delete', old.id, old.search_text, old.search_raw);
     INSERT INTO dictations_fts(rowid, search_text, search_raw) VALUES (new.id, new.search_text, new.search_raw);
@@ -101,11 +101,15 @@ impl HistoryStore {
         Self::init(Connection::open_in_memory()?)
     }
 
-    fn init(conn: Connection) -> Result<Self, HistoryError> {
+    fn init(mut conn: Connection) -> Result<Self, HistoryError> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version < SCHEMA_VERSION {
-            conn.execute_batch(SCHEMA)?;
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            // One transaction, idempotent statements: a crash mid-setup can neither
+            // leave a half schema behind nor block the next start.
+            let tx = conn.transaction()?;
+            tx.execute_batch(SCHEMA)?;
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
         }
         Ok(Self { conn })
     }
@@ -331,5 +335,24 @@ mod tests {
     fn fts_query_quotes_word_tokens() {
         assert_eq!(fts_query("Claude code'u").as_deref(), Some("\"claude\"* \"code\"* \"u\"*"));
         assert_eq!(fts_query(" \"(* "), None);
+    }
+
+    #[test]
+    fn half_created_schema_is_repaired_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE dictations (id INTEGER PRIMARY KEY, created_at_ms INTEGER NOT NULL,
+                 profile_id TEXT NOT NULL, raw_text TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL,
+                 audio_ms INTEGER NOT NULL, latency_ms INTEGER NOT NULL, audio_path TEXT,
+                 search_text TEXT NOT NULL, search_raw TEXT NOT NULL);",
+            )
+            .unwrap();
+        }
+        let store = HistoryStore::open(&path).unwrap();
+        store.insert(&entry("merhaba", "merhaba", 1)).unwrap();
+        assert_eq!(store.search("merhaba", 10).unwrap().len(), 1);
     }
 }
