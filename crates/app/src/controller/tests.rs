@@ -542,6 +542,57 @@ async fn a_failed_paste_is_an_error_but_the_text_is_saved() {
 }
 
 #[tokio::test]
+async fn a_failed_paste_does_not_mention_history_when_it_is_disabled() {
+    for language in ["en", "tr"] {
+        let mut config = AppConfig { ui_language: Some(language.into()), ..AppConfig::default() };
+        config.history.enabled = false;
+        let mut h = harness(config);
+        *h.paster.outcome.lock().unwrap() = PasteOutcome::Failed("clipboard busy".into());
+        h.script("groq", vec![Ok("kaybolmasın")]);
+        h.send(Msg::Toggle);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording, Transcribing, Pasting]).await;
+        match h.next().await {
+            DictationState::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Paste);
+                assert!(!message.is_empty());
+                assert!(!message.contains("History") && !message.contains("Geçmiş"), "{message}");
+            }
+            other => panic!("expected a paste error, got {other:?}"),
+        }
+        h.expect(&[Idle]).await;
+        assert!(h.history.entries().is_empty());
+        assert!(!h.overlay.last().text.contains("History") && !h.overlay.last().text.contains("Geçmiş"));
+    }
+}
+
+#[tokio::test]
+async fn a_failed_paste_uses_the_sessions_history_setting() {
+    for history_on in [false, true] {
+        let mut config = AppConfig::default();
+        config.history.enabled = history_on;
+        let mut h = harness(config.clone());
+        *h.paster.outcome.lock().unwrap() = PasteOutcome::Failed("clipboard busy".into());
+        h.script("groq", vec![Ok("kaybolmasın")]);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        config.history.enabled = !history_on;
+        h.settings.replace(settings(config));
+        h.send(Msg::Toggle);
+        h.expect(&[Transcribing, Pasting]).await;
+        match h.next().await {
+            DictationState::Error { kind, message } => {
+                assert_eq!(kind, ErrorKind::Paste);
+                assert_eq!(message.contains("History"), history_on, "{message}");
+            }
+            other => panic!("expected a paste error, got {other:?}"),
+        }
+        h.expect(&[Idle]).await;
+        assert_eq!(h.history.entries().len(), usize::from(history_on));
+    }
+}
+
+#[tokio::test]
 async fn history_follows_the_live_config() {
     let mut config = AppConfig::default();
     config.history.enabled = false;

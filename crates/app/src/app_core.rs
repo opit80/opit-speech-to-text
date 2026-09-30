@@ -189,8 +189,25 @@ impl AppCore {
     }
 
     /// Validates, saves and applies a config from the UI; returns what was stored.
-    pub fn save_config(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
+    pub fn save_config(&self, config: AppConfig) -> Result<AppConfig, CommandError> {
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.save_locked(config)
+    }
+
+    /// Read-modify-write of the current config, all under `config_lock`, so a concurrent
+    /// save from the tray or the UI cannot be lost.
+    pub fn update_config(
+        &self,
+        change: impl FnOnce(&mut AppConfig) -> Result<(), CommandError>,
+    ) -> Result<AppConfig, CommandError> {
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut config = self.config();
+        change(&mut config)?;
+        self.save_locked(config)
+    }
+
+    /// Caller holds `config_lock`.
+    fn save_locked(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
         config.normalize();
         if self.bad_config_kept.load(Ordering::SeqCst) {
             self.move_bad_config_aside()?;
@@ -230,13 +247,18 @@ impl AppCore {
         Ok(())
     }
 
-    pub fn set_active_profile(&self, id: &str) -> Result<(), CommandError> {
-        let mut config = self.config();
-        if config.profile(id).is_none() {
-            return Err(CommandError::new("invalid_input", format!("unknown profile {id}")));
-        }
-        config.active_profile_id = id.to_string();
-        self.save_config(config).map(|_| ())
+    pub fn set_active_profile(&self, id: &str) -> Result<AppConfig, CommandError> {
+        self.update_config(|config| {
+            if config.profile(id).is_none() {
+                return Err(CommandError::new("invalid_input", format!("unknown profile {id}")));
+            }
+            config.active_profile_id = id.to_string();
+            Ok(())
+        })
+    }
+
+    pub fn system_locale(&self) -> Option<&str> {
+        self.system_locale.as_deref()
     }
 
     /// (Re-)installs the global hook for the configured keys.
@@ -320,6 +342,8 @@ impl AppCore {
 
     /// Validates and stores `user.yaml`, then recompiles the rules; returns skipped-rule warnings.
     pub fn save_user_rules(&self, yaml: &str) -> Result<Vec<RuleWarning>, CommandError> {
+        // Async commands may save rules and config concurrently; serialize their settings rebuilds.
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let pack = RulePack::from_yaml(yaml)?;
         if let Some(dir) = self.paths.user_rules.parent() {
             std::fs::create_dir_all(dir).map_err(|e| CommandError::new("rules", e.to_string()))?;
@@ -526,6 +550,35 @@ mod tests {
         config.hotkey.enabled = false;
         f.core.save_config(config).unwrap();
         assert!(*f.hotkey.paused.lock().unwrap(), "a disabled shortcut stays paused");
+    }
+
+    #[test]
+    fn set_active_profile_saves_and_returns_the_config() {
+        let f = fixture();
+        let saved = f.core.set_active_profile("openai").unwrap();
+        assert_eq!(saved.active_profile_id, "openai");
+        assert_eq!(f.core.config().active_profile_id, "openai");
+        let on_disk = AppConfig::load(&f.core.paths.config).unwrap();
+        assert_eq!(on_disk.active_profile_id, "openai");
+    }
+
+    #[test]
+    fn set_active_profile_rejects_an_unknown_id_without_saving() {
+        let f = fixture();
+        let err = f.core.set_active_profile("nope").unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        assert!(!f.core.paths.config.exists());
+    }
+
+    #[test]
+    fn update_config_applies_the_change_under_the_lock() {
+        let f = fixture();
+        let saved = f.core.update_config(|c| {
+            c.paste.trailing_space = false;
+            Ok(())
+        });
+        assert!(!saved.unwrap().paste.trailing_space);
+        assert!(!f.core.config().paste.trailing_space);
     }
 
     #[test]
