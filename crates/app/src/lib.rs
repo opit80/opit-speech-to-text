@@ -2,8 +2,10 @@
 
 pub mod controller;
 pub mod i18n;
+pub mod logging;
 pub mod platform;
 pub mod settings;
+pub mod startup;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
