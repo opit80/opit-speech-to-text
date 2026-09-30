@@ -1,5 +1,6 @@
 //! Deterministic accuracy layer: rule packs, matching, prompt building.
 
+pub mod builtin;
 pub mod engine;
 pub mod hallucination;
 pub mod matcher;

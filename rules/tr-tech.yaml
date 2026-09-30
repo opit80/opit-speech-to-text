@@ -1,0 +1,72 @@
+schema: 1
+id: tr-tech
+name: Turkish – software terms
+language: tr
+
+# Priority order: earlier terms win the prompt budget.
+# `Git` is deliberately absent: casing would turn Turkish "git" (go) into "Git".
+terms:
+  - Claude Code
+  - Claude
+  - CLAUDE.md
+  - GitHub
+  - TypeScript
+  - JavaScript
+  - React
+  - Node.js
+  - npm
+  - pnpm
+  - Vite
+  - API
+  - JSON
+  - SQL
+  - WebSocket
+  - endpoint
+  - frontend
+  - backend
+  - middleware
+  - worktree
+  - pull request
+  - PR
+  - merge
+  - deploy
+  - plugin
+  - subagent
+  - LLM
+  - MCP
+  - MariaDB
+  - tmux
+  - Ollama
+  - read only
+
+corrections:
+  Claude Code: [cloud code, clod code, claude kod, klad kod]
+  Claude Code'da: [cloud kodda]
+  Claude in Chrome: [cloud in chrome]
+  CLAUDE.md: [cloud.md, claudemd, claude md, cloud md]
+  LLM: [el elem, elelem, el el em]
+  MCP: [em si pi, emsipi]
+  plugin: [pull win]
+  mergele: [mörşle, mörsle, mörge, mergle, merch ile]
+  deployla: [diployla, diploğla, diploy ile]
+  deploy: [diploy]
+  TypeScript: [type script]
+  JavaScript: [java script]
+  GitHub: [git hub]
+  worktree: [work tree]
+  pull request: [pul request]
+  frontend: [front end]
+  backend: [back end]
+  endpoint: [end point, en point]
+  WebSocket: [web soket, web socket]
+  Node.js: [node js, nodejs]
+  MariaDB: [maria db]
+  memory: [memori]
+  tmux: [tmbox]
+  Ollama: [olulama]
+
+replacements:
+  - { from: worktrillerini, to: "worktree'lerini" }
+  - { from: polivin, to: plugin, regex: true }
+  - { from: sabecit, to: subagent, regex: true }
+  - { from: subagenbt, to: subagent, regex: true }
