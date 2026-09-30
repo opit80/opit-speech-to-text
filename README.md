@@ -12,6 +12,7 @@ server); nothing goes through a third-party server of ours.
 | Path | What |
 |---|---|
 | `crates/core` | `opit-core`: audio prep, provider client, rule engine, history — no UI, no OS code |
+| `crates/eval` | `opit-eval`: WER / term accuracy of a provider profile on your own recordings |
 | `rules/` | Built-in rule packs (`tr-core`, `tr-tech`, `fivem`) |
 | `docs/` | Design brief and implementation plans |
 
@@ -20,6 +21,10 @@ server); nothing goes through a third-party server of ours.
 ```sh
 cargo test --workspace
 ```
+
+## Measuring accuracy
+
+See [`docs/eval.md`](docs/eval.md) for building a personal dataset and running `opit-eval`.
 
 ## License
 
