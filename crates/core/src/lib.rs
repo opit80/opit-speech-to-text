@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod history;
 pub mod pipeline;
 pub mod provider;
 pub mod rules;
