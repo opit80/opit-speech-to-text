@@ -4,6 +4,7 @@ use crate::audio::encode::EncodedAudio;
 
 pub mod openai;
 pub mod profile;
+pub mod retry;
 
 pub use openai::OpenAiCompatible;
 pub use profile::{Profile, ResponseFormat, presets};
