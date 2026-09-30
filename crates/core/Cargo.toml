@@ -12,11 +12,14 @@ flacenc.workspace = true
 hound.workspace = true
 indexmap.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 serde-saphyr.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 claxon.workspace = true
 tempfile.workspace = true
+wiremock.workspace = true
