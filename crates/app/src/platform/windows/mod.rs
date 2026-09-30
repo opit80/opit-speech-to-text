@@ -1,14 +1,17 @@
 //! Win32 implementations of the platform traits.
 
 pub mod autostart;
+pub mod clipboard;
 pub mod hotkey;
 pub mod microphone;
+pub mod paster;
 pub mod secrets;
 pub mod sounds;
 
 pub use autostart::RegistryAutostart;
 pub use hotkey::WinHotkey;
 pub use microphone::CpalMicrophone;
+pub use paster::WinPaster;
 pub use secrets::KeyringStore;
 pub use sounds::WinSounds;
 
