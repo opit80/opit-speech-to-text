@@ -112,6 +112,11 @@ pub enum Msg {
     LimitReached {
         session: u64,
     },
+    /// The microphone was lost mid-recording; what the prepare step made of the audio so far.
+    Salvaged {
+        session: u64,
+        result: Result<PreparedAudio, PipelineError>,
+    },
     Transcribed {
         session: u64,
         audio: Option<Arc<PreparedAudio>>,
@@ -206,6 +211,13 @@ enum Phase<C> {
         limit: AbortHandle,
         label: &'static str,
     },
+    /// The microphone was lost; the audio captured so far is being prepared so it can be kept
+    /// for "Try again". Brief, so the published state stays Recording until the error.
+    Salvaging {
+        session: u64,
+        settings: Arc<Settings>,
+        task: AbortHandle,
+    },
     Transcribing {
         session: u64,
         job: Job,
@@ -255,6 +267,7 @@ impl<P: Providers> Controller<P> {
                     self.stop();
                 }
             }
+            Msg::Salvaged { session, result } => self.on_salvaged(session, result),
             Msg::Transcribed { session, audio, result } => self.on_transcribed(session, audio, result),
             Msg::Pasted { session, outcome } => self.on_pasted(session, outcome),
             Msg::Shutdown => {}
@@ -273,7 +286,9 @@ impl<P: Providers> Controller<P> {
             Phase::Idle => self.start(),
             Phase::Recording { .. } => self.stop(),
             // One dictation at a time: triggers while busy are ignored.
-            Phase::Transcribing { .. } | Phase::Pasting { .. } => info!("busy; trigger ignored"),
+            Phase::Salvaging { .. } | Phase::Transcribing { .. } | Phase::Pasting { .. } => {
+                info!("busy; trigger ignored")
+            }
         }
     }
 
@@ -400,18 +415,13 @@ impl<P: Providers> Controller<P> {
         let task = tokio::spawn(async move {
             let audio = match input {
                 Input::Prepared(audio) => audio,
-                Input::Raw(recording) => {
-                    let prepared = tokio::task::spawn_blocking(move || pipeline::prepare(&recording))
-                        .await
-                        .unwrap_or_else(|join| Err(PipelineError::Encode(EncodeError(join.to_string()))));
-                    match prepared {
-                        Ok(audio) => Arc::new(audio),
-                        Err(err) => {
-                            let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
-                            return;
-                        }
+                Input::Raw(recording) => match prepare_off_thread(recording).await {
+                    Ok(audio) => Arc::new(audio),
+                    Err(err) => {
+                        let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
+                        return;
                     }
-                }
+                },
             };
             let ctx = PipelineContext {
                 primary: &clients.primary,
@@ -444,10 +454,34 @@ impl<P: Providers> Controller<P> {
                     unreachable!("checked above")
                 };
                 limit.abort();
-                drop(capture);
-                self.fail(ErrorKind::Microphone, settings.lang);
+                // Keep what was said so far (spec §8): prepare it, but send nothing on our own.
+                let recording = capture.finish();
+                let tx = self.tx.clone();
+                let task = tokio::spawn(async move {
+                    let result = prepare_off_thread(recording).await;
+                    let _ = tx.send(Msg::Salvaged { session, result });
+                })
+                .abort_handle();
+                self.phase = Phase::Salvaging { session, settings, task };
             }
         }
+    }
+
+    fn on_salvaged(&mut self, session: u64, result: Result<PreparedAudio, PipelineError>) {
+        if !matches!(self.phase, Phase::Salvaging { session: current, .. } if current == session) {
+            return; // cancelled meanwhile
+        }
+        let Phase::Salvaging { settings, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
+            unreachable!("checked above")
+        };
+        match result {
+            Ok(audio) => {
+                info!(session, audio_ms = audio.audio_ms, "audio before the microphone loss kept for Try again");
+                self.retry = Some(Arc::new(audio));
+            }
+            Err(err) => info!(session, reason = %err, "nothing worth keeping before the microphone loss"),
+        }
+        self.fail(ErrorKind::Microphone, settings.lang);
     }
 
     fn on_transcribed(
@@ -573,6 +607,11 @@ impl<P: Providers> Controller<P> {
                 info!(session, "recording cancelled");
                 settings.lang
             }
+            Phase::Salvaging { session, settings, task } => {
+                task.abort();
+                info!(session, "cancelled after the microphone was lost");
+                settings.lang
+            }
             Phase::Transcribing { session, task, job } => {
                 task.abort();
                 info!(session, "transcription cancelled");
@@ -629,6 +668,13 @@ impl<P: Providers> Controller<P> {
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
         self.env.events.status_changed(&status);
     }
+}
+
+/// Runs the CPU-heavy prepare step (resample + silence gate) on the blocking pool.
+async fn prepare_off_thread(recording: Recording) -> Result<PreparedAudio, PipelineError> {
+    tokio::task::spawn_blocking(move || pipeline::prepare(&recording))
+        .await
+        .unwrap_or_else(|join| Err(PipelineError::Encode(EncodeError(join.to_string()))))
 }
 
 fn view(tone: Tone, text: impl Into<String>, hide_after: Option<Duration>) -> OverlayView {

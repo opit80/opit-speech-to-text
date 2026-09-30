@@ -365,6 +365,7 @@ async fn escape_cancels_a_transcription() {
 #[tokio::test]
 async fn microphone_failure_during_recording_is_an_error() {
     let mut h = harness(AppConfig::default());
+    *h.mic.recording.lock().unwrap() = Some(silent_recording());
     h.send(Msg::Toggle);
     h.expect(&[Recording]).await;
     h.mic.emit(CaptureEvent::Level(0.2));
@@ -372,12 +373,37 @@ async fn microphone_failure_during_recording_is_an_error() {
     h.expect_error(ErrorKind::Microphone).await;
 
     assert_eq!(h.providers.calls(), 0);
-    assert_eq!(h.mic.dropped.load(SeqCst), 1);
-    assert!(!h.handle.status().can_retry);
+    assert_eq!(h.mic.finished.load(SeqCst) + h.mic.dropped.load(SeqCst), 1, "the capture is released");
+    assert!(!h.handle.status().can_retry, "nothing worth keeping was captured");
     assert_eq!(*h.sounds.played.lock().unwrap(), [Sound::Start, Sound::Error]);
     let error = h.overlay.last();
     assert_eq!((error.tone, error.button.is_none()), (Tone::Error, true));
     assert!(h.overlay.views.lock().unwrap().iter().any(|v| v.level.is_some_and(|l| l > 0.0)), "level meter moved");
+}
+
+#[tokio::test]
+async fn a_lost_microphone_keeps_the_speech_for_try_again() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("kaybolmayan cümle")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.mic.emit(CaptureEvent::Failed("device unplugged".into()));
+    h.expect_error(ErrorKind::Microphone).await;
+
+    assert!(h.handle.status().can_retry);
+    assert_eq!(h.mic.finished.load(SeqCst), 1, "the capture is finished, not dropped");
+    assert_eq!(h.providers.calls(), 0, "nothing is sent until the user asks");
+    assert!(h.paster.texts().is_empty());
+    let error = h.overlay.last();
+    assert_eq!((error.tone, error.button.map(|b| b.action)), (Tone::Error, Some(OverlayAction::Retry)));
+    assert!(!h.hotkey.escape_captured());
+
+    h.send(Msg::Retry);
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["kaybolmayan cümle "]);
+    assert_eq!(h.mic.starts(), 1, "the kept audio is sent, nothing is re-recorded");
+    assert_eq!(h.providers.calls(), 1);
+    assert!(!h.handle.status().can_retry);
 }
 
 #[tokio::test]
