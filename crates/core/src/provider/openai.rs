@@ -187,8 +187,20 @@ struct Segment {
     avg_logprob: f64,
 }
 
+/// Where and what kind of JSON error, without serde's message: that can quote string values
+/// from the body, which may be transcript text, and this message ends up in the logs.
+fn describe(err: &serde_json::Error) -> String {
+    let kind = match err.classify() {
+        serde_json::error::Category::Io => "I/O",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "data",
+        serde_json::error::Category::Eof => "unexpected end",
+    };
+    format!("invalid JSON ({kind} error at line {}, column {})", err.line(), err.column())
+}
+
 fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
-    let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(e.to_string()))?;
+    let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(describe(&e)))?;
     let segments = if verbose { response.segments.unwrap_or_default() } else { Vec::new() };
     let is_silence = |s: &Segment| s.no_speech_prob > NO_SPEECH_PROB_LIMIT && s.avg_logprob < AVG_LOGPROB_LIMIT;
     let dropped = segments.iter().filter(|s| is_silence(s)).count();
@@ -376,6 +388,16 @@ mod tests {
         profile.base_url = format!("http://127.0.0.1:{port}/v1");
         let err = send(profile, None, None, &[]).await.unwrap_err();
         assert!(matches!(err, ProviderError::Network(_)), "{err:?}");
+    }
+
+    #[test]
+    fn a_parse_error_never_quotes_the_response() {
+        let body = r#"{"text":"gizli cümle","segments":"gizli segment"}"#;
+        let Err(ProviderError::BadResponse(message)) = parse_body(body, true) else {
+            panic!("expected a bad response");
+        };
+        assert!(!message.contains("gizli"), "{message}");
+        assert_eq!(message, "invalid JSON (data error at line 1, column 49)");
     }
 
     #[test]

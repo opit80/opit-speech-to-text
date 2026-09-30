@@ -21,7 +21,7 @@ use windows::core::PCWSTR;
 
 use super::call_guarded;
 use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo};
-use crate::platform::{Hotkey, HotkeyError, HotkeySink};
+use crate::platform::{Hotkey, HotkeyError, HotkeyEvent, HotkeySink};
 
 struct HookState {
     tracker: KeyTracker,
@@ -197,6 +197,15 @@ fn key_is_down(vk: u32) -> bool {
     unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
 }
 
+/// Feeds one transition to the tracker. On a key-down it first drops held keys whose key-up we
+/// missed (e.g. released on the secure desktop) so they cannot block the combo forever. The
+/// key being pressed gets no exemption: inside the hook its async state still predates this
+/// event, so a genuine auto-repeat reads as down and a new press after a missed key-up as up.
+fn track(tracker: &mut KeyTracker, vk: u32, down: bool, key_is_down: impl Fn(u32) -> bool) -> [Option<HotkeyEvent>; 2] {
+    let pruned = if down && !tracker.held().is_empty() { tracker.prune(key_is_down) } else { None };
+    [pruned, tracker.on_key(vk, down)]
+}
+
 /// Updates the tracker, delivers events, and returns true when the key must be swallowed.
 fn handle_key(vk: u32, down: bool) -> bool {
     let (events, sink) = {
@@ -204,11 +213,7 @@ fn handle_key(vk: u32, down: bool) -> bool {
         let Some(st) = guard.as_mut() else {
             return false;
         };
-        // Drop keys whose key-up we missed (e.g. released on the secure desktop) so they
-        // cannot block the combo forever. The current key's async state is not updated yet.
-        let pruned =
-            if down && !st.tracker.held().is_empty() { st.tracker.prune(|k| k == vk || key_is_down(k)) } else { None };
-        ([pruned, st.tracker.on_key(vk, down)], st.sink.clone())
+        (track(&mut st.tracker, vk, down, key_is_down), st.sink.clone())
     };
     let paused = PAUSED.load(Ordering::Relaxed);
     if !paused {
@@ -249,6 +254,28 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen2 = Arc::clone(&seen);
         (Arc::new(move |e| seen2.lock().unwrap().push(e)), seen)
+    }
+
+    #[test]
+    fn the_first_press_after_a_missed_release_counts() {
+        const LCTRL: u32 = 0xA2;
+        const LALT: u32 = 0xA4;
+        const DELETE: u32 = 0x2E;
+        let mut tracker = KeyTracker::new(vec![0xA3, 0xA1]);
+        // Ctrl+Alt+Del: the secure desktop swallows all three key-ups.
+        for vk in [LCTRL, LALT, DELETE] {
+            track(&mut tracker, vk, true, |_| true);
+        }
+        // Inside the hook the async state predates this event, so every stale key reads as up,
+        // the Ctrl being pressed again included. That press is a new press, not a repeat.
+        assert_eq!(track(&mut tracker, LCTRL, true, |_| false), [None, None]);
+        assert_eq!(tracker.held(), [LCTRL]);
+        assert_eq!(track(&mut tracker, LCTRL, false, |_| false), [None, Some(HotkeyEvent::LoneCtrl)]);
+
+        // A genuine auto-repeat reads as down and stays a repeat.
+        track(&mut tracker, LCTRL, true, |_| false);
+        assert_eq!(track(&mut tracker, LCTRL, true, |vk| vk == LCTRL), [None, None]);
+        assert_eq!(tracker.held(), [LCTRL]);
     }
 
     #[test]
