@@ -9,13 +9,13 @@ use windows::Win32::Security::{
     TokenIntegrityLevel,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
     VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId};
 use windows::core::Owned;
 
 use super::clipboard::{Clipboard, Snapshot, sequence_number};
@@ -43,6 +43,9 @@ impl Paster for WinPaster {
             Err(e) => return PasteOutcome::Failed(e),
         };
         wait_for_modifiers_released(MODIFIER_WAIT);
+        if foreground_is_not_a_paste_target() {
+            return PasteOutcome::ClipboardOnly;
+        }
         if ctrl_v_blocked(foreground_is_higher_integrity(), has_foreground_window()) {
             // UIPI would drop the input silently; leave the text on the clipboard for the user.
             return PasteOutcome::ClipboardOnly;
@@ -68,6 +71,41 @@ impl Paster for WinPaster {
 /// foreground window there is nothing to block, so we paste as before.
 fn ctrl_v_blocked(higher_integrity: Option<bool>, has_foreground_window: bool) -> bool {
     higher_integrity.unwrap_or(has_foreground_window)
+}
+
+/// Window classes of the shell: taskbar, tray overflow flyout, desktop.
+const SHELL_WINDOW_CLASSES: [&str; 6] = [
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+    "NotifyIconOverflowWindow",
+    "TopLevelWindowForOverflowXamlIsland",
+    "Progman",
+    "WorkerW",
+];
+
+/// Whether the foreground window must not get our Ctrl+V: a shell window (clicking the tray
+/// icon leaves the taskbar or the overflow flyout in front) or one of our own windows (the
+/// settings window's Stop button). The keys would land there and the restore would then take
+/// the dictation off the clipboard, so the text stays on the clipboard instead.
+fn not_a_paste_target(class: Option<&str>, own_process: bool) -> bool {
+    own_process || class.is_some_and(|class| SHELL_WINDOW_CLASSES.contains(&class))
+}
+
+/// [`not_a_paste_target`] for the current foreground window; false when there is none.
+fn foreground_is_not_a_paste_target() -> bool {
+    // SAFETY: plain FFI calls; the out-pointer and the buffer are valid for each call.
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        let mut buf = [0u16; 256];
+        let len = usize::try_from(GetClassNameW(hwnd, &mut buf)).unwrap_or(0);
+        let class = (len > 0).then(|| String::from_utf16_lossy(&buf[..len]));
+        not_a_paste_target(class.as_deref(), pid != 0 && pid == GetCurrentProcessId())
+    }
 }
 
 fn has_foreground_window() -> bool {
@@ -233,6 +271,18 @@ mod tests {
         assert!(!ctrl_v_blocked(Some(false), true));
         assert!(ctrl_v_blocked(None, true));
         assert!(!ctrl_v_blocked(None, false));
+    }
+
+    #[test]
+    fn shell_windows_and_our_own_windows_get_no_ctrl_v() {
+        for class in SHELL_WINDOW_CLASSES {
+            assert!(not_a_paste_target(Some(class), false), "{class}");
+        }
+        assert!(not_a_paste_target(Some("Chrome_WidgetWin_1"), true), "our own WebView");
+        assert!(not_a_paste_target(None, true));
+        assert!(!not_a_paste_target(Some("Notepad"), false));
+        assert!(!not_a_paste_target(Some("Chrome_WidgetWin_1"), false));
+        assert!(!not_a_paste_target(None, false));
     }
 
     #[test]
