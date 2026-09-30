@@ -29,7 +29,7 @@ use crate::history_service::{DisabledHistory, HistoryService};
 use crate::platform::windows::{
     CpalMicrophone, KeyringStore, RegistryAutostart, WinHotkey, WinOverlay, WinPaster, WinSounds,
 };
-use crate::platform::{Autostart, NoAutostart, NoOverlay, Overlay, SecretStore, UnavailableSecrets};
+use crate::platform::{Autostart, DebugAutostart, NoAutostart, NoOverlay, Overlay, SecretStore, UnavailableSecrets};
 use crate::providers::HttpProviders;
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::Paths;
@@ -120,9 +120,14 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
             Arc::new(UnavailableSecrets(err.to_string()))
         }
     };
-    let autostart: Arc<dyn Autostart> = match RegistryAutostart::for_current_exe() {
-        Ok(autostart) => Arc::new(autostart),
-        Err(err) => Arc::new(NoAutostart(err)),
+    // Debug builds never touch the Run key, whichever code path asks for it.
+    let autostart: Arc<dyn Autostart> = if cfg!(debug_assertions) {
+        Arc::new(DebugAutostart)
+    } else {
+        match RegistryAutostart::for_current_exe() {
+            Ok(autostart) => Arc::new(autostart),
+            Err(err) => Arc::new(NoAutostart(err)),
+        }
     };
     let hotkey = Arc::new(WinHotkey::new());
     let mic = Arc::new(CpalMicrophone::new());
@@ -151,10 +156,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     let platform = Platform { secrets, hotkey, mic, overlay: overlay.clone(), autostart };
     let core = Arc::new(AppCore::new(paths, settings, controller, history, platform, user_pack, locale, notices));
     core.apply_hotkey(&config);
-    // Debug builds never register themselves to start with Windows.
-    if !cfg!(debug_assertions) {
-        core.apply_autostart(config.ui.autostart);
-    }
+    core.apply_autostart(config.ui.autostart);
     if let Some(view) = core.startup_overlay() {
         overlay.show(view);
     }
