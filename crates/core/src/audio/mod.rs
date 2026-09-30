@@ -1,5 +1,6 @@
 //! Audio preparation: everything between the microphone buffer and the upload.
 
+pub mod gate;
 pub mod resample;
 
 /// Sample rate sent to providers.
