@@ -1,0 +1,29 @@
+schema: 1
+id: tr-core
+name: Turkish – core spelling
+language: tr
+
+corrections:
+  hâlâ: [hala]
+  pekâlâ: [pekala]
+  sağ ol: [sağol]
+  sağ olun: [sağolun]
+  burada: [burda]
+  kaydet: [kayıt et]
+
+# Dropped only when they are the entire output (typical on silence).
+hallucinations:
+  - altyazı m.k
+  - altyazı ekleyen
+  - altyazılar m.k
+  - abone ol
+  - abone olun
+  - abone olmayı unutmayın
+  - izlediğiniz için teşekkürler
+  - m.k
+  - mk
+  - a
+  - e
+  - thank you
+  - thanks for watching
+  - please subscribe

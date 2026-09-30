@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/core", "crates/eval"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/opit80/opit-speech-to-text"
+
+[workspace.dependencies]
+anyhow = "1"
+claxon = "0.4"
+clap = { version = "4.6.7", features = ["derive"] }
+flacenc = "0.5.1"
+hound = "3.5.1"
+indexmap = { version = "2.14.2", features = ["serde"] }
+regex = "1.13.1"
+reqwest = { version = "0.13.5", features = ["json", "multipart"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = "1.3.0"
+serde_json = "1.0.151"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+wiremock = "0.6.5"
