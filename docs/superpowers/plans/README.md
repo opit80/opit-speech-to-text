@@ -8,8 +8,8 @@ guessed ones.
 | # | Plan | Delivers | Status |
 |---|---|---|---|
 | 1 | [Core library + eval CLI](2026-09-30-plan-1-core-and-eval.md) | `opit-core` (audio prep, provider client, rule engine, prompt builder, history, config) and `opit-eval`, which measures WER/term accuracy against a real provider | **done** — merged to `main`, 144 tests green, final review fixed |
-| 2 | [Tauri app shell](2026-09-30-plan-2-app-shell.md) | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **code complete** on `feat/plan-2-app-shell` (not merged): 15 tasks, final whole-branch review clean after one fix wave; app 114 tests + 9 ignored smoke tests, core 134 + 3. Manual end-to-end pass (Task 15 Steps 2–7) still open |
-| 3 | Svelte UI | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | next — being planned |
+| 2 | [Tauri app shell](2026-09-30-plan-2-app-shell.md) | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **merged** to `main` (2026-10-01): 15 tasks, final whole-branch review clean after one fix wave; app 114 tests + 9 ignored smoke tests, core 134 + 3. Manual end-to-end pass (Task 15 Steps 2–7) still open |
+| 3 | [Svelte UI](2026-10-01-plan-3-ui.md) | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | **in progress** on `feat/plan-3-ui` (12 tasks) |
 | 4 | Release | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | after plan 3 |
 
 ## Plan 1 outcome — what later plans build on
@@ -44,7 +44,7 @@ guessed ones.
 
 ## Plan 2 outcome — what Plan 3 builds on
 
-**Status:** code complete on `feat/plan-2-app-shell`, not merged to `main`. The manual end-to-end pass (Plan 2, Task 15, Steps 2–7) has not been run yet. It needs a real microphone and a Groq key, and it measures latency and tray RAM. Its numbers and any failures still need to be recorded here.
+**Status:** merged to `main` on 2026-10-01. The manual end-to-end pass (Plan 2, Task 15, Steps 2–7) has not been run yet. It needs a real microphone and a Groq key, and it measures latency and tray RAM. Its numbers and any failures still need to be recorded here.
 
 The final-review fixes change three expectations for that pass:
 - Stopping a dictation from the tray (or from our own window) never auto-pastes. The text stays on the clipboard and the overlay says "Panoda — Ctrl+V ile yapıştır".
