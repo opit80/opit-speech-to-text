@@ -19,5 +19,32 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      # The app crate is Windows-only (Tauri + Win32); Linux checks the portable crates.
+      - name: Clippy (Windows)
+        if: runner.os == 'Windows'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (Linux)
+        if: runner.os != 'Windows'
+        run: cargo clippy --workspace --exclude opit-speech-to-text --all-targets -- -D warnings
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: cargo test --workspace
+      - name: Test (Linux)
+        if: runner.os != 'Windows'
+        run: cargo test --workspace --exclude opit-speech-to-text
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
