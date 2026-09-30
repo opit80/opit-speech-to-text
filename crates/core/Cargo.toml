@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 indexmap.workspace = true
+regex.workspace = true
 serde-saphyr.workspace = true
 serde.workspace = true
 thiserror.workspace = true
