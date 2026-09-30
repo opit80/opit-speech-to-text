@@ -7,8 +7,8 @@ guessed ones.
 
 | # | Plan | Delivers | Status |
 |---|---|---|---|
-| 1 | [Core library + eval CLI](2026-09-30-plan-1-core-and-eval.md) | `opit-core` (audio prep, provider client, rule engine, prompt builder, history, config) and `opit-eval`, which measures WER/term accuracy against a real provider | **done** — branch `feat/plan-1-core` (not yet merged to `main`), 144 tests green, final review fixed |
-| 2 | Tauri app shell | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **next** — plan not written |
+| 1 | [Core library + eval CLI](2026-09-30-plan-1-core-and-eval.md) | `opit-core` (audio prep, provider client, rule engine, prompt builder, history, config) and `opit-eval`, which measures WER/term accuracy against a real provider | **done** — merged to `main`, 144 tests green, final review fixed |
+| 2 | [Tauri app shell](2026-09-30-plan-2-app-shell.md) | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **planned** — 15 tasks; code verified in a scratch build (all intermediate states clippy-clean, 108 app tests); not started |
 | 3 | Svelte UI | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | after plan 2 |
 | 4 | Release | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | after plan 3 |
 
