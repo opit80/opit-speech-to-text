@@ -4,4 +4,5 @@
 //! tested on any platform. The app crate supplies recordings and consumes
 //! transcripts through [`pipeline`].
 
+pub mod rules;
 pub mod text;
