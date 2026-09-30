@@ -62,3 +62,18 @@ pub trait Transcriber {
         request: &TranscribeRequest<'_>,
     ) -> impl Future<Output = Result<RawTranscript, ProviderError>> + Send;
 }
+
+/// Lets the app keep one client (and its pooled connection) per profile and share it
+/// between dictations.
+impl<T: Transcriber + Sync> Transcriber for std::sync::Arc<T> {
+    fn profile(&self) -> &Profile {
+        (**self).profile()
+    }
+
+    fn transcribe(
+        &self,
+        request: &TranscribeRequest<'_>,
+    ) -> impl Future<Output = Result<RawTranscript, ProviderError>> + Send {
+        (**self).transcribe(request)
+    }
+}
