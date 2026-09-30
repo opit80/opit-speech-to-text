@@ -1,5 +1,6 @@
 //! Opit Speech to Text desktop app: Tauri shell, platform layer and the dictation controller.
 
+pub mod app_core;
 pub mod controller;
 pub mod history_service;
 pub mod i18n;
@@ -8,6 +9,7 @@ pub mod platform;
 pub mod providers;
 pub mod settings;
 pub mod startup;
+pub mod tray_menu;
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
