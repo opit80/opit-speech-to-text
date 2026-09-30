@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/eval"]
+members = ["crates/core", "crates/eval", "crates/app"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/opit80/opit-speech-to-text"
 
@@ -13,16 +13,29 @@ repository = "https://github.com/opit80/opit-speech-to-text"
 anyhow = "1"
 claxon = "0.4"
 clap = { version = "4.6.7", features = ["derive"] }
+cpal = "0.18.2"
+dirs = "7.0.0"
 flacenc = "0.5.1"
 hound = "3.5.1"
 indexmap = { version = "2.14.2", features = ["serde"] }
+keyring-core = "1.0.0"
 regex = "1.13.1"
 reqwest = { version = "0.13.5", features = ["json", "multipart"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "1.3.0"
 serde_json = "1.0.151"
+sys-locale = "0.3.2"
+tauri = "2.12.0"
+tauri-build = "2.7.0"
+tauri-plugin-single-instance = "2.5.1"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+windows = "0.62.2"
+windows-native-keyring-store = { version = "1.1.0", default-features = false }
+windows-registry = "0.6.1"
 wiremock = "0.6.5"
