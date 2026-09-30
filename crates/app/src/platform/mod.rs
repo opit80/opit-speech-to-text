@@ -93,7 +93,8 @@ pub trait Hotkey: Send + Sync {
 pub enum PasteOutcome {
     /// Ctrl+V was sent.
     Pasted,
-    /// The text is on the clipboard but Ctrl+V could not be sent (elevated target / UIPI).
+    /// The text is on the clipboard but no Ctrl+V was sent: elevated target (UIPI), or the
+    /// foreground is a shell window or one of our own windows.
     ClipboardOnly,
     /// The clipboard could not be written.
     Failed(String),
