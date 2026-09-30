@@ -90,6 +90,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "writes to HKCU in the real registry"]
     fn enable_disable_round_trip() {
         let _ = CURRENT_USER.remove_tree(TEST_KEY);
         let command = r#""C:\Program Files\Opit\opit.exe" --autostart"#;
