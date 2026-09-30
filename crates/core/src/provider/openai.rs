@@ -45,11 +45,27 @@ impl OpenAiCompatible {
         format!("{}/audio/transcriptions", self.profile.base_url.trim().trim_end_matches('/'))
     }
 
+    fn models_url(&self) -> String {
+        format!("{}/models", self.profile.base_url.trim().trim_end_matches('/'))
+    }
+
+    /// Opens (and pools) the connection while the user is still speaking, so the upload
+    /// does not pay for DNS + TLS. Best effort: every error is ignored.
+    pub async fn warm_up(&self) {
+        let mut request = self.client.get(self.models_url()).timeout(Duration::from_secs(5));
+        if let Some(key) = &self.api_key {
+            request = request.bearer_auth(key);
+        }
+        if let Ok(response) = request.send().await {
+            // Reading the body hands the connection back to the pool.
+            let _ = response.bytes().await;
+        }
+    }
+
     /// Checks the base URL and key with `GET {base_url}/models`. Servers without
     /// that endpoint get a 1 s silent transcription instead.
     pub async fn test_connection(&self) -> Result<(), ProviderError> {
-        let url = format!("{}/models", self.profile.base_url.trim().trim_end_matches('/'));
-        let mut request = self.client.get(url).timeout(Duration::from_secs(10));
+        let mut request = self.client.get(self.models_url()).timeout(Duration::from_secs(10));
         if let Some(key) = &self.api_key {
             request = request.bearer_auth(key);
         }
@@ -171,8 +187,20 @@ struct Segment {
     avg_logprob: f64,
 }
 
+/// Where and what kind of JSON error, without serde's message: that can quote string values
+/// from the body, which may be transcript text, and this message ends up in the logs.
+fn describe(err: &serde_json::Error) -> String {
+    let kind = match err.classify() {
+        serde_json::error::Category::Io => "I/O",
+        serde_json::error::Category::Syntax => "syntax",
+        serde_json::error::Category::Data => "data",
+        serde_json::error::Category::Eof => "unexpected end",
+    };
+    format!("invalid JSON ({kind} error at line {}, column {})", err.line(), err.column())
+}
+
 fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
-    let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(e.to_string()))?;
+    let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(describe(&e)))?;
     let segments = if verbose { response.segments.unwrap_or_default() } else { Vec::new() };
     let is_silence = |s: &Segment| s.no_speech_prob > NO_SPEECH_PROB_LIMIT && s.avg_logprob < AVG_LOGPROB_LIMIT;
     let dropped = segments.iter().filter(|s| is_silence(s)).count();
@@ -363,6 +391,16 @@ mod tests {
     }
 
     #[test]
+    fn a_parse_error_never_quotes_the_response() {
+        let body = r#"{"text":"gizli cümle","segments":"gizli segment"}"#;
+        let Err(ProviderError::BadResponse(message)) = parse_body(body, true) else {
+            panic!("expected a bad response");
+        };
+        assert!(!message.contains("gizli"), "{message}");
+        assert_eq!(message, "invalid JSON (data error at line 1, column 49)");
+    }
+
+    #[test]
     fn timeout_grows_with_audio_length() {
         assert_eq!(request_timeout(BASE_REQUEST_TIMEOUT, 8_000), Duration::from_secs(32));
     }
@@ -424,5 +462,19 @@ mod tests {
         send(profile_for(&server), Some("sk-test\r\n"), None, &[]).await.unwrap();
         let request = only_request(&server).await;
         assert_eq!(request.headers.get("authorization").unwrap(), "Bearer sk-test");
+    }
+
+    #[tokio::test]
+    async fn warm_up_calls_models_with_the_key_and_ignores_errors() {
+        let server = connection_server(500, 500).await;
+        let client = OpenAiCompatible::new(profile_for(&server), Some("sk-warm".into())).unwrap();
+        client.warm_up().await;
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "no transcription is attempted");
+        assert_eq!(requests[0].url.path(), "/v1/models");
+        assert_eq!(requests[0].headers.get("authorization").unwrap(), "Bearer sk-warm");
+
+        let closed = OpenAiCompatible::new(presets::custom("x", "x", "http://127.0.0.1:9/v1", "m"), None).unwrap();
+        closed.warm_up().await;
     }
 }

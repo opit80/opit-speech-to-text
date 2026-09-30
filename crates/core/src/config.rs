@@ -178,7 +178,8 @@ impl AppConfig {
     /// Loads `path`; a missing file yields the defaults.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         match std::fs::read_to_string(path) {
-            Ok(src) => Self::from_json(&src),
+            // Notepad and PowerShell 5 start the file with a UTF-8 BOM, which JSON does not allow.
+            Ok(src) => Self::from_json(src.strip_prefix('\u{FEFF}').unwrap_or(&src)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(ConfigError::Io(e.to_string())),
         }
@@ -324,6 +325,15 @@ mod tests {
         assert_eq!(active.id, "groq");
         assert_eq!(c.fallback_for(active).unwrap().id, "openai");
         assert!(c.fallback_for(&c.profiles[1]).is_none());
+    }
+
+    #[test]
+    fn a_leading_utf8_bom_is_ignored() {
+        // Notepad and PowerShell 5 write one.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "\u{FEFF}{\"paste\":{\"trailing_space\":false}}").unwrap();
+        assert!(!AppConfig::load(&path).unwrap().paste.trailing_space);
     }
 
     #[test]
