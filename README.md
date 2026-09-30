@@ -13,14 +13,25 @@ server); nothing goes through a third-party server of ours.
 |---|---|
 | `crates/core` | `opit-core`: audio prep, provider client, rule engine, history — no UI, no OS code |
 | `crates/eval` | `opit-eval`: WER / term accuracy of a provider profile on your own recordings |
+| `crates/app` | `opit-speech-to-text`: the Windows tray app (Tauri 2) — hotkey, microphone, paste, overlay, tray |
+| `ui/` | Svelte 5 front end of the app window |
 | `rules/` | Built-in rule packs (`tr-core`, `tr-tech`, `fivem`) |
 | `docs/` | Design brief and implementation plans |
 
 ## Development
 
+Requirements: Windows 10/11, Rust 1.90+, Node 24, and the Tauri CLI
+(`cargo install tauri-cli --version "^2.12" --locked`).
+
 ```sh
-cargo test --workspace
+cargo test --workspace          # all Rust tests
+cd ui && npm install && cd ..   # once
+cargo tauri dev                 # run the app with the Vite dev server
+cargo tauri build --no-bundle   # release exe in target/release/
 ```
+
+Set `OPIT_DATA_DIR` to run against a scratch data folder instead of
+`%APPDATA%\opit-speech-to-text`.
 
 ## Measuring accuracy
 
