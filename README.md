@@ -33,6 +33,26 @@ cargo tauri build --no-bundle   # release exe in target/release/
 Set `OPIT_DATA_DIR` to run against a scratch data folder instead of
 `%APPDATA%\opit-speech-to-text`.
 
+## Trying the preview
+
+The settings UI is not built yet; the app runs from a hand-edited config.
+
+1. Build and start it: `cargo tauri build --no-bundle`, then run
+   `target\release\opit-speech-to-text.exe`. The first start writes
+   `%APPDATA%\opit-speech-to-text\config.json` with defaults (Groq, Turkish, Right Ctrl +
+   Right Shift, toggle mode) and puts an icon in the tray.
+2. Store your API key in Windows Credential Manager (the command prompts for it, so it does
+   not land in your shell history). `groq` is the profile's `api_key_ref`:
+   ```
+   cmdkey /generic:groq.opit-speech-to-text /user:groq /pass
+   ```
+3. Edit `config.json` if you like (for example `rules.prompt_context`, `rules.enabled_packs`,
+   `hotkey.mode: "push_to_talk"`, `recording.microphone`) and restart the app from the tray.
+4. Press **Right Ctrl + Right Shift**, speak, press it again (or tap **Ctrl** alone). The text is
+   pasted where your cursor is. **Esc** cancels.
+
+Logs are in `%APPDATA%\opit-speech-to-text\logs` (7 days). They never contain what you said.
+
 ## Measuring accuracy
 
 See [`docs/eval.md`](docs/eval.md) for building a personal dataset and running `opit-eval`.
