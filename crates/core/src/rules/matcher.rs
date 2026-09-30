@@ -41,13 +41,15 @@ pub struct PhraseMatcher {
     needles: Vec<Vec<char>>,
     /// Folded first char → pattern indices, longest needle first.
     by_first: HashMap<char, Vec<usize>>,
+    /// Capitalize lowercase targets at sentence starts (off for term casing).
+    sentence_case: bool,
 }
 
 impl PhraseMatcher {
     /// Builds a matcher. Empty or whitespace-only `from` values are ignored, and
     /// when two patterns compare equal the earlier one wins.
     pub fn new(patterns: impl IntoIterator<Item = Pattern>) -> Self {
-        let mut matcher = PhraseMatcher::default();
+        let mut matcher = PhraseMatcher { sentence_case: true, ..PhraseMatcher::default() };
         let mut seen = HashSet::new();
         for pattern in patterns {
             let from = pattern.from.trim().to_string();
@@ -69,6 +71,13 @@ impl PhraseMatcher {
             list.sort_by_key(|&i| Reverse(needles[i].len()));
         }
         matcher
+    }
+
+    /// Targets follow only the replaced text's capitalization, never the sentence
+    /// position (`npm install` at a sentence start stays `npm`).
+    pub fn without_sentence_case(mut self) -> Self {
+        self.sentence_case = false;
+        self
     }
 
     pub fn is_empty(&self) -> bool {
@@ -108,7 +117,8 @@ impl PhraseMatcher {
             let to = if pattern.case_sensitive {
                 pattern.to.clone()
             } else {
-                capitalize_like(&pattern.to, source, sentence_start(&text[..found.start]), pattern.turkish)
+                let at_start = self.sentence_case && sentence_start(&text[..found.start]);
+                capitalize_like(&pattern.to, source, at_start, pattern.turkish)
             };
             out.push_str(&text[last..found.start]);
             out.push_str(&to);
@@ -247,5 +257,18 @@ mod tests {
         let found = m.find_all("bir şey");
         // "bir " is 4 bytes; "şey" is 4 bytes (ş takes 2).
         assert_eq!(found, vec![Found { start: 4, end: 8, pattern: 0 }]);
+    }
+
+    #[test]
+    fn identifier_targets_are_never_capitalized() {
+        assert_eq!(replace(vec![p("ox lib", "ox_lib")], "ox lib yükle"), "ox_lib yükle");
+        assert_eq!(replace(vec![p("ios", "iOS")], "Ios güncellemesi"), "iOS güncellemesi");
+    }
+
+    #[test]
+    fn without_sentence_case_only_follows_the_source() {
+        let m = PhraseMatcher::new(vec![p("npm", "npm")]).without_sentence_case();
+        assert_eq!(m.replace_all("npm kur").0, "npm kur");
+        assert_eq!(m.replace_all("Npm kur").0, "Npm kur");
     }
 }

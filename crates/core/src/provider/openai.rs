@@ -31,7 +31,7 @@ impl OpenAiCompatible {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|e| ProviderError::Network(e.to_string()))?;
-        let api_key = api_key.filter(|k| !k.trim().is_empty());
+        let api_key = api_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
         Ok(Self { client, profile, api_key, base_timeout: BASE_REQUEST_TIMEOUT })
     }
 
@@ -416,5 +416,13 @@ mod tests {
         assert_eq!(test_connection_with(&server).await, Ok(()));
         let failing = connection_server(404, 500).await;
         assert_eq!(test_connection_with(&failing).await, Err(ProviderError::Server(500)));
+    }
+
+    #[tokio::test]
+    async fn pasted_key_with_newline_is_trimmed() {
+        let server = server(200, r#"{"text":"ok"}"#).await;
+        send(profile_for(&server), Some("sk-test\r\n"), None, &[]).await.unwrap();
+        let request = only_request(&server).await;
+        assert_eq!(request.headers.get("authorization").unwrap(), "Bearer sk-test");
     }
 }

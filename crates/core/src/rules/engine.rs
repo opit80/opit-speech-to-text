@@ -77,6 +77,13 @@ impl RuleSet {
             };
 
             for (index, (canonical, variants)) in pack.corrections.iter().enumerate() {
+                if canonical.trim().is_empty() {
+                    warnings.push(RuleWarning {
+                        pack_id: pack.id.clone(),
+                        message: format!("correction #{} has an empty target; skipped", index + 1),
+                    });
+                    continue;
+                }
                 let rule = new_ref(RuleKind::Correction, index);
                 for variant in variants {
                     corrections.push(Pattern {
@@ -141,7 +148,7 @@ impl RuleSet {
             refs,
             corrections: PhraseMatcher::new(corrections),
             replacements,
-            casing: PhraseMatcher::new(casing),
+            casing: PhraseMatcher::new(casing).without_sentence_case(),
             hallucinations: HallucinationFilter::new(hallucinations),
             terms,
         };
@@ -323,5 +330,29 @@ mod tests {
         assert_eq!(rules.apply("cloud code"), "cloud code");
         assert!(rules.terms().is_empty());
         assert!(!rules.is_hallucination("thank you"));
+    }
+
+    #[test]
+    fn casing_never_invents_capitals() {
+        let rules = compile(&[pack("user", "terms: [iOS, iPhone, npm, ox_lib, worktree, GitHub]\n")]);
+        let cases = [
+            ("iOS güncellemesi geldi.", "iOS güncellemesi geldi."),
+            ("Telefon aldım. iPhone'u sevdim", "Telefon aldım. iPhone'u sevdim"),
+            ("npm install çalıştır", "npm install çalıştır"),
+            ("ox_lib yükle", "ox_lib yükle"),
+            ("Worktree aç", "Worktree aç"),
+            ("IOS ve WORKTREE", "iOS ve Worktree"),
+            ("github", "GitHub"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(rules.apply(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn empty_correction_target_is_skipped_with_a_warning() {
+        let (rules, warnings) = RuleSet::compile(&[pack("p", "corrections:\n  '': [şey]\n")]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(rules.apply("bu şey güzel"), "bu şey güzel");
     }
 }
