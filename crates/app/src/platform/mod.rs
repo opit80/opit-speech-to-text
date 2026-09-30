@@ -224,3 +224,29 @@ impl Autostart for NoAutostart {
         Err(self.0.clone())
     }
 }
+
+/// Used by debug builds so nothing can write the Run key with a path into `target\debug`.
+pub struct DebugAutostart;
+
+impl Autostart for DebugAutostart {
+    fn is_enabled(&self) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    fn set_enabled(&self, _enabled: bool) -> Result<(), String> {
+        tracing::info!("debug builds leave autostart alone");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_autostart_accepts_requests_but_stays_disabled() {
+        let autostart = DebugAutostart;
+        assert_eq!(autostart.set_enabled(true), Ok(()));
+        assert_eq!(autostart.is_enabled(), Ok(false));
+    }
+}
