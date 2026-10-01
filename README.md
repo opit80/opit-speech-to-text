@@ -30,33 +30,66 @@ cargo tauri dev                 # run the app with the Vite dev server
 cargo tauri build --no-bundle   # release exe in target/release/
 ```
 
-Set `OPIT_DATA_DIR` to run against a scratch data folder instead of
-`%APPDATA%\opit-speech-to-text`.
+Developer notes:
 
-## Trying the preview
+- Set `OPIT_DATA_DIR` to run against a scratch data folder instead of
+  `%APPDATA%\opit-speech-to-text`. An empty folder starts like a fresh install, wizard included.
+- API keys live in Windows Credential Manager. The Profiles page and the wizard store them there,
+  but you can also store one by hand. The command prompts for the key, so it does not land in
+  your shell history. `groq` is the profile's `api_key_ref`:
+  ```
+  cmdkey /generic:groq.opit-speech-to-text /user:groq /pass
+  ```
+- Debug builds never register autostart, so the "Start with Windows" switch is disabled there.
 
-The settings UI is not built yet; the app runs from a hand-edited config.
+## Using the app
 
-1. Build and start it: run `npm install` in `ui/` once (see [Development](#development)), then
-   `cargo tauri build --no-bundle`, then run `target\release\opit-speech-to-text.exe`. The first
-   start writes `%APPDATA%\opit-speech-to-text\config.json` with defaults (Groq, Turkish, Right
-   Ctrl + Right Shift, toggle mode) and puts an icon in the tray.
-   `ui.autostart` defaults to `true`, so the release exe also adds itself to the Windows Run key
-   (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Opit Speech to Text`) on first
-   start. To turn that off, set `"ui": { "autostart": false }` in `config.json`, then quit the
-   app from the tray and start it again; it removes the value on that start.
-2. Store your API key in Windows Credential Manager (the command prompts for it, so it does
-   not land in your shell history). `groq` is the profile's `api_key_ref`:
-   ```
-   cmdkey /generic:groq.opit-speech-to-text /user:groq /pass
-   ```
-3. Edit `config.json` if you like (for example `rules.prompt_context`, `rules.enabled_packs`,
-   `hotkey.mode: "push_to_talk"`, `recording.microphone`), then quit the app from the tray and
-   start it again.
-4. Press **Right Ctrl + Right Shift**, speak, press it again (or tap **Ctrl** alone). The text is
-   pasted where your cursor is. **Esc** cancels.
+Build and start it: run `npm install` in `ui/` once (see [Development](#development)), then
+`cargo tauri build --no-bundle`, then run `target\release\opit-speech-to-text.exe`. The app puts
+an icon in the tray and opens its window.
 
-Logs are in `%APPDATA%\opit-speech-to-text\logs` (7 days). They never contain what you said.
+**First run.** A setup wizard opens on the first start:
+
+1. **Language**: the language of the app's menus and messages (English or Turkish). The language
+   you dictate in is set per profile.
+2. **Provider**: Groq (recommended), OpenAI or your own OpenAI-compatible server. Paste your API
+   key and test the connection.
+3. **Microphone**: pick a device and check that the level meter moves.
+4. **Shortcut**: the default is **Right Ctrl + Right Shift**; you can change it and the mode here.
+5. **Rules and startup**: turn on the built-in rule packs you want, and choose whether the app
+   starts with Windows.
+6. **Try it**: dictate one sentence into Notepad, or start a test from the wizard itself.
+
+**Skip setup** keeps the defaults. Until the wizard is finished or skipped, it opens again
+whenever the window opens.
+
+**Dictating.** Press the shortcut, speak, then press it again (or tap **Ctrl** alone). The text is
+pasted where your cursor is. **Esc** cancels. In push-to-talk mode you hold the shortcut while you
+speak. A dictation started from the app's own window goes to the clipboard instead of being
+pasted.
+
+**Pages** (left sidebar):
+
+| Page | What it does |
+|---|---|
+| Home | Dictation status, a start/stop button, a quick profile switch and the latest dictations. Warns when the active profile has no API key. |
+| History | Search every dictation (Turkish letters match loosely: `ı`/`i`, `ş`/`s` …), copy, delete, clear, and play the audio when audio saving is on. Select a misrecognised word and use **Add correction rule** to fix it in future dictations, with a before/after preview. |
+| Rules | Turn the built-in rule packs (`tr-core`, `tr-tech`, `fivem`) on or off, set the context sentence, and watch the prompt budget gauge. Edit your personal rules (`user.yaml`) as a table or as raw YAML, and try them on any text before saving. |
+| Profiles | Transcription providers from presets (Groq, OpenAI, custom server): base URL, model, language, prompt options and a fallback profile. Store or remove the API key and test the connection. |
+| Settings | Interface language, start with Windows, start in the tray, sound feedback, the shortcut (capture a new one, mode, pause), microphone with a level test, maximum recording length, paste options, overlay position, history, audio saving and retention. **About** shows the version and the data and log folders. |
+
+Settings are saved as soon as you change them. Profiles and the rules editor have a **Save**
+button. Closing the window keeps the app running in the tray; open it again from the tray icon.
+
+**Where settings live.** Everything is under `%APPDATA%\opit-speech-to-text\`: `config.json`
+(settings and profiles), `rules\user.yaml` (your personal rules), `history.db`, `audio\` (only
+when audio saving is on) and `logs\` (7 days). API keys are kept only in Windows Credential
+Manager. The logs never contain what you said or your keys.
+
+`ui.autostart` defaults to `true`, so the release exe adds itself to the Windows Run key
+(`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Opit Speech to Text`) on its first
+start, before the wizard runs. Turning off **Start with Windows** (in the wizard or in Settings)
+removes the value.
 
 ## Measuring accuracy
 
