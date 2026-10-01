@@ -14,6 +14,7 @@ pub mod startup;
 pub mod tray;
 pub mod tray_menu;
 pub mod uninstall;
+pub mod updates;
 pub mod window;
 
 use std::sync::Arc;
@@ -86,6 +87,8 @@ pub fn run() {
 }
 
 fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
+    // Before anything can emit or invoke: `app.state::<UpdateService>()` panics without it.
+    app.manage(updates::UpdateService::default());
     let handle = app.handle().clone();
     let loaded = startup::load_config(&paths.config, now_ms());
     let (user_pack, rules_notice) = startup::load_user_pack(&paths.user_rules);
@@ -96,6 +99,10 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         warn!(pack = %warning.pack_id, message = %warning.message, "rule skipped");
     }
     let settings = SettingsHandle::new(settings);
+    // Release builds only: a dev build must never pull an installer over the installed app.
+    if !cfg!(debug_assertions) {
+        updates::spawn_auto_check(handle.clone(), settings.clone());
+    }
 
     let history = match HistoryService::open(&paths.history_db, paths.audio.clone()) {
         Ok(history) => {

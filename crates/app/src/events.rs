@@ -20,6 +20,8 @@ pub const HOTKEY_STATE: &str = "hotkey-state";
 pub const MIC_TEST: &str = "mic-test";
 /// Payload: a route name such as `"settings"`.
 pub const NAVIGATE: &str = "navigate";
+/// Payload: `UpdateState` (updates.rs).
+pub const UPDATE_STATE: &str = "update-state";
 
 pub struct TauriEvents {
     app: AppHandle,
