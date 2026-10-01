@@ -8,4 +8,4 @@ pub mod pack;
 pub mod prompt;
 
 pub use engine::{RuleHit, RuleKind, RuleRef, RuleSet, RuleWarning};
-pub use pack::{PackError, Replacement, RulePack, load_pack_file};
+pub use pack::{CorrectionError, CorrectionOutcome, PackError, Replacement, RulePack, header_comments, load_pack_file};

@@ -97,14 +97,19 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     match tray_menu::parse(event.id().as_ref()) {
         Some(TrayCommand::Open) => window::show_main(app, None),
         Some(TrayCommand::Profile(id)) => {
-            if let Err(err) = core.set_active_profile(&id) {
-                warn!(error = %err, "could not switch profile");
-            }
-            // Also re-syncs the check marks: Windows flips a clicked check item by itself.
-            events::config_changed(app, &core.config());
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || match core.set_active_profile(&id) {
+                Ok(saved) => events::config_changed(&app, &saved),
+                Err(err) => {
+                    warn!(error = %err, "could not switch profile");
+                    // Windows flips a clicked check item by itself, even when saving fails.
+                    refresh(&app);
+                }
+            });
         }
         Some(TrayCommand::TogglePause) => {
             core.set_hotkey_paused(!core.hotkey_state().paused);
+            events::hotkey_state(app, &core.hotkey_state());
             refresh(app);
         }
         Some(TrayCommand::Retry) => core.controller.send(Msg::Retry),

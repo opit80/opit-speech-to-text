@@ -1,5 +1,7 @@
 //! Rule packs shipped with the app, embedded at compile time.
 
+use serde::Serialize;
+
 use super::pack::RulePack;
 
 /// Built-in packs as `(id, YAML)`, in their fixed priority order.
@@ -14,6 +16,34 @@ pub fn builtin_pack(id: &str) -> Option<RulePack> {
         .iter()
         .find(|(pack_id, _)| *pack_id == id)
         .map(|(_, src)| RulePack::from_yaml(src).expect("built-in packs are validated by tests"))
+}
+
+/// What the Rules page lists for a built-in pack.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PackInfo {
+    pub id: String,
+    pub name: String,
+    pub language: String,
+    pub terms: usize,
+    pub corrections: usize,
+    pub replacements: usize,
+    pub hallucinations: usize,
+}
+
+pub fn pack_infos() -> Vec<PackInfo> {
+    BUILTIN_PACKS
+        .iter()
+        .filter_map(|(id, _)| builtin_pack(id))
+        .map(|p| PackInfo {
+            terms: p.terms.len(),
+            corrections: p.corrections.len(),
+            replacements: p.replacements.len(),
+            hallucinations: p.hallucinations.len(),
+            id: p.id,
+            name: p.name,
+            language: p.language,
+        })
+        .collect()
 }
 
 /// Packs in priority order: the personal pack first, then the enabled built-in
@@ -91,5 +121,20 @@ mod tests {
         let context = "Türkçe yazılım geliştirme ve FiveM sunucusu üzerine konuşma.";
         let built = build_prompt(context, rules().terms(), "tr");
         assert!(built.dropped_terms.is_empty(), "dropped: {:?}", built.dropped_terms);
+    }
+
+    #[test]
+    fn pack_infos_list_every_builtin_pack_with_counts() {
+        let infos = pack_infos();
+        let ids: Vec<&str> = infos.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["tr-core", "tr-tech", "fivem"]);
+        for info in &infos {
+            let pack = builtin_pack(&info.id).unwrap();
+            assert_eq!(info.name, pack.name);
+            assert_eq!(info.terms, pack.terms.len());
+            assert_eq!(info.corrections, pack.corrections.len());
+            assert_eq!(info.replacements, pack.replacements.len());
+            assert_eq!(info.hallucinations, pack.hallucinations.len());
+        }
     }
 }

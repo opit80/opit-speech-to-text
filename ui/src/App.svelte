@@ -1,77 +1,135 @@
 <script lang="ts">
-  // Plan 2 skeleton: proves the invoke/event wiring. Plan 3 replaces this with the real pages.
-  import { invoke } from "@tauri-apps/api/core";
-  import { listen } from "@tauri-apps/api/event";
+  import { app, errorText, initApp, t } from "./lib/app.svelte";
+  import { navigate, router } from "./lib/router.svelte";
+  import type { Route } from "./lib/route";
+  import type { MessageKey } from "./lib/i18n";
+  import { api } from "./lib/api";
+  import Banner from "./lib/components/Banner.svelte";
+  import Button from "./lib/components/Button.svelte";
+  import Icon from "./lib/components/Icon.svelte";
+  import Toasts from "./lib/components/Toasts.svelte";
+  import Home from "./pages/Home.svelte";
+  import History from "./pages/History.svelte";
+  import Rules from "./pages/Rules.svelte";
+  import Profiles from "./pages/Profiles.svelte";
+  import Settings from "./pages/Settings.svelte";
+  import Setup from "./pages/Setup.svelte";
 
-  interface DictationStatus {
-    state: "idle" | "recording" | "transcribing" | "pasting" | "cancelled" | "error";
-    can_retry: boolean;
-    kind?: string;
-    message?: string;
+  const NAV: { route: Route; icon: "home" | "history" | "rules" | "profiles" | "settings" }[] = [
+    { route: "home", icon: "home" },
+    { route: "history", icon: "history" },
+    { route: "rules", icon: "rules" },
+    { route: "profiles", icon: "profiles" },
+    { route: "settings", icon: "settings" },
+  ];
+
+  const navKeys: Record<Route, MessageKey> = {
+    home: "nav.home", history: "nav.history", rules: "nav.rules",
+    profiles: "nav.profiles", settings: "nav.settings", setup: "nav.setup",
+  };
+
+  function navKey(route: Route): MessageKey {
+    return navKeys[route];
   }
 
-  interface AppInfo {
-    version: string;
-    data_dir: string;
-    log_dir: string;
-  }
+  let resumeBusy = $state(false);
+  let resumeError = $state<string | null>(null);
 
-  let status = $state<DictationStatus | null>(null);
-  let info = $state<AppInfo | null>(null);
-  let error = $state<string | null>(null);
+  async function resumeHotkey() {
+    resumeBusy = true;
+    resumeError = null;
+    try {
+      app.hotkey = await api.setHotkeyPaused(false);
+    } catch (error) {
+      resumeError = errorText(error);
+    } finally {
+      resumeBusy = false;
+    }
+  }
 
   $effect(() => {
+    let stop: (() => void) | undefined;
     let disposed = false;
-    const unlisten = listen<DictationStatus>("dictation-status", (event) => {
-      status = event.payload;
-    });
-    Promise.all([invoke<DictationStatus>("get_status"), invoke<AppInfo>("app_info")])
-      .then(([s, i]) => {
-        if (disposed) return;
-        status ??= s;
-        info = i;
-      })
-      .catch((e: unknown) => {
-        error = String(e);
-      });
+    initApp().then((s) => (disposed ? s() : (stop = s)));
     return () => {
       disposed = true;
-      void unlisten.then((stop) => stop());
+      stop?.();
     };
   });
 
-  function toggle() {
-    invoke("toggle_dictation").catch((e: unknown) => {
-      error = String(e);
-    });
+  // The wizard runs until it is finished or skipped.
+  $effect(() => {
+    if (app.ready && app.config && !app.config.ui.setup_done && router.route !== "setup") navigate("setup");
+  });
+
+  function dismissNotice(index: number) {
+    app.notices.splice(index, 1);
   }
 </script>
 
-<main>
-  <h1>Opit Speech to Text</h1>
-  {#if error}
-    <p class="error">{error}</p>
-  {/if}
-  {#if status}
-    <p>State: <strong>{status.state}</strong>{status.message ? ` — ${status.message}` : ""}</p>
-    <button type="button" onclick={toggle}>{status.state === "recording" ? "Stop" : "Start"} dictation</button>
-  {/if}
-  {#if info}
-    <p class="muted">v{info.version} · data: {info.data_dir}</p>
-  {/if}
-  <p class="muted">The full interface arrives in a later version. Settings live in config.json in the data folder.</p>
-</main>
+{#if app.loadError}
+  <main class="center"><Banner tone="error">{t("app.load_failed", { message: app.loadError })}</Banner></main>
+{:else if !app.ready}
+  <main class="center muted">{t("app.loading")}</main>
+{:else if router.route === "setup"}
+  <Setup />
+{:else}
+  <div class="shell">
+    <nav aria-label={t("nav.main")}>
+      <div class="brand">{t("app.name")}</div>
+      {#each NAV as item (item.route)}
+        <a href={`#/${item.route}`} aria-current={router.route === item.route ? "page" : undefined}>
+          <Icon name={item.icon} />{t(navKey(item.route))}
+        </a>
+      {/each}
+      <div class="version muted">v{app.info?.version}</div>
+    </nav>
+    <main>
+      {#if app.notices.length || app.hotkey.error || app.hotkey.paused || resumeError}
+        <div class="notices">
+          {#each app.notices as notice, i (i)}
+            <Banner tone="warning" ondismiss={() => dismissNotice(i)}>
+              {#if notice.kind === "config_reset"}
+                {notice.backup ? t("notice.config_reset", { backup: notice.backup }) : t("notice.config_reset_kept")}
+              {:else}
+                {t("notice.user_rules_broken", { reason: notice.reason })}
+              {/if}
+            </Banner>
+          {/each}
+          {#if app.hotkey.error}
+            <Banner tone="warning">{t("notice.hotkey_failed", { reason: app.hotkey.error })}</Banner>
+          {:else if app.hotkey.paused}
+            <Banner tone="info">
+              {t("notice.hotkey_paused")}
+              {#snippet action()}
+                <Button busy={resumeBusy} onclick={resumeHotkey}>{t("notice.resume")}</Button>
+              {/snippet}
+            </Banner>
+          {/if}
+          {#if resumeError}<Banner tone="error">{resumeError}</Banner>{/if}
+        </div>
+      {/if}
+      {#if router.route === "home"}<Home />
+      {:else if router.route === "history"}<History />
+      {:else if router.route === "rules"}<Rules />
+      {:else if router.route === "profiles"}<Profiles />
+      {:else if router.route === "settings"}<Settings />{/if}
+    </main>
+  </div>
+{/if}
+<Toasts />
 
 <style>
-  main {
-    font-family: system-ui, sans-serif;
-    padding: 1.5rem;
-  }
-  .error {
-    color: #b91c1c;
-  }
-  .muted {
-    color: #6b7280;
-    font-size: 0.875rem;
-  }
+  .shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); height: 100vh; }
+  nav { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3); background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; }
+  .brand { font-weight: 600; padding: var(--space-3) var(--space-2) var(--space-5); }
+  a { display: flex; align-items: center; gap: var(--space-3); height: 36px; flex-shrink: 0; color: var(--text); text-decoration: none; padding: 0 var(--space-3); border-radius: var(--radius-sm); position: relative; }
+  a:hover { background: var(--surface-2); }
+  a[aria-current="page"] { font-weight: 600; background: var(--surface-2); }
+  a[aria-current="page"]::before { content: ""; position: absolute; left: 0; width: 3px; height: 20px; background: var(--accent); border-radius: var(--radius-sm); }
+  .version { margin-top: auto; padding: var(--space-4) var(--space-2) var(--space-1); font-size: var(--text-sm); }
+  main { padding: var(--space-5); overflow-y: auto; min-width: 0; }
+  main :global(> *) { max-width: var(--content); margin-left: auto; margin-right: auto; }
+  .notices { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-5); }
+  .center { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 </style>

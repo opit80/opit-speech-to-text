@@ -33,6 +33,8 @@ pub struct FakeMic {
     pub sink: Mutex<Option<CaptureSink>>,
     pub finished: Arc<AtomicUsize>,
     pub dropped: Arc<AtomicUsize>,
+    /// One-shot callback after opening a capture, before returning it to the caller.
+    pub before_start_returns: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl FakeMic {
@@ -59,7 +61,7 @@ impl Microphone for FakeMic {
         }
         *self.sink.lock().unwrap() = Some(sink);
         let recording = self.recording.lock().unwrap().clone().unwrap_or_else(speech_recording);
-        Ok(Started {
+        let started = Started {
             capture: Box::new(FakeCapture {
                 recording: Some(recording),
                 finished: self.finished.clone(),
@@ -67,7 +69,12 @@ impl Microphone for FakeMic {
             }),
             device: "Fake Mic".into(),
             fell_back: *self.fell_back.lock().unwrap(),
-        })
+        };
+        let callback = self.before_start_returns.lock().unwrap().take();
+        if let Some(callback) = callback {
+            callback();
+        }
+        Ok(started)
     }
 }
 

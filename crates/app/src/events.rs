@@ -4,6 +4,7 @@ use opit_core::config::AppConfig;
 use tauri::{AppHandle, Emitter};
 use tracing::warn;
 
+use crate::app_core::HotkeyState;
 use crate::controller::{DictationStatus, UiEvents};
 use crate::{tray, window};
 
@@ -13,6 +14,10 @@ pub const STATUS: &str = "dictation-status";
 pub const HISTORY_ADDED: &str = "history-added";
 /// Payload: the saved `AppConfig`.
 pub const CONFIG_CHANGED: &str = "config-changed";
+/// Payload: `HotkeyState`. Sent when the shortcut is paused/resumed or re-registered.
+pub const HOTKEY_STATE: &str = "hotkey-state";
+/// Payload: `MicTestEvent` (`{ kind: "level", value }` or `{ kind: "failed", message }`).
+pub const MIC_TEST: &str = "mic-test";
 /// Payload: a route name such as `"settings"`.
 pub const NAVIGATE: &str = "navigate";
 
@@ -44,6 +49,10 @@ impl UiEvents for TauriEvents {
 pub fn config_changed(app: &AppHandle, config: &AppConfig) {
     emit(app, CONFIG_CHANGED, config);
     tray::refresh(app);
+}
+
+pub fn hotkey_state(app: &AppHandle, state: &HotkeyState) {
+    emit(app, HOTKEY_STATE, state.clone());
 }
 
 pub fn emit<S: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: S) {

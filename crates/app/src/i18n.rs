@@ -53,6 +53,15 @@ impl Lang {
         self.pick("In clipboard — press Ctrl+V to paste", "Panoda — Ctrl+V ile yapıştır")
     }
 
+    /// The clipboard could not be written, so nothing was pasted.
+    pub fn paste_failed(self, history_on: bool) -> &'static str {
+        if history_on {
+            self.pick("Could not paste — text is in History", "Yapıştırılamadı — metin Geçmiş'te")
+        } else {
+            self.pick("Could not paste the text", "Metin yapıştırılamadı")
+        }
+    }
+
     pub fn no_speech(self) -> &'static str {
         self.pick("No speech detected", "Konuşma algılanmadı")
     }
@@ -150,6 +159,14 @@ mod tests {
     fn pasted_uses_the_local_decimal_separator() {
         assert_eq!(Lang::En.pasted(0.94), "Pasted (0.9 s)");
         assert_eq!(Lang::Tr.pasted(0.94), "Yapıştırıldı (0,9 sn)");
+    }
+
+    #[test]
+    fn paste_failed_mentions_history_only_when_it_is_on() {
+        assert!(Lang::En.paste_failed(true).contains("History"));
+        assert!(!Lang::En.paste_failed(false).contains("History"));
+        assert!(Lang::Tr.paste_failed(true).contains("Geçmiş"));
+        assert!(!Lang::Tr.paste_failed(false).contains("Geçmiş"));
     }
 
     #[test]

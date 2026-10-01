@@ -5,6 +5,8 @@ use std::path::Path;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
+use crate::text::fold;
+
 pub const PACK_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +75,88 @@ impl RulePack {
     pub fn is_turkish(&self) -> bool {
         self.language == "tr"
     }
+
+    /// YAML for this pack with `header` (see [`header_comments`]) on top.
+    pub fn to_yaml_with_header(&self, header: &str) -> Result<String, PackError> {
+        let body = self.to_yaml()?;
+        if header.is_empty() { Ok(body) } else { Ok(format!("{header}\n{body}")) }
+    }
+
+    /// Records that `variant` is a misrecognition of `canonical`. Spellings that differ only
+    /// in case (Turkish-aware) add `canonical` to `terms` instead, since casing is fixed there.
+    pub fn add_correction(&mut self, canonical: &str, variant: &str) -> Result<CorrectionOutcome, CorrectionError> {
+        let (canonical, variant) = (collapse_ws(canonical), collapse_ws(variant));
+        if canonical.is_empty() || variant.is_empty() {
+            return Err(CorrectionError::Empty);
+        }
+        if canonical == variant {
+            return Err(CorrectionError::SameAsCanonical);
+        }
+        let folded = fold(&variant);
+        if fold(&canonical) == folded {
+            if self.terms.contains(&canonical) {
+                return Ok(CorrectionOutcome::AlreadyPresent);
+            }
+            self.terms.push(canonical);
+            return Ok(CorrectionOutcome::AddedTerm);
+        }
+        for (key, variants) in &self.corrections {
+            if *key != canonical && variants.iter().any(|v| fold(v) == folded) {
+                return Err(CorrectionError::TakenBy { variant: variant.clone(), canonical: key.clone() });
+            }
+        }
+        let variants = self.corrections.entry(canonical).or_default();
+        if variants.iter().any(|v| fold(v) == folded) {
+            return Ok(CorrectionOutcome::AlreadyPresent);
+        }
+        variants.push(variant);
+        Ok(CorrectionOutcome::AddedVariant)
+    }
+}
+
+/// The comment block at the top of a pack file: the leading lines that are blank or start
+/// with `#`, without trailing blank lines. Returned with a final newline, or empty.
+pub fn header_comments(yaml: &str) -> String {
+    let yaml = yaml.strip_prefix('\u{FEFF}').unwrap_or(yaml);
+    let mut header = String::new();
+    for line in yaml.lines() {
+        let trimmed = line.trim_start();
+        if !(trimmed.is_empty() || trimmed.starts_with('#')) {
+            break;
+        }
+        header.push_str(line.trim_end());
+        header.push('\n');
+    }
+    let kept = header.trim_end().len();
+    if kept == 0 {
+        return String::new();
+    }
+    header.truncate(kept);
+    header.push('\n');
+    header
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrectionOutcome {
+    AddedVariant,
+    /// The two spellings differ only in case, so the canonical form became a term.
+    AddedTerm,
+    AlreadyPresent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CorrectionError {
+    #[error("the correct and the wrong spelling must not be empty")]
+    Empty,
+    #[error("the wrong spelling is the same as the correct one")]
+    SameAsCanonical,
+    #[error("{variant:?} is already corrected to {canonical:?}")]
+    TakenBy { variant: String, canonical: String },
+}
+
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub fn load_pack_file(path: &Path) -> Result<RulePack, PackError> {
@@ -162,5 +246,72 @@ hallucinations: [altyazı m.k]
         assert_eq!(load_pack_file(&path).unwrap().id, "tr-tech");
         let missing = load_pack_file(&dir.path().join("nope.yaml")).unwrap_err();
         assert!(matches!(missing, PackError::Io(_)));
+    }
+
+    const WITH_HEADER: &str = "# Personal rules\n# prompt_context: FiveM talk\n\nschema: 1\nid: user\nname: Me\n# inline note\nterms: [Opit]\n";
+
+    #[test]
+    fn header_comments_takes_only_the_leading_block() {
+        assert_eq!(header_comments(WITH_HEADER), "# Personal rules\n# prompt_context: FiveM talk\n");
+        assert_eq!(header_comments("schema: 1\n# late\n"), "");
+        assert_eq!(header_comments("\u{FEFF}# bom\nschema: 1\n"), "# bom\n");
+        assert_eq!(header_comments(""), "");
+    }
+
+    #[test]
+    fn to_yaml_with_header_keeps_the_header_and_is_stable() {
+        let pack = RulePack::from_yaml(WITH_HEADER).unwrap();
+        let header = header_comments(WITH_HEADER);
+        let once = pack.to_yaml_with_header(&header).unwrap();
+        assert!(once.starts_with("# Personal rules\n# prompt_context: FiveM talk\n"));
+        assert_eq!(RulePack::from_yaml(&once).unwrap(), pack);
+        let twice = RulePack::from_yaml(&once).unwrap().to_yaml_with_header(&header_comments(&once)).unwrap();
+        assert_eq!(once, twice);
+    }
+
+    fn user_pack() -> RulePack {
+        RulePack::from_yaml("schema: 1\nid: user\nname: Me\ncorrections:\n  Claude Code: [cloud code]\n").unwrap()
+    }
+
+    #[test]
+    fn add_correction_appends_a_variant_once() {
+        let mut pack = user_pack();
+        assert_eq!(pack.add_correction("Claude Code", "klod kod"), Ok(CorrectionOutcome::AddedVariant));
+        assert_eq!(pack.add_correction(" Claude  Code ", "KLOD KOD"), Ok(CorrectionOutcome::AlreadyPresent));
+        assert_eq!(pack.corrections["Claude Code"], ["cloud code", "klod kod"]);
+    }
+
+    #[test]
+    fn add_correction_creates_a_new_canonical_entry() {
+        let mut pack = user_pack();
+        assert_eq!(pack.add_correction("Opit", "opet"), Ok(CorrectionOutcome::AddedVariant));
+        assert_eq!(pack.corrections["Opit"], ["opet"]);
+    }
+
+    #[test]
+    fn a_case_only_difference_becomes_a_term() {
+        let mut pack = user_pack();
+        assert_eq!(pack.add_correction("GitHub", "github"), Ok(CorrectionOutcome::AddedTerm));
+        assert_eq!(pack.add_correction("GitHub", "Github"), Ok(CorrectionOutcome::AlreadyPresent));
+        assert_eq!(pack.terms, ["GitHub"]);
+        // Turkish dotted/dotless I fold together, so this is also case-only.
+        assert_eq!(pack.add_correction("İstanbul", "istanbul"), Ok(CorrectionOutcome::AddedTerm));
+    }
+
+    #[test]
+    fn add_correction_rejects_bad_input() {
+        let mut pack = user_pack();
+        assert_eq!(pack.add_correction("", "x"), Err(CorrectionError::Empty));
+        assert_eq!(pack.add_correction("x", "  "), Err(CorrectionError::Empty));
+        assert_eq!(pack.add_correction("Opit", "Opit"), Err(CorrectionError::SameAsCanonical));
+        assert_eq!(
+            pack.add_correction("Kod", "Claude Code"),
+            Ok(CorrectionOutcome::AddedVariant),
+            "a variant equal to another canonical (not to one of its variants) is allowed"
+        );
+        assert_eq!(
+            pack.add_correction("Clod", "cloud code"),
+            Err(CorrectionError::TakenBy { variant: "cloud code".into(), canonical: "Claude Code".into() })
+        );
     }
 }
