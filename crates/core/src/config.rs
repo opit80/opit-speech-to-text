@@ -141,6 +141,8 @@ pub struct UiConfig {
     pub sound_feedback: bool,
     /// The first-run wizard was finished or skipped.
     pub setup_done: bool,
+    /// Ask GitHub for a newer version at start-up and once a day (release builds only).
+    pub check_updates: bool,
 }
 
 impl Default for UiConfig {
@@ -151,6 +153,7 @@ impl Default for UiConfig {
             overlay_position: OverlayPosition::RightCenter,
             sound_feedback: true,
             setup_done: false,
+            check_updates: true,
         }
     }
 }
@@ -358,5 +361,12 @@ mod tests {
         let c = AppConfig::from_json(json).unwrap();
         assert!(c.ui.start_in_tray);
         assert!(!c.ui.setup_done);
+    }
+
+    #[test]
+    fn update_checks_default_on_also_for_older_configs() {
+        assert!(AppConfig::default().ui.check_updates);
+        let c = AppConfig::from_json(r#"{"schema_version":1,"ui":{"start_in_tray":true}}"#).unwrap();
+        assert!(c.ui.check_updates);
     }
 }

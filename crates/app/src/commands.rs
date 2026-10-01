@@ -14,8 +14,9 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::app_core::{AppCore, CommandError, CorrectionDraft, HotkeyState, MicTestSink, RulesPreview};
-use crate::controller::{DictationStatus, Msg};
+use crate::controller::{DictationState, DictationStatus, Msg};
 use crate::startup::StartupNotice;
+use crate::updates::{self, UpdateState};
 use crate::{events, tray};
 
 type Core<'a> = State<'a, Arc<AppCore>>;
@@ -79,6 +80,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         set_hotkey_capture,
         validate_hotkey,
         take_startup_notices,
+        get_update_state,
+        check_for_updates,
+        install_update,
     ]
 }
 
@@ -284,4 +288,25 @@ fn set_hotkey_capture(core: Core<'_>, active: bool) {
 #[tauri::command]
 fn validate_hotkey(keys: Vec<String>) -> Result<()> {
     AppCore::validate_hotkey(&keys)
+}
+
+#[tauri::command]
+fn get_update_state(app: AppHandle) -> UpdateState {
+    updates::current(&app)
+}
+
+/// Runs a check now (or returns the state of the one already running).
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) -> UpdateState {
+    updates::check(&app).await
+}
+
+/// On success the app exits and the installer takes over.
+#[tauri::command]
+async fn install_update(app: AppHandle, core: Core<'_>) -> Result<()> {
+    let busy = matches!(
+        core.status().state,
+        DictationState::Recording | DictationState::Transcribing | DictationState::Pasting
+    );
+    updates::install(&app, busy).await
 }
