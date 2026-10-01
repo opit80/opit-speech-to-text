@@ -10,7 +10,7 @@ guessed ones.
 | 1 | [Core library + eval CLI](2026-09-30-plan-1-core-and-eval.md) | `opit-core` (audio prep, provider client, rule engine, prompt builder, history, config) and `opit-eval`, which measures WER/term accuracy against a real provider | **done** — merged to `main`, 144 tests green, final review fixed |
 | 2 | [Tauri app shell](2026-09-30-plan-2-app-shell.md) | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **merged** to `main` (2026-10-01): 15 tasks, final whole-branch review clean after one fix wave; app 114 tests + 9 ignored smoke tests, core 134 + 3. Manual end-to-end pass (Task 15 Steps 2–7) still open |
 | 3 | [Svelte UI](2026-10-01-plan-3-ui.md) | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | **merged** to `main` (2026-10-01): 12 tasks; app 135 tests + 9 ignored, core 142 + 3, UI 43 Vitest tests, `svelte-check` 0 errors / 0 warnings. Final whole-branch review: 0 Critical, 1 Important (fixed), 13 Minor (deferred). The manual pass (Task 12 Step 2) is still open |
-| 4 | [Release](2026-10-01-plan-4-release.md) | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | **code complete on `feat/plan-4-release`** (2026-10-01): 7 tasks plus one fix wave; app 151 tests + 9 ignored, core 143 + 3, UI 51 Vitest tests, release script 6 `node:test` tests. Final whole-branch review: 0 Critical, 3 Important (fixed), 4 Minor (deferred). Not merged, nothing published; a signed installer was built locally for review |
+| 4 | [Release](2026-10-01-plan-4-release.md) | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | **merged** to `main` (2026-10-01): 7 tasks plus one fix wave; app 151 tests + 9 ignored, core 143 + 3, UI 51 Vitest tests, release script 6 `node:test` tests. Final whole-branch review: 0 Critical, 3 Important (fixed), 4 Minor (deferred). Nothing published yet (no GitHub repo, tag or release); the signed local build was viewed by the user |
 
 ## Plan 1 outcome — what later plans build on
 
@@ -213,7 +213,7 @@ belong to the same pass.
 
 ## Plan 4 outcome
 
-**Status:** code complete on `feat/plan-4-release` (2026-10-01), not merged, nothing published (no
+**Status:** merged to `main` (2026-10-01) after the user viewed the local build; nothing published (no
 GitHub repo, push, tag or release). Tasks 1–7 and the fix wave were implemented by Claude
 subagents, because Codex was at its usage limit. Instead of per-task reviews there was one
 whole-branch review (Claude opus) after Task 6, before the installer was built, so the installer
@@ -278,7 +278,7 @@ findings are listed in "Plan 4 — deferred findings" below.
 - Add the secrets `TAURI_SIGNING_PRIVATE_KEY` (content of
   `%USERPROFILE%\.tauri\opit-speech-to-text.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (content
   of the `.password` file), then delete the `.password` file.
-- Merge, tag `v0.1.0`, run `docs/RELEASE-CHECKLIST.md` on a clean Windows and publish the draft.
+- Tag `v0.1.0`, run `docs/RELEASE-CHECKLIST.md` on a clean Windows and publish the draft.
 - Apply to SignPath Foundation with `docs/signpath-application.md` after the first release, with
   MFA on.
 - The manual passes still open from Plans 2 and 3.
