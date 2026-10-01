@@ -55,6 +55,7 @@ export interface AppConfig {
     overlay_position: OverlayPosition;
     sound_feedback: boolean;
     setup_done: boolean;
+    check_updates: boolean;
   };
 }
 
@@ -146,12 +147,27 @@ export type StartupNotice =
   | { kind: "user_rules_broken"; reason: string };
 
 export type CommandErrorCode =
-  | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable";
+  | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable" | "update";
 export interface CommandError {
   code: CommandErrorCode;
   message: string;
   kind: ErrorKind | null;
 }
+
+export interface UpdateInfo {
+  version: string;
+  current_version: string;
+  notes: string | null;
+}
+
+/** Mirrors `updates::UpdateState` (crates/app/src/updates.rs). */
+export type UpdateState =
+  | { kind: "idle" }
+  | { kind: "checking" }
+  | { kind: "up_to_date" }
+  | { kind: "available"; info: UpdateInfo }
+  | { kind: "installing"; info: UpdateInfo; downloaded: number; total: number | null }
+  | { kind: "check_failed"; message: string };
 
 export type MicTestEvent = { kind: "level"; value: number } | { kind: "failed"; message: string };
 
