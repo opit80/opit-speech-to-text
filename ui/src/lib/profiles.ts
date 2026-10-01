@@ -19,6 +19,14 @@ export function uniqueProfileId(name: string, existingIds: string[]): string {
   for (let n = 2; ; n++) if (!existingIds.includes(`${base}-${n}`)) return `${base}-${n}`;
 }
 
+/**
+ * The profile a Groq/OpenAI choice stands for: an existing profile with that id is kept as it is
+ * (language, fallback, key name …); the preset is used only when there is none.
+ */
+export function presetProfile(id: string, presets: Profile[], existing: Profile[]): Profile | null {
+  return existing.find((p) => p.id === id) ?? presets.find((p) => p.id === id) ?? null;
+}
+
 export type ProfileProblem = "name" | "base_url" | "model" | "fallback_self" | "fallback_missing";
 
 function validUrl(url: string): boolean {

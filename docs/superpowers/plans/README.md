@@ -190,4 +190,21 @@ belong to the same pass.
     IME composition can still edit it.
   - Playback errors show "Audio could not be encoded" and can toast twice.
   - A whitespace-only query still searches, and the first load waits for the 250 ms debounce.
-- Tasks 8–12 have had no review yet. The final whole-branch review may add items here.
+- Final whole-branch review (Tasks 8–12 had no per-task review):
+  - Settings: the microphone test stops whenever any setting is saved (the device-changed effect in
+    `MicLevelTest` re-runs on every config object), and a hotkey error shows twice (page + app
+    banner).
+  - Wizard: the microphone and mode pickers save twice per change (function bindings into
+    `Select`); the shortcut step shows the raw English hook error instead of
+    `notice.hotkey_failed`.
+  - `HotkeyInput`'s capture UI outlives Rust's 30 s capture auto-expiry.
+  - Rules: a Save click right after editing a table cell is swallowed; adding a blank row
+    re-serializes the whole YAML.
+  - Profiles: turning off "Needs an API key" leaves the old key in Credential Manager.
+  - Wizard provider step: Back during the save can orphan a stored key; Custom → Groq → Custom
+    across Back creates a second custom profile.
+  - A tray "Settings" click during the wizard restarts it at step 1.
+  - Copy: `setup.mic.body` says "Press Test" but the button reads "Test microphone" (en + tr).
+  - Leftovers: `ProfileForm`'s key-lookup error is never cleared; `profiles.delete_body` promises
+    key deletion even for keyless or shared keys; `formatNumber` and the `common.saved_at`/`close`/
+    `add`/`skip`/`done`/`yes`/`no` keys are unused.

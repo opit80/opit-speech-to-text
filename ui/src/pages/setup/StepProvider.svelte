@@ -3,7 +3,7 @@
   import { api } from "../../lib/api";
   import { app, errorText, saveConfig, t } from "../../lib/app.svelte";
   import type { MessageKey } from "../../lib/i18n";
-  import { profileProblems, uniqueProfileId, type ProfileProblem } from "../../lib/profiles";
+  import { presetProfile, profileProblems, uniqueProfileId, type ProfileProblem } from "../../lib/profiles";
   import { toast } from "../../lib/toast.svelte";
   import type { Profile } from "../../lib/types";
   import Banner from "../../lib/components/Banner.svelte";
@@ -72,8 +72,9 @@
   /** The profile this step would store; null until the presets are loaded. */
   const profile = $derived.by((): Profile | null => {
     if (choice !== "custom") {
-      const preset = presets.find((p) => p.id === choice);
-      return preset ? ($state.snapshot(preset) as Profile) : null;
+      // An existing Groq/OpenAI profile is used as it is; only a missing one is added from the preset.
+      const chosen = presetProfile(choice, presets, app.config?.profiles ?? []);
+      return chosen ? ($state.snapshot(chosen) as Profile) : null;
     }
     const template = editingCustom ?? presets.find((p) => !PRESET_IDS.includes(p.id));
     if (!template) return null;
@@ -98,7 +99,8 @@
       (p: ProfileProblem): p is FieldProblem => p === "name" || p === "base_url" || p === "model",
     );
   });
-  const needsKeyNow = $derived(choice !== "custom" || needsKey);
+  // An existing Groq/OpenAI profile may have been set up without a key; it is kept that way.
+  const needsKeyNow = $derived(choice !== "custom" ? profile?.api_key_ref !== null : needsKey);
   // A new custom profile has no stored key yet, so only presets and an edited profile are checked.
   const keyRef = $derived(choice !== "custom" || editingCustom ? (profile?.api_key_ref ?? null) : null);
   const ready = $derived(
@@ -210,6 +212,8 @@
     if (!canNext || !profile || saving || disposed) return;
     const chosen: Profile = $state.snapshot(profile);
     const key = chosen.api_key_ref !== null && keyInput ? keyInput : null;
+    // Only the custom form edits a profile; a chosen Groq/OpenAI profile that exists stays untouched.
+    const edited = choice === "custom";
     saving = true;
     saveError = null;
     try {
@@ -221,8 +225,8 @@
       }
       await saveConfig((c) => {
         const index = c.profiles.findIndex((p) => p.id === chosen.id);
-        if (index >= 0) c.profiles[index] = chosen;
-        else c.profiles.push(chosen);
+        if (index < 0) c.profiles.push(chosen);
+        else if (edited) c.profiles[index] = chosen;
         c.active_profile_id = chosen.id;
       });
       if (!disposed) onnext();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { profileProblems, slugify, uniqueProfileId } from "./profiles";
+import { presetProfile, profileProblems, slugify, uniqueProfileId } from "./profiles";
 import type { Profile } from "./types";
 
 const base: Profile = {
@@ -30,5 +30,27 @@ describe("profileProblems", () => {
   it("rejects a URL without a host and a fallback that does not exist", () => {
     expect(profileProblems({ ...base, base_url: "https://" }, [base])).toEqual(["base_url"]);
     expect(profileProblems({ ...base, fallback_profile_id: "gone" }, [base])).toEqual(["fallback_missing"]);
+  });
+});
+
+describe("presetProfile", () => {
+  const groqPreset: Profile = {
+    ...base, id: "groq", name: "Groq", base_url: "https://api.groq.com/openai/v1", model: "whisper-large-v3",
+    api_key_ref: "groq",
+  };
+  const openaiPreset: Profile = { ...groqPreset, id: "openai", name: "OpenAI", api_key_ref: "openai" };
+  const presets = [groqPreset, openaiPreset];
+
+  it("keeps an existing profile with the preset's id unchanged", () => {
+    const mine: Profile = {
+      ...groqPreset, language: "en", send_prompt: false, fallback_profile_id: "openai", api_key_ref: "work-groq",
+    };
+    expect(presetProfile("groq", presets, [base, mine])).toEqual(mine);
+  });
+  it("falls back to the preset when no such profile exists", () => {
+    expect(presetProfile("openai", presets, [base])).toEqual(openaiPreset);
+  });
+  it("returns null when neither exists", () => {
+    expect(presetProfile("groq", [], [base])).toBeNull();
   });
 });
