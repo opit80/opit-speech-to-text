@@ -49,3 +49,20 @@ fn the_hooks_target_the_apps_data_folder_and_cleanup_flag() {
     assert!(HOOKS.contains(&data), "missing: {data}");
     assert!(HOOKS.contains(&cleanup), "missing: {cleanup}");
 }
+
+#[test]
+fn the_updater_reads_the_github_manifest_and_requires_signed_versions() {
+    let conf = conf();
+    let updater: tauri_plugin_updater::Config =
+        serde_json::from_value(conf["plugins"]["updater"].clone()).expect("plugins.updater parses");
+    let endpoints: Vec<&str> = updater.endpoints.iter().map(|url| url.as_str()).collect();
+    assert_eq!(endpoints, ["https://github.com/opit80/opit-speech-to-text/releases/latest/download/latest.json"]);
+    assert!(updater.require_signed_version);
+    assert!(!updater.allow_downgrades);
+    assert_eq!(updater.windows.as_ref().unwrap().install_mode.to_string(), "passive");
+    assert!(
+        updater.pubkey.len() > 40 && !updater.pubkey.contains(char::is_whitespace),
+        "paste the single base64 line from %USERPROFILE%\\.tauri\\opit-speech-to-text.key.pub"
+    );
+    assert_eq!(conf["bundle"]["createUpdaterArtifacts"], true);
+}
