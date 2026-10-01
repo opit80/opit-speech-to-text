@@ -160,9 +160,14 @@ async fn mic_test_start(app: AppHandle, core: Core<'_>, device: Option<String>) 
         .map_err(|_| CommandError::new("unavailable", "the microphone test stopped unexpectedly"))?
 }
 
+/// Dropping a capture joins its thread, so stopping also runs on the blocking pool.
 #[tauri::command]
-fn mic_test_stop(core: Core<'_>) {
-    core.mic_test_stop();
+async fn mic_test_stop(core: Core<'_>) -> Result<()> {
+    blocking(core.inner().clone(), |core| {
+        core.mic_test_stop();
+        Ok(())
+    })
+    .await
 }
 
 #[tauri::command]
