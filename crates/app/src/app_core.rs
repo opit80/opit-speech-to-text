@@ -345,8 +345,12 @@ impl AppCore {
         if self.status().state != DictationState::Idle {
             return Err(CommandError::new("unavailable", "a dictation is running"));
         }
-        self.mic_test_stop();
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        // Reserve the generation before dropping the old capture, which can block.
         let generation = self.mic_test_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let old = slot.take();
+        drop(slot);
+        drop(old);
         let capture_sink: CaptureSink = Arc::new(move |event| match event {
             CaptureEvent::Level(value) => sink(MicTestEvent::Level { value }),
             CaptureEvent::Failed(message) => sink(MicTestEvent::Failed { message }),
@@ -356,7 +360,15 @@ impl AppCore {
             message: e.to_string(),
             kind: Some(ErrorKind::Microphone),
         })?;
-        *self.mic_test.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, started.capture));
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.mic_test_generation.load(Ordering::SeqCst) != generation {
+            drop(slot);
+            drop(started.capture);
+            return Err(CommandError::new("unavailable", "the microphone test was stopped"));
+        }
+        let old = slot.replace((generation, started.capture));
+        drop(slot);
+        drop(old);
         let core = Arc::downgrade(self);
         std::thread::spawn(move || {
             std::thread::sleep(limit);
@@ -369,7 +381,10 @@ impl AppCore {
 
     /// Stops the test; dropping the capture cancels it (nothing is kept).
     pub fn mic_test_stop(&self) {
-        let taken = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        self.mic_test_generation.fetch_add(1, Ordering::SeqCst);
+        let taken = slot.take();
+        drop(slot);
         drop(taken);
     }
 
@@ -747,6 +762,54 @@ mod tests {
     }
 
     #[test]
+    fn stopping_during_mic_test_start_discards_the_opened_capture() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        let weak = Arc::downgrade(&core);
+        *mic.before_start_returns.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade().unwrap().mic_test_stop();
+        }));
+
+        let err = core.mic_test_start(None, Arc::new(|_| {})).unwrap_err();
+        assert_eq!(err.code, "unavailable");
+        assert_eq!(err.message, "the microphone test was stopped");
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        assert!(core.mic_test.lock().unwrap().is_none(), "nothing remains running");
+    }
+
+    #[test]
+    fn a_newer_mic_test_start_wins_when_the_older_start_returns_last() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        let weak = Arc::downgrade(&core);
+        *mic.before_start_returns.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade().unwrap().mic_test_start(None, Arc::new(|_| {})).unwrap();
+        }));
+
+        let err = core.mic_test_start(None, Arc::new(|_| {})).unwrap_err();
+        assert_eq!(err.code, "unavailable");
+        assert_eq!(mic.starts(), 2);
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        let generation = core.mic_test.lock().unwrap().as_ref().unwrap().0;
+        assert_eq!(generation, core.mic_test_generation.load(Ordering::SeqCst));
+        core.mic_test_stop();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_replaced_mic_tests_timer_keeps_the_new_capture_running() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        core.mic_test_start_for(None, Arc::new(|_| {}), Duration::from_millis(30)).unwrap();
+        core.mic_test_start_for(None, Arc::new(|_| {}), Duration::from_secs(20)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        assert!(core.mic_test.lock().unwrap().is_some());
+        core.mic_test_stop();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn mic_test_errors_carry_the_microphone_kind() {
         let f = fixture();
         *f.mic.fail_start.lock().unwrap() = Some(MicError::NoDevice);
@@ -774,6 +837,21 @@ mod tests {
         core.set_hotkey_capture(true);
         core.set_hotkey_capture(false);
         assert!(*hotkey.paused.lock().unwrap());
+    }
+
+    #[test]
+    fn an_ended_hotkey_captures_timer_keeps_the_restarted_capture_paused() {
+        let f = fixture();
+        let (hotkey, core) = (f.hotkey.clone(), Arc::new(f.core));
+        core.set_hotkey_capture_for(true, Duration::from_millis(30));
+        core.set_hotkey_capture(false);
+        core.set_hotkey_capture_for(true, Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(*hotkey.paused.lock().unwrap());
+        assert!(core.hotkey_capturing.load(Ordering::SeqCst));
+        assert!(!core.hotkey_state().paused, "capture is not the user's pause");
+        core.set_hotkey_capture(false);
+        assert!(!*hotkey.paused.lock().unwrap());
     }
 
     #[test]
