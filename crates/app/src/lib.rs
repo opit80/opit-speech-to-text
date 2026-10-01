@@ -61,6 +61,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         // Must be the first plugin: a second launch focuses this instance and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| window::show_main(app, None)))
+        // In-app updates (updates.rs). Its commands are not exposed to the WebView.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(commands::handler())
         .setup(move |app| {
             setup(app, paths, start_hidden);
