@@ -1,12 +1,12 @@
 // The one place the UI keeps live app state. Filled by commands at start-up, then by events.
 import { api } from "./api";
 import { describeError } from "./errors";
-import { onConfigChanged, onHotkeyState, onNavigate, onStatus, type UnlistenFn } from "./events";
+import { onConfigChanged, onHotkeyState, onNavigate, onStatus, onUpdateState, type UnlistenFn } from "./events";
 import { resolveLang, translate, type MessageKey, type Params } from "./i18n";
 import { parseRoute } from "./route";
 import { navigate } from "./router.svelte";
 import { createSerialQueue } from "./serial";
-import type { AppConfig, AppInfo, DictationStatus, HotkeyState, Lang, StartupNotice } from "./types";
+import type { AppConfig, AppInfo, DictationStatus, HotkeyState, Lang, StartupNotice, UpdateState } from "./types";
 
 interface AppState {
   info: AppInfo | null;
@@ -17,6 +17,8 @@ interface AppState {
   notices: StartupNotice[];
   ready: boolean;
   loadError: string | null;
+  update: UpdateState;
+  updateDismissed: string | null;
 }
 
 export const app = $state<AppState>({
@@ -28,6 +30,8 @@ export const app = $state<AppState>({
   notices: [],
   ready: false,
   loadError: null,
+  update: { kind: "idle" },
+  updateDismissed: null,
 });
 
 /** Reactive in templates: it reads `app.lang`. */
@@ -50,6 +54,7 @@ export async function initApp(): Promise<() => void> {
   let statusSeen = false;
   let configSeen = false;
   let hotkeySeen = false;
+  let updateSeen = false;
   const stops: UnlistenFn[] = [];
   const stop = () => stops.splice(0).forEach((unlisten) => unlisten());
   try {
@@ -67,6 +72,10 @@ export async function initApp(): Promise<() => void> {
         app.hotkey = h;
       }),
       onNavigate((route) => navigate(parseRoute(`#/${route}`))),
+      onUpdateState((u) => {
+        updateSeen = true;
+        app.update = u;
+      }),
     ]);
     for (const result of subscriptions) {
       if (result.status === "fulfilled") stops.push(result.value);
@@ -74,17 +83,19 @@ export async function initApp(): Promise<() => void> {
     for (const result of subscriptions) {
       if (result.status === "rejected") throw result.reason;
     }
-    const [info, config, status, hotkey, notices] = await Promise.all([
+    const [info, config, status, hotkey, notices, update] = await Promise.all([
       api.appInfo(),
       api.getConfig(),
       api.getStatus(),
       api.getHotkeyState(),
       api.takeStartupNotices(),
+      api.getUpdateState(),
     ]);
     app.info = info;
     setConfig(configSeen && app.config ? app.config : config);
     if (!statusSeen) app.status = status;
     if (!hotkeySeen) app.hotkey = hotkey;
+    if (!updateSeen) app.update = update;
     app.notices = notices;
     app.ready = true;
   } catch (error) {

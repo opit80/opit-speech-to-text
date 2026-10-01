@@ -255,6 +255,23 @@ export const en = {
   "settings.log_dir": "Log folder",
   "settings.keys_note": "API keys are stored in Windows Credential Manager, never in these files.",
   "settings.logs_note": "Transcript text is never written to the logs.",
+  "settings.updates": "Updates",
+  "settings.check_updates": "Check for updates automatically",
+  "settings.check_updates_hint": "Asks GitHub for the latest version at start-up and once a day. Nothing else is sent.",
+
+  "update.debug": "Updates work only in the installed app",
+  "update.available": "Version {version} is available.",
+  "update.install": "Install and restart",
+  "update.check_now": "Check now",
+  "update.busy": "Finish the current dictation first.",
+  "update.progress": "Download progress",
+  "update.install_note": "The app closes, the installer runs, and the app opens again. Your settings, history and keys are kept.",
+  "update.status_idle": "Not checked yet.",
+  "update.status_checking": "Checking for updates…",
+  "update.status_up_to_date": "You have the latest version.",
+  "update.status_available": "Version {version} is available (you have {current}).",
+  "update.status_installing": "Downloading version {version}…",
+  "update.status_failed": "Could not check for updates: {message}",
 
   "setup.title": "Set up Opit Speech to Text",
   "setup.step_of": "Step {n} of {total}",
@@ -313,6 +330,7 @@ export const en = {
   "error.code.provider": "Provider error: {message}",
   "error.code.invalid_input": "{message}",
   "error.code.unavailable": "Not available: {message}",
+  "error.code.update": "Update failed: {message}",
   "error.unexpected": "Something went wrong: {message}",
 } as const satisfies Record<string, string>;
 

@@ -8,6 +8,9 @@
   import Button from "./lib/components/Button.svelte";
   import Icon from "./lib/components/Icon.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
+  import { bannerVersion } from "./lib/update";
+  import UpdateInstallButton from "./lib/components/UpdateInstallButton.svelte";
+  import UpdateProgress from "./lib/components/UpdateProgress.svelte";
   import Home from "./pages/Home.svelte";
   import History from "./pages/History.svelte";
   import Rules from "./pages/Rules.svelte";
@@ -31,6 +34,9 @@
   function navKey(route: Route): MessageKey {
     return navKeys[route];
   }
+
+  const updateVersion = $derived(bannerVersion(app.update, app.updateDismissed));
+  const installing = $derived(app.update.kind === "installing" ? app.update : null);
 
   let resumeBusy = $state(false);
   let resumeError = $state<string | null>(null);
@@ -85,7 +91,7 @@
       <div class="version muted">v{app.info?.version}</div>
     </nav>
     <main>
-      {#if app.notices.length || app.hotkey.error || app.hotkey.paused || resumeError}
+      {#if app.notices.length || app.hotkey.error || app.hotkey.paused || resumeError || updateVersion || installing}
         <div class="notices">
           {#each app.notices as notice, i (i)}
             <Banner tone="warning" ondismiss={() => dismissNotice(i)}>
@@ -107,6 +113,17 @@
             </Banner>
           {/if}
           {#if resumeError}<Banner tone="error">{resumeError}</Banner>{/if}
+          {#if installing}
+            <Banner tone="info">
+              {t("update.status_installing", { version: installing.info.version })}
+              <UpdateProgress downloaded={installing.downloaded} total={installing.total} />
+            </Banner>
+          {:else if updateVersion}
+            <Banner tone="info" ondismiss={() => (app.updateDismissed = updateVersion)}>
+              {t("update.available", { version: updateVersion })}
+              {#snippet action()}<UpdateInstallButton />{/snippet}
+            </Banner>
+          {/if}
         </div>
       {/if}
       {#if router.route === "home"}<Home />
