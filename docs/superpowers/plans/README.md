@@ -210,3 +210,18 @@ belong to the same pass.
   - Leftovers: `ProfileForm`'s key-lookup error is never cleared; `profiles.delete_body` promises
     key deletion even for keyless or shared keys; `formatNumber` and the `common.saved_at`/`close`/
     `add`/`skip`/`done`/`yes`/`no` keys are unused.
+
+## Plan 4 — deferred findings
+
+**Deferred findings (candidates for a later plan)** from the final whole-branch review; its three
+Important findings were fixed in one wave:
+- Uninstaller: `hooks.nsh` PREUNINSTALL deletes the credentials before Tauri's
+  `CheckIfAppIsRunning`, so cancelling that prompt keeps the app and config but the keys are gone.
+- `uninstall.rs` finds credentials only via preset refs and refs in the current `config.json`, so
+  keys orphaned by a config reset or a failed `deleteApiKey` stay. The docs promise "every
+  `*.opit-speech-to-text` entry": filter with `CredEnumerateW` or soften the docs.
+- Settings → Updates: `checkNow` writes the command's return value into `app.update`, so a late
+  `checking` reply after the final `update-state` event leaves the page on "Checking…".
+- `release.yml`: a key that does not match the pubkey is only a tauri-cli warning, so CI could
+  publish a draft with useless signatures (add a log-grep step); re-running for the same tag fails
+  at `gh release create` (note it in the checklist).
