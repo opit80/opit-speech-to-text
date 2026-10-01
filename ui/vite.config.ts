@@ -1,5 +1,5 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [svelte()],
@@ -15,5 +15,10 @@ export default defineConfig({
     emptyOutDir: true,
     // WebView2 (Chromium) on Windows.
     target: "chrome105",
+  },
+  test: {
+    // Only pure modules are unit-tested; they need no DOM.
+    environment: "node",
+    include: ["src/**/*.test.ts"],
   },
 });
