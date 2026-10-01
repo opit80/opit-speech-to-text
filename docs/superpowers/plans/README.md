@@ -9,7 +9,7 @@ guessed ones.
 |---|---|---|---|
 | 1 | [Core library + eval CLI](2026-09-30-plan-1-core-and-eval.md) | `opit-core` (audio prep, provider client, rule engine, prompt builder, history, config) and `opit-eval`, which measures WER/term accuracy against a real provider | **done** — merged to `main`, 144 tests green, final review fixed |
 | 2 | [Tauri app shell](2026-09-30-plan-2-app-shell.md) | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **merged** to `main` (2026-10-01): 15 tasks, final whole-branch review clean after one fix wave; app 114 tests + 9 ignored smoke tests, core 134 + 3. Manual end-to-end pass (Task 15 Steps 2–7) still open |
-| 3 | [Svelte UI](2026-10-01-plan-3-ui.md) | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | **code complete** on `feat/plan-3-ui` (2026-10-01): 12 tasks; app 135 tests + 9 ignored, core 142 + 3, UI 40 Vitest tests, `svelte-check` 0 errors / 0 warnings. The final whole-branch review and the manual pass (Task 12 Step 2) are still open. Not merged yet |
+| 3 | [Svelte UI](2026-10-01-plan-3-ui.md) | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | **code complete** on `feat/plan-3-ui` (2026-10-01): 12 tasks; app 135 tests + 9 ignored, core 142 + 3, UI 43 Vitest tests, `svelte-check` 0 errors / 0 warnings. Final whole-branch review: 0 Critical, 1 Important (fixed), 13 Minor (deferred). The manual pass (Task 12 Step 2) is still open. Not merged yet |
 | 4 | Release | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | after plan 3 |
 
 ## Plan 1 outcome — what later plans build on
@@ -88,8 +88,10 @@ when history is on, `set_active_profile` reads the config under `config_lock`, a
 **Status:** code complete on `feat/plan-3-ui` (2026-10-01). Of the 12 tasks, Tasks 2–8 were
 written by Codex (gpt-6.1-sol, reasoning high). Claude wrote Task 1 (the rescue agent wrote the
 code itself) and Tasks 9–12 (Claude subagents after Codex hit its usage limit). Tasks 1–7 had a
-per-task review. Tasks 8–12 had none, by the user's choice, and wait for the final whole-branch
-review and one fix wave. The branch is not merged.
+per-task review. Tasks 8–12 had none, by the user's choice. The final whole-branch review (Claude opus) found
+0 Critical and 1 Important (the wizard reset an existing Groq/OpenAI profile to the preset), fixed
+in one wave by a Claude subagent; its 13 Minor findings are in the deferred list below. The branch
+is not merged.
 
 **Contract changes for the UI** (the full table is in the Plan 3 file, "UI contract after this plan"):
 - `app_info` now returns `AppInfo { version, data_dir, log_dir, system_locale, debug_build }`.
