@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
-  Profile, RulePack, RulesPreview, RuleWarning, StartupNotice,
+  Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState,
 } from "./types";
 
 export const api = {
@@ -51,4 +51,9 @@ export const api = {
   setHotkeyPaused: (paused: boolean) => invoke<HotkeyState>("set_hotkey_paused", { paused }),
   setHotkeyCapture: (active: boolean) => invoke<void>("set_hotkey_capture", { active }),
   validateHotkey: (keys: string[]) => invoke<void>("validate_hotkey", { keys }),
+
+  getUpdateState: () => invoke<UpdateState>("get_update_state"),
+  checkForUpdates: () => invoke<UpdateState>("check_for_updates"),
+  /** On success the app exits and the installer runs, so this may never settle. */
+  installUpdate: () => invoke<void>("install_update"),
 };

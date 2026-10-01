@@ -22,6 +22,7 @@ serde_json.workspace = true
 sys-locale.workspace = true
 tauri = { workspace = true, features = ["tray-icon"] }
 tauri-plugin-single-instance.workspace = true
+tauri-plugin-updater.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true

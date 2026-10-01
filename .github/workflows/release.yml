@@ -1,0 +1,48 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds the signed NSIS installer and the updater manifest and attaches
+# them to a DRAFT GitHub Release. Nothing reaches users until a person runs
+# docs/RELEASE-CHECKLIST.md and publishes the draft (releases/latest ignores drafts).
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Check the tag against the app version
+        run: node scripts/release/latest-json.mjs check-version "${{ github.ref_name }}"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+      - name: Install the Tauri CLI (same version as the tauri crate)
+        run: cargo install tauri-cli --version 2.12.0 --locked
+      - name: Test
+        run: cargo test --workspace
+      - name: Build the signed installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --ci
+      - name: Prepare the release assets and latest.json
+        run: node scripts/release/latest-json.mjs assets "${{ github.ref_name }}" target/release/bundle/nsis release-assets
+      - name: Create the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "${{ github.ref_name }}" release-assets/*
+          --draft --verify-tag --generate-notes
+          --title "Opit Speech to Text ${{ github.ref_name }}"

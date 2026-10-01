@@ -17,7 +17,7 @@ use opit_core::config::HotkeyMode;
 use opit_core::history::NewDictation;
 use opit_core::pipeline::{self, PipelineContext, PipelineError, PreparedAudio, Transcript, TranscriptStatus};
 use opit_core::provider::{Profile, Transcriber};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 use tracing::{info, warn};
 
@@ -126,6 +126,10 @@ pub enum Msg {
         session: u64,
         outcome: PasteOutcome,
     },
+    /// An update wants to install (the installer closes the app). Answers true, and refuses new
+    /// dictations until released, only while idle. See [`ControllerHandle::hold_for_update`].
+    HoldForUpdate(oneshot::Sender<bool>),
+    ReleaseUpdateHold,
 }
 
 #[derive(Clone)]
@@ -135,6 +139,17 @@ pub struct ControllerHandle {
 }
 
 pub struct Inbox(mpsc::UnboundedReceiver<Msg>);
+
+/// While alive, new dictations and "Try again" are refused; dropping it lifts the hold.
+pub struct UpdateHold {
+    tx: mpsc::UnboundedSender<Msg>,
+}
+
+impl Drop for UpdateHold {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Msg::ReleaseUpdateHold);
+    }
+}
 
 /// Creates the handle first so the overlay and hotkey sinks can exist before the
 /// controller that consumes them.
@@ -156,6 +171,7 @@ pub fn run<P: Providers>(
         phase: Phase::Idle,
         session: 0,
         retry: None,
+        update_holds: 0,
     };
     controller.serve(inbox)
 }
@@ -168,6 +184,15 @@ impl ControllerHandle {
 
     pub fn status(&self) -> DictationStatus {
         self.status.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Stops new dictations so an update can install. `None` while a dictation is recording,
+    /// transcribing or pasting (or after shutdown). The controller answers in order with its
+    /// other messages, so no dictation can slip in between the answer and the hold.
+    pub async fn hold_for_update(&self) -> Option<UpdateHold> {
+        let (reply, answer) = oneshot::channel();
+        self.send(Msg::HoldForUpdate(reply));
+        answer.await.unwrap_or(false).then(|| UpdateHold { tx: self.tx.clone() })
     }
 
     pub fn hotkey_sink(&self) -> HotkeySink {
@@ -239,6 +264,8 @@ struct Controller<P: Providers> {
     session: u64,
     /// Prepared audio of the last failed dictation, for "Try again".
     retry: Option<Arc<PreparedAudio>>,
+    /// Live [`UpdateHold`]s; no dictation starts while there is one.
+    update_holds: usize,
 }
 
 impl<P: Providers> Controller<P> {
@@ -270,6 +297,14 @@ impl<P: Providers> Controller<P> {
             Msg::Salvaged { session, result } => self.on_salvaged(session, result),
             Msg::Transcribed { session, audio, result } => self.on_transcribed(session, audio, result),
             Msg::Pasted { session, outcome } => self.on_pasted(session, outcome),
+            Msg::HoldForUpdate(reply) => {
+                let idle = matches!(self.phase, Phase::Idle);
+                // A hold whose caller is already gone would never be released.
+                if reply.send(idle).is_ok() && idle {
+                    self.update_holds += 1;
+                }
+            }
+            Msg::ReleaseUpdateHold => self.update_holds = self.update_holds.saturating_sub(1),
             Msg::Shutdown => {}
         }
     }
@@ -320,7 +355,21 @@ impl<P: Providers> Controller<P> {
         Ok(Clients { primary, fallback })
     }
 
+    /// True (and says so on the overlay) while an update is installing.
+    fn held_for_update(&self) -> bool {
+        if self.update_holds == 0 {
+            return false;
+        }
+        info!("an update is installing; dictation not started");
+        let lang = self.env.settings.current().lang;
+        self.env.overlay.show(view(Tone::Neutral, lang.update_installing(), Some(INFO_HIDE)));
+        true
+    }
+
     fn start(&mut self) {
+        if self.held_for_update() {
+            return;
+        }
         let settings = self.env.settings.current();
         let clients = match self.clients(&settings) {
             Ok(clients) => clients,
@@ -387,6 +436,9 @@ impl<P: Providers> Controller<P> {
         let Some(audio) = self.retry.clone() else {
             return;
         };
+        if self.held_for_update() {
+            return;
+        }
         let settings = self.env.settings.current();
         let clients = match self.clients(&settings) {
             Ok(clients) => clients,

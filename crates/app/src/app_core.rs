@@ -141,6 +141,12 @@ pub struct AppCore {
     bad_config_kept: AtomicBool,
 }
 
+/// Start with Windows only once the first-run wizard was finished or skipped, so a fresh install
+/// never registers itself before the user has seen the choice (spec §7, Plan 4 ruling).
+pub fn autostart_wanted(config: &AppConfig) -> bool {
+    config.ui.autostart && config.ui.setup_done
+}
+
 impl AppCore {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -252,8 +258,8 @@ impl AppCore {
         if old.ui.overlay_position != config.ui.overlay_position {
             self.platform.overlay.set_position(config.ui.overlay_position);
         }
-        if old.ui.autostart != config.ui.autostart {
-            self.apply_autostart(config.ui.autostart);
+        if autostart_wanted(&old) != autostart_wanted(&config) {
+            self.apply_autostart(autostart_wanted(&config));
         }
         info!("config saved");
         Ok(config)
@@ -685,8 +691,7 @@ mod tests {
         config.hotkey.mode = HotkeyMode::PushToTalk;
         config.hotkey.keys = vec!["F9".into()];
         config.ui.overlay_position = OverlayPosition::TopCenter;
-        config.ui.autostart = false;
-        *f.autostart.enabled.lock().unwrap() = true;
+        config.ui.setup_done = true;
 
         let saved = f.core.save_config(config).unwrap();
         assert_eq!(saved.recording.max_seconds, 600);
@@ -694,6 +699,63 @@ mod tests {
         assert_eq!(f.core.settings.current().config, saved);
         assert_eq!(*f.hotkey.registered.lock().unwrap(), [vec!["F9".to_string()]]);
         assert_eq!(*f.overlay.positions.lock().unwrap(), [OverlayPosition::TopCenter]);
+        assert!(*f.autostart.enabled.lock().unwrap(), "finishing the wizard applies the default autostart");
+    }
+
+    #[test]
+    fn autostart_needs_both_the_setting_and_a_finished_wizard() {
+        let mut config = AppConfig::default();
+        assert!(config.ui.autostart && !config.ui.setup_done, "defaults: on, wizard not done");
+        assert!(!autostart_wanted(&config));
+        config.ui.setup_done = true;
+        assert!(autostart_wanted(&config));
+        config.ui.autostart = false;
+        assert!(!autostart_wanted(&config));
+    }
+
+    #[test]
+    fn autostart_waits_until_the_wizard_is_finished_or_skipped() {
+        let f = fixture();
+        f.core
+            .update_config(|c| {
+                c.paste.trailing_space = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!*f.autostart.enabled.lock().unwrap(), "nothing is registered before the wizard ends");
+
+        f.core
+            .update_config(|c| {
+                c.ui.setup_done = true;
+                Ok(())
+            })
+            .unwrap();
+        assert!(*f.autostart.enabled.lock().unwrap(), "finish/skip applies the (default) choice");
+
+        f.core
+            .update_config(|c| {
+                c.ui.autostart = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!*f.autostart.enabled.lock().unwrap());
+    }
+
+    #[test]
+    fn a_wizard_that_turned_autostart_off_never_registers_it() {
+        let f = fixture();
+        f.core
+            .update_config(|c| {
+                c.ui.autostart = false;
+                Ok(())
+            })
+            .unwrap();
+        f.core
+            .update_config(|c| {
+                c.ui.setup_done = true;
+                Ok(())
+            })
+            .unwrap();
         assert!(!*f.autostart.enabled.lock().unwrap());
     }
 

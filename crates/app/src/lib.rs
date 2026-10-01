@@ -13,6 +13,8 @@ pub mod settings;
 pub mod startup;
 pub mod tray;
 pub mod tray_menu;
+pub mod uninstall;
+pub mod updates;
 pub mod window;
 
 use std::sync::Arc;
@@ -38,6 +40,10 @@ use crate::startup::Paths;
 pub const AUTOSTART_FLAG: &str = "--autostart";
 
 pub fn run() {
+    // The uninstaller's clean-up (windows/hooks.nsh): no window, no tray, no log file.
+    if std::env::args().any(|arg| arg == uninstall::DELETE_CREDENTIALS_FLAG) {
+        std::process::exit(uninstall::run());
+    }
     let start_hidden = std::env::args().any(|arg| arg == AUTOSTART_FLAG);
     let Some(paths) = Paths::from_system() else {
         eprintln!("Opit Speech to Text: the AppData folder could not be found");
@@ -56,6 +62,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         // Must be the first plugin: a second launch focuses this instance and exits.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| window::show_main(app, None)))
+        // In-app updates (updates.rs). Its commands are not exposed to the WebView.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(commands::handler())
         .setup(move |app| {
             setup(app, paths, start_hidden);
@@ -79,6 +87,8 @@ pub fn run() {
 }
 
 fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
+    // Before anything can emit or invoke: `app.state::<UpdateService>()` panics without it.
+    app.manage(updates::UpdateService::default());
     let handle = app.handle().clone();
     let loaded = startup::load_config(&paths.config, now_ms());
     let (user_pack, rules_notice) = startup::load_user_pack(&paths.user_rules);
@@ -89,6 +99,10 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         warn!(pack = %warning.pack_id, message = %warning.message, "rule skipped");
     }
     let settings = SettingsHandle::new(settings);
+    // Release builds only: a dev build must never pull an installer over the installed app.
+    if !cfg!(debug_assertions) {
+        updates::spawn_auto_check(handle.clone(), settings.clone());
+    }
 
     let history = match HistoryService::open(&paths.history_db, paths.audio.clone()) {
         Ok(history) => {
@@ -156,7 +170,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     let platform = Platform { secrets, hotkey, mic, overlay: overlay.clone(), autostart };
     let core = Arc::new(AppCore::new(paths, settings, controller, history, platform, user_pack, locale, notices));
     core.apply_hotkey(&config);
-    core.apply_autostart(config.ui.autostart);
+    core.apply_autostart(app_core::autostart_wanted(&config));
     if let Some(view) = core.startup_overlay() {
         overlay.show(view);
     }
