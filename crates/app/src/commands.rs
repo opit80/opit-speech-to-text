@@ -7,12 +7,13 @@ use std::sync::Arc;
 use opit_core::config::AppConfig;
 use opit_core::history::Dictation;
 use opit_core::provider::Profile;
-use opit_core::rules::RuleWarning;
+use opit_core::rules::builtin::PackInfo;
 use opit_core::rules::prompt::BuiltPrompt;
+use opit_core::rules::{RulePack, RuleWarning};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::app_core::{AppCore, CommandError, HotkeyState, RulesPreview};
+use crate::app_core::{AppCore, CommandError, CorrectionDraft, HotkeyState, RulesPreview};
 use crate::controller::{DictationStatus, Msg};
 use crate::startup::StartupNotice;
 use crate::{events, tray};
@@ -52,6 +53,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         get_config,
         save_config,
         set_active_profile,
+        profile_presets,
         list_microphones,
         has_api_key,
         set_api_key,
@@ -61,10 +63,15 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         save_user_rules,
         rules_preview,
         prompt_budget,
+        rule_packs,
+        parse_user_rules,
+        render_user_rules,
+        correction_draft,
         history_recent,
         history_search,
         history_delete,
         history_clear,
+        history_audio,
         get_hotkey_state,
         set_hotkey_paused,
         take_startup_notices,
@@ -123,6 +130,13 @@ async fn set_active_profile(app: AppHandle, core: Core<'_>, id: String) -> Resul
     Ok(saved)
 }
 
+/// Groq, OpenAI, and a blank custom template (the UI fills in id, name, URL and model).
+#[tauri::command]
+fn profile_presets() -> Vec<Profile> {
+    use opit_core::provider::presets;
+    vec![presets::groq(), presets::openai(), presets::custom("custom", "", "", "")]
+}
+
 /// Device enumeration can take a moment, so it runs off the main thread.
 #[tauri::command]
 async fn list_microphones(core: Core<'_>) -> Result<Vec<String>> {
@@ -174,6 +188,26 @@ fn prompt_budget(core: Core<'_>) -> BuiltPrompt {
 }
 
 #[tauri::command]
+fn rule_packs() -> Vec<PackInfo> {
+    opit_core::rules::builtin::pack_infos()
+}
+
+#[tauri::command]
+fn parse_user_rules(yaml: String) -> Result<RulePack> {
+    AppCore::parse_user_rules(&yaml)
+}
+
+#[tauri::command]
+fn render_user_rules(pack: RulePack, previous_yaml: String) -> Result<String> {
+    AppCore::render_user_rules(&pack, &previous_yaml)
+}
+
+#[tauri::command]
+async fn correction_draft(core: Core<'_>, canonical: String, variant: String) -> Result<CorrectionDraft> {
+    blocking(core.inner().clone(), move |core| core.correction_draft(&canonical, &variant)).await
+}
+
+#[tauri::command]
 async fn history_recent(core: Core<'_>, limit: usize, before_id: Option<i64>) -> Result<Vec<Dictation>> {
     blocking(core.inner().clone(), move |core| core.history_recent(limit, before_id)).await
 }
@@ -191,6 +225,12 @@ async fn history_delete(core: Core<'_>, id: i64) -> Result<()> {
 #[tauri::command]
 async fn history_clear(core: Core<'_>) -> Result<()> {
     blocking(core.inner().clone(), AppCore::history_clear).await
+}
+
+#[tauri::command]
+async fn history_audio(core: Core<'_>, id: i64) -> Result<tauri::ipc::Response> {
+    let bytes = blocking(core.inner().clone(), move |core| core.history_audio(id)).await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]
