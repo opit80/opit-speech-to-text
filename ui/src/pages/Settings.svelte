@@ -14,6 +14,9 @@
   import PageHeader from "../lib/components/PageHeader.svelte";
   import Select from "../lib/components/Select.svelte";
   import Switch from "../lib/components/Switch.svelte";
+  import UpdateInstallButton from "../lib/components/UpdateInstallButton.svelte";
+  import UpdateProgress from "../lib/components/UpdateProgress.svelte";
+  import { statusMessage } from "../lib/update";
 
   let errors = $state<Record<string, string | null>>({});
   // Bumped after a failed change: the controls re-read the live value and drop what the user picked.
@@ -80,6 +83,7 @@
       overlay: c.ui.overlay_position as string,
       historyEnabled: c.history.enabled,
       saveAudio: c.history.save_audio,
+      checkUpdates: c.ui.check_updates,
     };
   });
 
@@ -154,6 +158,20 @@
     const stored = String(read(app.config));
     input.value = stored;
     if (drafts[field] != null) drafts[field] = stored;
+  }
+
+  // ---- Updates
+  const debugBuild = $derived(app.info?.debug_build ?? false);
+  const updateStatus = $derived(statusMessage(app.update));
+  const installing = $derived(app.update.kind === "installing" ? app.update : null);
+
+  async function checkNow() {
+    errors.update_check = null;
+    try {
+      app.update = await api.checkForUpdates();
+    } catch (e) {
+      if (!disposed) errors.update_check = errorText(e);
+    }
   }
 
   // ---- About
@@ -287,6 +305,22 @@
         {@render numberInput("retention", t("settings.retention"), undefined, 1, 365, 1,
           !config.history.enabled || !config.history.save_audio,
           (c) => c.history.audio_retention_days, (c, n) => { c.history.audio_retention_days = n; })}
+      </section>
+
+      <section class="card stack" aria-labelledby="settings-updates">
+        <h2 id="settings-updates">{t("settings.updates")}</h2>
+        <Switch label={t("settings.check_updates")} checked={view.checkUpdates} disabled={debugBuild}
+          hint={debugBuild ? t("update.debug") : t("settings.check_updates_hint")}
+          onchange={(v) => void save("check_updates", (c) => { c.ui.check_updates = v; })} />
+        {@render fieldError("check_updates")}
+        <p role="status">{t(updateStatus.key, updateStatus.params)}</p>
+        {#if installing}<UpdateProgress downloaded={installing.downloaded} total={installing.total} />{/if}
+        <div class="row">
+          <Button busy={app.update.kind === "checking"} disabled={debugBuild || installing !== null}
+            onclick={() => void checkNow()}>{t("update.check_now")}</Button>
+          {#if app.update.kind === "available"}<UpdateInstallButton />{/if}
+        </div>
+        {@render fieldError("update_check")}
       </section>
 
       <section class="card stack" aria-labelledby="settings-about">

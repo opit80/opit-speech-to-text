@@ -10,7 +10,7 @@ guessed ones.
 | 1 | [Core library + eval CLI](2026-09-30-plan-1-core-and-eval.md) | `opit-core` (audio prep, provider client, rule engine, prompt builder, history, config) and `opit-eval`, which measures WER/term accuracy against a real provider | **done** — merged to `main`, 144 tests green, final review fixed |
 | 2 | [Tauri app shell](2026-09-30-plan-2-app-shell.md) | `crates/app`: platform layer (cpal mic, WH_KEYBOARD_LL hotkey, SendInput paste, Win32 overlay, keyring, sounds, autostart), dictation controller state machine, tray, window lifecycle, `commands.rs` invoke API, `tracing` logs. Dictation works end to end with a hand-edited `config.json` | **merged** to `main` (2026-10-01): 15 tasks, final whole-branch review clean after one fix wave; app 114 tests + 9 ignored smoke tests, core 134 + 3. Manual end-to-end pass (Task 15 Steps 2–7) still open |
 | 3 | [Svelte UI](2026-10-01-plan-3-ui.md) | First-run wizard, Home/History/Rules/Profiles/Settings pages, en + tr i18n, "add correction rule" flow, rules preview | **merged** to `main` (2026-10-01): 12 tasks; app 135 tests + 9 ignored, core 142 + 3, UI 43 Vitest tests, `svelte-check` 0 errors / 0 warnings. Final whole-branch review: 0 Critical, 1 Important (fixed), 13 Minor (deferred). The manual pass (Task 12 Step 2) is still open |
-| 4 | Release | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | after plan 3 |
+| 4 | [Release](2026-10-01-plan-4-release.md) | NSIS currentUser installer, `tauri-plugin-updater` + GitHub Releases (minisign), release workflow, README, `docs/RELEASE-CHECKLIST.md`, SignPath application | **code complete on `feat/plan-4-release`** (2026-10-01): 7 tasks plus one fix wave; app 151 tests + 9 ignored, core 143 + 3, UI 51 Vitest tests, release script 6 `node:test` tests. Final whole-branch review: 0 Critical, 3 Important (fixed), 4 Minor (deferred). Not merged, nothing published; a signed installer was built locally for review |
 
 ## Plan 1 outcome — what later plans build on
 
@@ -210,3 +210,96 @@ belong to the same pass.
   - Leftovers: `ProfileForm`'s key-lookup error is never cleared; `profiles.delete_body` promises
     key deletion even for keyless or shared keys; `formatNumber` and the `common.saved_at`/`close`/
     `add`/`skip`/`done`/`yes`/`no` keys are unused.
+
+## Plan 4 outcome
+
+**Status:** code complete on `feat/plan-4-release` (2026-10-01), not merged, nothing published (no
+GitHub repo, push, tag or release). Tasks 1–7 and the fix wave were implemented by Claude
+subagents, because Codex was at its usage limit. Instead of per-task reviews there was one
+whole-branch review (Claude opus) after Task 6, before the installer was built, so the installer
+below includes its fixes. It found 0 Critical, 3 Important and 4 Minor issues. The 3 Important
+findings were fixed in one wave (`e6fb3a5`, `e8605ba`): a failed install now shows its error, update
+checks and downloads time out, and dictations are refused while an update installs. The 4 Minor
+findings are listed in "Plan 4 — deferred findings" below.
+
+**Installer for review** (built by Task 7 with the real signing key; not run):
+- Setup exe:
+  `C:\projelerim\whisper\speechtotextexe\target\plan4-release\release\bundle\nsis\Opit Speech to Text_0.1.0_x64-setup.exe`
+  (+ `.sig`). It was built with `CARGO_TARGET_DIR=target\plan4-release`, because the older app
+  running from `target\release` locks that exe.
+- Size: 6,078,034 bytes = **5.80 MB** (spec §1: < 15 MB).
+- SHA-256: `E62DD69EDA95E498AD79B85EBEF82B22A1A3C6112E44B80D389366E0463DBCE8`.
+- Trusted comment of the updater signature:
+  `trusted comment: timestamp:1790830397	file:Opit Speech to Text_0.1.0_x64-setup.exe	version:0.1.0`
+  (contains `version:0.1.0`, as `requireSignedVersion` needs). The build log has no "does not match
+  the public key" line.
+- `release-assets\` (repo root, ignored) holds the renamed copy
+  `opit-speech-to-text_0.1.0_x64-setup.exe`, its `.sig`, and `latest.json` (version `0.1.0`, URL
+  `https://github.com/opit80/opit-speech-to-text/releases/download/v0.1.0/opit-speech-to-text_0.1.0_x64-setup.exe`).
+
+**Rulings applied:**
+- Ruling: `ui.autostart` keeps its default `true`, but the app writes the Run value only when `ui.autostart && ui.setup_done` (`app_core::autostart_wanted`). Start-up applies that rule, so a fresh install removes any stale value until the wizard is finished or skipped, and finishing or skipping applies the user's choice at once. The installer never writes the Run key. Tauri's uninstaller already deletes the value named after `productName`, which is our `VALUE_NAME`. Cost if wrong: a user who closes the wizard without finishing or skipping it gets no autostart until they do. That is one click, and reverting is a one-line change in `autostart_wanted`. This also meets SignPath's rule that the software does not change system configuration without a warning.
+- Ruling: "delete my data" is Tauri's own uninstaller checkbox, "Delete the application data" / "Uygulama verilerini sil". It is unchecked by default and ignored in update mode. Out of the box it removes `%APPDATA%\<identifier>` and `%LOCALAPPDATA%\<identifier>` (WebView2 data). Our `hooks.nsh` extends it to `%APPDATA%\opit-speech-to-text\` and to this app's Credential Manager entries: the uninstaller runs `opit-speech-to-text.exe --delete-credentials` while the exe still exists. When the box is left unticked, the uninstaller removes only the program, the shortcuts and the Run value, and the data stays for a reinstall. Cost if wrong: an unticked box leaves data behind (the README documents manual removal), and a mis-guarded hook would wipe data during an update. Task 1's guard test and the checklist's update line exist to catch that.
+
+**View the app (user, before any release):**
+1. Close the old app that runs from `target\release`: tray icon → Quit (Çıkış). The installed app is a
+   single instance, so it will not start while the old one runs.
+2. Back up `%APPDATA%\opit-speech-to-text\rules\user.yaml` (the installed app uses the real data
+   folder). Backing up the whole `%APPDATA%\opit-speech-to-text\` folder is safer still.
+3. Run the setup exe above. A locally built file has no internet mark, so SmartScreen does not
+   appear here; it will for downloaded releases. Expect no UAC prompt, English or Turkish pages,
+   install to `%LOCALAPPDATA%\Opit Speech to Text`, and "Run" on the last page.
+4. If `setup_done` is still false in your config, the wizard opens. (Your current `config.json` has
+   no `setup_done` field, so it will.) The Run value must not exist before Finish/Skip
+   (`reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v "Opit Speech to Text"`) and
+   must exist after it, if left checked, now pointing at the installed exe instead of
+   `target\release`.
+5. Settings → Updates: the switch is on, and **Check now** shows "Could not check for updates:
+   Could not fetch a valid release JSON from the remote". This is expected until the GitHub repo
+   and a release exist. No banner appears.
+6. One real dictation with the shortcut, the tray menu, and tray RAM in Task Manager (< 40 MB).
+7. Optional: uninstall without ticking "Delete the application data" and confirm the data stays.
+   Tick it only on a machine whose data you have backed up.
+
+**Automated run (Task 7 Step 1, 2026-10-01, Windows):**
+- `cargo fmt --all --check`: clean. `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: core 143 passed + `pipeline_http` 3; eval 9 + `run_eval` 2; app 151
+  passed, 9 ignored (hardware/desktop smoke tests) + `logging_init` 1 + `tauri_conf` 5; 0 failed.
+- `node --test scripts/release/latest-json.test.mjs`: 6 passed.
+- `npm ci`: 0 vulnerabilities. `npm run check`: 167 files, 0 errors, 0 warnings. `npm test`: 10
+  files, 51 tests passed. `npm run build`: 191 modules, JS 205.63 kB (63.12 kB gzip), CSS 21.11 kB.
+- `cargo tauri build --ci` (signed): release build in 1 m 47 s, one NSIS bundle and one updater
+  signature.
+
+**What the user must do before the first release:**
+- Back up `%USERPROFILE%\.tauri\opit-speech-to-text.key`, its `.pub` and the password (password
+  manager). They cannot be recreated, and losing them strands every installed copy.
+- Create the GitHub repo `opit80/opit-speech-to-text` and push `main`.
+- Add the secrets `TAURI_SIGNING_PRIVATE_KEY` (content of
+  `%USERPROFILE%\.tauri\opit-speech-to-text.key`) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (content
+  of the `.password` file), then delete the `.password` file.
+- Merge, tag `v0.1.0`, run `docs/RELEASE-CHECKLIST.md` on a clean Windows and publish the draft.
+- Apply to SignPath Foundation with `docs/signpath-application.md` after the first release, with
+  MFA on.
+- The manual passes still open from Plans 2 and 3.
+
+**Deferred (not in this plan):** SignPath integration in the workflow; release notes shown inside
+the app (the `notes` field is not displayed); a tray menu entry for updates. Found while executing
+the plan: a stalled update download fails only after the 10-minute total timeout (an idle timeout
+would need `configure_client` and a direct reqwest dependency). The final review's Minor findings
+are in the next section.
+
+## Plan 4 — deferred findings
+
+**Deferred findings (candidates for a later plan)** from the final whole-branch review; its three
+Important findings were fixed in one wave:
+- Uninstaller: `hooks.nsh` PREUNINSTALL deletes the credentials before Tauri's
+  `CheckIfAppIsRunning`, so cancelling that prompt keeps the app and config but the keys are gone.
+- `uninstall.rs` finds credentials only via preset refs and refs in the current `config.json`, so
+  keys orphaned by a config reset or a failed `deleteApiKey` stay. The docs promise "every
+  `*.opit-speech-to-text` entry": filter with `CredEnumerateW` or soften the docs.
+- Settings → Updates: `checkNow` writes the command's return value into `app.update`, so a late
+  `checking` reply after the final `update-state` event leaves the page on "Checking…".
+- `release.yml`: a key that does not match the pubkey is only a tauri-cli warning, so CI could
+  publish a draft with useless signatures (add a log-grep step); re-running for the same tag fails
+  at `gh release create` (note it in the checklist).

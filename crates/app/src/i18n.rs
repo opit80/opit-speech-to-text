@@ -94,6 +94,10 @@ impl Lang {
         self.pick("Personal rules could not be read", "Kişisel kurallar okunamadı")
     }
 
+    pub fn update_installing(self) -> &'static str {
+        self.pick("Installing an update…", "Güncelleme yükleniyor…")
+    }
+
     pub fn hotkey_failed(self) -> &'static str {
         self.pick("Shortcut unavailable — use the tray icon", "Kısayol kurulamadı — tray simgesini kullan")
     }
