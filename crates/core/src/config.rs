@@ -139,6 +139,8 @@ pub struct UiConfig {
     pub autostart: bool,
     pub overlay_position: OverlayPosition,
     pub sound_feedback: bool,
+    /// The first-run wizard was finished or skipped.
+    pub setup_done: bool,
 }
 
 impl Default for UiConfig {
@@ -148,6 +150,7 @@ impl Default for UiConfig {
             autostart: true,
             overlay_position: OverlayPosition::RightCenter,
             sound_feedback: true,
+            setup_done: false,
         }
     }
 }
@@ -261,6 +264,7 @@ mod tests {
         assert_eq!(c.rules.enabled_packs, ["tr-core", "tr-tech"]);
         assert!(!c.ui.start_in_tray && c.ui.autostart && c.ui.sound_feedback);
         assert_eq!(c.ui.overlay_position, OverlayPosition::RightCenter);
+        assert!(!c.ui.setup_done);
     }
 
     #[test]
@@ -346,5 +350,13 @@ mod tests {
         c.save(&path).unwrap();
         c.save(&path).unwrap();
         assert_eq!(AppConfig::load(&path).unwrap(), c);
+    }
+
+    #[test]
+    fn a_config_without_setup_done_loads_as_not_done() {
+        let json = r#"{"schema_version":1,"ui":{"start_in_tray":true}}"#;
+        let c = AppConfig::from_json(json).unwrap();
+        assert!(c.ui.start_in_tray);
+        assert!(!c.ui.setup_done);
     }
 }

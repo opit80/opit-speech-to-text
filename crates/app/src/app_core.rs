@@ -1,22 +1,24 @@
 //! Everything the invoke commands and the tray do, without Tauri types, so it can be
 //! tested with the platform fakes. `commands.rs` is a thin wrapper over this.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use opit_core::config::{AppConfig, ConfigError};
 use opit_core::history::{Dictation, HistoryError};
 use opit_core::provider::{OpenAiCompatible, Profile, ProviderError};
+use opit_core::rules::pack::{CorrectionOutcome, header_comments};
 use opit_core::rules::prompt::{BuiltPrompt, build_prompt};
 use opit_core::rules::{PackError, RuleHit, RulePack, RuleSet, RuleWarning};
 use serde::Serialize;
 use tracing::{info, warn};
 
-use crate::controller::{ControllerHandle, DictationStatus, ErrorKind};
+use crate::controller::{ControllerHandle, DictationState, DictationStatus, ErrorKind};
 use crate::history_service::HistoryService;
 use crate::platform::{
-    Autostart, Hotkey, HotkeyError, Microphone, Overlay, OverlayView, SecretError, SecretStore, Tone,
+    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, Microphone, Overlay, OverlayView, SecretError,
+    SecretStore, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::{self, Paths, StartupNotice};
@@ -76,12 +78,31 @@ pub struct RulesPreview {
     pub hallucination: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CorrectionDraft {
+    /// The new `user.yaml` text; not saved yet.
+    pub yaml: String,
+    pub outcome: CorrectionOutcome,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HotkeyState {
     pub paused: bool,
     /// Why the global hook is not working, if it is not.
     pub error: Option<String>,
 }
+
+pub const MIC_TEST_LIMIT: Duration = Duration::from_secs(20);
+pub const HOTKEY_CAPTURE_LIMIT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MicTestEvent {
+    Level { value: f32 },
+    Failed { message: String },
+}
+
+pub type MicTestSink = Arc<dyn Fn(MicTestEvent) + Send + Sync>;
 
 /// Starter content for a personal pack that does not exist yet.
 pub const USER_PACK_TEMPLATE: &str = "schema: 1\nid: user\nname: Personal\nlanguage: tr\nterms: []\n";
@@ -106,6 +127,12 @@ pub struct AppCore {
     system_locale: Option<String>,
     hotkey_paused: AtomicBool,
     hotkey_error: Mutex<Option<String>>,
+    /// The running microphone test and its generation.
+    mic_test: Mutex<Option<(u64, Box<dyn Capture>)>>,
+    mic_test_generation: AtomicU64,
+    /// The UI is recording a new shortcut; the hook is paused meanwhile.
+    hotkey_capturing: AtomicBool,
+    hotkey_capture_generation: AtomicU64,
     notices: Mutex<Vec<StartupNotice>>,
     /// Serializes read-modify-write of config.json.
     config_lock: Mutex<()>,
@@ -137,6 +164,10 @@ impl AppCore {
             system_locale,
             hotkey_paused: AtomicBool::new(false),
             hotkey_error: Mutex::default(),
+            mic_test: Mutex::default(),
+            mic_test_generation: AtomicU64::new(0),
+            hotkey_capturing: AtomicBool::new(false),
+            hotkey_capture_generation: AtomicU64::new(0),
             notices: Mutex::new(notices),
             config_lock: Mutex::default(),
             bad_config_kept: AtomicBool::new(bad_config_kept),
@@ -189,8 +220,25 @@ impl AppCore {
     }
 
     /// Validates, saves and applies a config from the UI; returns what was stored.
-    pub fn save_config(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
+    pub fn save_config(&self, config: AppConfig) -> Result<AppConfig, CommandError> {
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.save_locked(config)
+    }
+
+    /// Read-modify-write of the current config, all under `config_lock`, so a concurrent
+    /// save from the tray or the UI cannot be lost.
+    pub fn update_config(
+        &self,
+        change: impl FnOnce(&mut AppConfig) -> Result<(), CommandError>,
+    ) -> Result<AppConfig, CommandError> {
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut config = self.config();
+        change(&mut config)?;
+        self.save_locked(config)
+    }
+
+    /// Caller holds `config_lock`.
+    fn save_locked(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
         config.normalize();
         if self.bad_config_kept.load(Ordering::SeqCst) {
             self.move_bad_config_aside()?;
@@ -230,13 +278,18 @@ impl AppCore {
         Ok(())
     }
 
-    pub fn set_active_profile(&self, id: &str) -> Result<(), CommandError> {
-        let mut config = self.config();
-        if config.profile(id).is_none() {
-            return Err(CommandError::new("invalid_input", format!("unknown profile {id}")));
-        }
-        config.active_profile_id = id.to_string();
-        self.save_config(config).map(|_| ())
+    pub fn set_active_profile(&self, id: &str) -> Result<AppConfig, CommandError> {
+        self.update_config(|config| {
+            if config.profile(id).is_none() {
+                return Err(CommandError::new("invalid_input", format!("unknown profile {id}")));
+            }
+            config.active_profile_id = id.to_string();
+            Ok(())
+        })
+    }
+
+    pub fn system_locale(&self) -> Option<&str> {
+        self.system_locale.as_deref()
     }
 
     /// (Re-)installs the global hook for the configured keys.
@@ -257,7 +310,9 @@ impl AppCore {
     }
 
     fn sync_pause(&self, config: &AppConfig) {
-        let paused = self.hotkey_paused.load(Ordering::SeqCst) || !config.hotkey.enabled;
+        let paused = self.hotkey_paused.load(Ordering::SeqCst)
+            || self.hotkey_capturing.load(Ordering::SeqCst)
+            || !config.hotkey.enabled;
         self.platform.hotkey.set_paused(paused);
     }
 
@@ -271,6 +326,108 @@ impl AppCore {
             paused: self.hotkey_paused.load(Ordering::SeqCst),
             error: self.hotkey_error.lock().unwrap_or_else(PoisonError::into_inner).clone(),
         }
+    }
+
+    // ----- microphone test (wizard / settings level meter) -----
+
+    /// Opens `device` and streams its level to `sink` until `mic_test_stop`, a new test, or
+    /// MIC_TEST_LIMIT. Refused while a dictation is running. Returns the device opened.
+    pub fn mic_test_start(self: &Arc<Self>, device: Option<&str>, sink: MicTestSink) -> Result<String, CommandError> {
+        self.mic_test_start_for(device, sink, MIC_TEST_LIMIT)
+    }
+
+    pub(crate) fn mic_test_start_for(
+        self: &Arc<Self>,
+        device: Option<&str>,
+        sink: MicTestSink,
+        limit: Duration,
+    ) -> Result<String, CommandError> {
+        if self.status().state != DictationState::Idle {
+            return Err(CommandError::new("unavailable", "a dictation is running"));
+        }
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        // Reserve the generation before dropping the old capture, which can block.
+        let generation = self.mic_test_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let old = slot.take();
+        drop(slot);
+        drop(old);
+        let capture_sink: CaptureSink = Arc::new(move |event| match event {
+            CaptureEvent::Level(value) => sink(MicTestEvent::Level { value }),
+            CaptureEvent::Failed(message) => sink(MicTestEvent::Failed { message }),
+        });
+        let started = self.platform.mic.start(device, capture_sink).map_err(|e| CommandError {
+            code: "unavailable",
+            message: e.to_string(),
+            kind: Some(ErrorKind::Microphone),
+        })?;
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.mic_test_generation.load(Ordering::SeqCst) != generation {
+            drop(slot);
+            drop(started.capture);
+            return Err(CommandError::new("unavailable", "the microphone test was stopped"));
+        }
+        let old = slot.replace((generation, started.capture));
+        drop(slot);
+        drop(old);
+        let core = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            std::thread::sleep(limit);
+            if let Some(core) = core.upgrade() {
+                core.stop_mic_test_if(generation);
+            }
+        });
+        Ok(started.device)
+    }
+
+    /// Stops the test; dropping the capture cancels it (nothing is kept).
+    pub fn mic_test_stop(&self) {
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        self.mic_test_generation.fetch_add(1, Ordering::SeqCst);
+        let taken = slot.take();
+        drop(slot);
+        drop(taken);
+    }
+
+    fn stop_mic_test_if(&self, generation: u64) {
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|(g, _)| *g == generation) {
+            let taken = slot.take();
+            drop(slot);
+            drop(taken);
+        }
+    }
+
+    // ----- shortcut capture -----
+
+    /// While active, the global hook delivers nothing, so pressing the current shortcut in
+    /// the capture box does not start a dictation. Expires after HOTKEY_CAPTURE_LIMIT even
+    /// if the window that asked for it is gone.
+    pub fn set_hotkey_capture(self: &Arc<Self>, active: bool) {
+        self.set_hotkey_capture_for(active, HOTKEY_CAPTURE_LIMIT);
+    }
+
+    pub(crate) fn set_hotkey_capture_for(self: &Arc<Self>, active: bool, limit: Duration) {
+        let generation = self.hotkey_capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.hotkey_capturing.store(active, Ordering::SeqCst);
+        self.sync_pause(&self.config());
+        if active {
+            let core = Arc::downgrade(self);
+            std::thread::spawn(move || {
+                std::thread::sleep(limit);
+                if let Some(core) = core.upgrade()
+                    && core.hotkey_capture_generation.load(Ordering::SeqCst) == generation
+                {
+                    core.hotkey_capturing.store(false, Ordering::SeqCst);
+                    core.sync_pause(&core.config());
+                }
+            });
+        }
+    }
+
+    pub fn validate_hotkey(keys: &[String]) -> Result<(), CommandError> {
+        crate::platform::keys::parse_combo(keys)
+            .map(|_| ())
+            .map_err(|e| CommandError::new("invalid_input", e.to_string()))
     }
 
     // ----- API keys -----
@@ -310,6 +467,26 @@ impl AppCore {
 
     // ----- rules -----
 
+    pub fn parse_user_rules(yaml: &str) -> Result<RulePack, CommandError> {
+        Ok(RulePack::from_yaml(yaml)?)
+    }
+
+    /// YAML for `pack`, keeping the leading comment block of `previous_yaml`. The result is
+    /// parsed back so an invalid pack (bad id, schema) is refused here, not on save.
+    pub fn render_user_rules(pack: &RulePack, previous_yaml: &str) -> Result<String, CommandError> {
+        let yaml = pack.to_yaml_with_header(&header_comments(previous_yaml))?;
+        RulePack::from_yaml(&yaml)?;
+        Ok(yaml)
+    }
+
+    pub fn correction_draft(&self, canonical: &str, variant: &str) -> Result<CorrectionDraft, CommandError> {
+        let current = self.user_rules_yaml()?;
+        let mut pack = RulePack::from_yaml(&current)?;
+        let outcome =
+            pack.add_correction(canonical, variant).map_err(|e| CommandError::new("invalid_input", e.to_string()))?;
+        Ok(CorrectionDraft { yaml: Self::render_user_rules(&pack, &current)?, outcome })
+    }
+
     pub fn user_rules_yaml(&self) -> Result<String, CommandError> {
         match std::fs::read_to_string(&self.paths.user_rules) {
             Ok(yaml) => Ok(yaml),
@@ -320,6 +497,8 @@ impl AppCore {
 
     /// Validates and stores `user.yaml`, then recompiles the rules; returns skipped-rule warnings.
     pub fn save_user_rules(&self, yaml: &str) -> Result<Vec<RuleWarning>, CommandError> {
+        // Async commands may save rules and config concurrently; serialize their settings rebuilds.
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let pack = RulePack::from_yaml(yaml)?;
         if let Some(dir) = self.paths.user_rules.parent() {
             std::fs::create_dir_all(dir).map_err(|e| CommandError::new("rules", e.to_string()))?;
@@ -379,6 +558,20 @@ impl AppCore {
         Ok(self.history()?.clear()?)
     }
 
+    /// The WAV bytes of a dictation's saved audio. Only files inside the app's audio folder
+    /// are read, whatever path the database holds.
+    pub fn history_audio(&self, id: i64) -> Result<Vec<u8>, CommandError> {
+        let unavailable = || CommandError::new("unavailable", "this dictation has no saved audio");
+        let row = self.history()?.store().get(id)?.ok_or_else(unavailable)?;
+        let path = std::path::PathBuf::from(row.audio_path.ok_or_else(unavailable)?);
+        let dir = self.paths.audio.canonicalize().map_err(|_| unavailable())?;
+        let file = path.canonicalize().map_err(|_| unavailable())?;
+        if !file.starts_with(&dir) {
+            return Err(CommandError::new("invalid_input", "the audio file is outside the audio folder"));
+        }
+        std::fs::read(&file).map_err(|e| CommandError::new("history", e.to_string()))
+    }
+
     pub fn microphones(&self) -> Vec<String> {
         self.platform.mic.devices()
     }
@@ -392,11 +585,13 @@ mod tests {
 
     use super::*;
     use crate::controller::{HistorySink, channel};
+    use crate::platform::MicError;
     use crate::platform::fake::*;
 
     struct Fixture {
         _dir: tempfile::TempDir,
         core: AppCore,
+        mic: Arc<FakeMic>,
         hotkey: Arc<FakeHotkey>,
         overlay: Arc<FakeOverlay>,
         autostart: Arc<FakeAutostart>,
@@ -414,15 +609,16 @@ mod tests {
             Arc::new(HistoryService::with_store(HistoryStore::open_in_memory().unwrap(), paths.audio.clone()));
         let (hotkey, overlay) = (Arc::new(FakeHotkey::default()), Arc::new(FakeOverlay::default()));
         let (autostart, secrets) = (Arc::new(FakeAutostart::default()), Arc::new(FakeSecrets::default()));
+        let mic = Arc::new(FakeMic::default());
         let platform = Platform {
             secrets: secrets.clone(),
             hotkey: hotkey.clone(),
-            mic: Arc::new(FakeMic::default()),
+            mic: mic.clone(),
             overlay: overlay.clone(),
             autostart: autostart.clone(),
         };
         let core = AppCore::new(paths, settings, channel().0, Some(history), platform, None, None, notices);
-        Fixture { _dir: dir, core, hotkey, overlay, autostart, secrets }
+        Fixture { _dir: dir, core, mic, hotkey, overlay, autostart, secrets }
     }
 
     /// A damaged config.json that start-up could not move aside, because another program
@@ -529,6 +725,172 @@ mod tests {
     }
 
     #[test]
+    fn mic_test_forwards_levels_and_stops() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        let device = core.mic_test_start(None, Arc::new(move |event| sink_seen.lock().unwrap().push(event))).unwrap();
+        assert!(!device.is_empty());
+        mic.emit(CaptureEvent::Level(0.25));
+        mic.emit(CaptureEvent::Failed("unplugged".into()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [MicTestEvent::Level { value: 0.25 }, MicTestEvent::Failed { message: "unplugged".into() }]
+        );
+        core.mic_test_stop();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1, "stopping drops (cancels) the capture");
+    }
+
+    #[test]
+    fn a_second_mic_test_replaces_the_first() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        core.mic_test_start(None, Arc::new(|_| {})).unwrap();
+        core.mic_test_start(Some("Fake Mic"), Arc::new(|_| {})).unwrap();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(mic.starts(), 2);
+    }
+
+    #[test]
+    fn mic_test_stops_by_itself_after_the_limit() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        core.mic_test_start_for(None, Arc::new(|_| {}), Duration::from_millis(30)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn stopping_during_mic_test_start_discards_the_opened_capture() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        let weak = Arc::downgrade(&core);
+        *mic.before_start_returns.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade().unwrap().mic_test_stop();
+        }));
+
+        let err = core.mic_test_start(None, Arc::new(|_| {})).unwrap_err();
+        assert_eq!(err.code, "unavailable");
+        assert_eq!(err.message, "the microphone test was stopped");
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        assert!(core.mic_test.lock().unwrap().is_none(), "nothing remains running");
+    }
+
+    #[test]
+    fn a_newer_mic_test_start_wins_when_the_older_start_returns_last() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        let weak = Arc::downgrade(&core);
+        *mic.before_start_returns.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade().unwrap().mic_test_start(None, Arc::new(|_| {})).unwrap();
+        }));
+
+        let err = core.mic_test_start(None, Arc::new(|_| {})).unwrap_err();
+        assert_eq!(err.code, "unavailable");
+        assert_eq!(mic.starts(), 2);
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        let generation = core.mic_test.lock().unwrap().as_ref().unwrap().0;
+        assert_eq!(generation, core.mic_test_generation.load(Ordering::SeqCst));
+        core.mic_test_stop();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_replaced_mic_tests_timer_keeps_the_new_capture_running() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        core.mic_test_start_for(None, Arc::new(|_| {}), Duration::from_millis(30)).unwrap();
+        core.mic_test_start_for(None, Arc::new(|_| {}), Duration::from_secs(20)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        assert!(core.mic_test.lock().unwrap().is_some());
+        core.mic_test_stop();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn mic_test_errors_carry_the_microphone_kind() {
+        let f = fixture();
+        *f.mic.fail_start.lock().unwrap() = Some(MicError::NoDevice);
+        let core = Arc::new(f.core);
+        let err = core.mic_test_start(None, Arc::new(|_| {})).unwrap_err();
+        assert_eq!(err.kind, Some(ErrorKind::Microphone));
+    }
+
+    #[test]
+    fn hotkey_capture_pauses_the_hook_and_expires() {
+        let f = fixture();
+        let (hotkey, core) = (f.hotkey.clone(), Arc::new(f.core));
+        core.set_hotkey_capture_for(true, Duration::from_millis(30));
+        assert!(*hotkey.paused.lock().unwrap());
+        assert!(!core.hotkey_state().paused, "capture is not the user's pause");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!*hotkey.paused.lock().unwrap(), "capture expired");
+    }
+
+    #[test]
+    fn ending_capture_keeps_a_user_pause() {
+        let f = fixture();
+        let (hotkey, core) = (f.hotkey.clone(), Arc::new(f.core));
+        core.set_hotkey_paused(true);
+        core.set_hotkey_capture(true);
+        core.set_hotkey_capture(false);
+        assert!(*hotkey.paused.lock().unwrap());
+    }
+
+    #[test]
+    fn an_ended_hotkey_captures_timer_keeps_the_restarted_capture_paused() {
+        let f = fixture();
+        let (hotkey, core) = (f.hotkey.clone(), Arc::new(f.core));
+        core.set_hotkey_capture_for(true, Duration::from_millis(30));
+        core.set_hotkey_capture(false);
+        core.set_hotkey_capture_for(true, Duration::from_secs(30));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(*hotkey.paused.lock().unwrap());
+        assert!(core.hotkey_capturing.load(Ordering::SeqCst));
+        assert!(!core.hotkey_state().paused, "capture is not the user's pause");
+        core.set_hotkey_capture(false);
+        assert!(!*hotkey.paused.lock().unwrap());
+    }
+
+    #[test]
+    fn validate_hotkey_uses_the_hook_key_names() {
+        assert!(AppCore::validate_hotkey(&["RightCtrl".into(), "F13".into()]).is_ok());
+        assert_eq!(AppCore::validate_hotkey(&[]).unwrap_err().code, "invalid_input");
+        assert_eq!(AppCore::validate_hotkey(&["Banana".into()]).unwrap_err().code, "invalid_input");
+    }
+
+    #[test]
+    fn set_active_profile_saves_and_returns_the_config() {
+        let f = fixture();
+        let saved = f.core.set_active_profile("openai").unwrap();
+        assert_eq!(saved.active_profile_id, "openai");
+        assert_eq!(f.core.config().active_profile_id, "openai");
+        let on_disk = AppConfig::load(&f.core.paths.config).unwrap();
+        assert_eq!(on_disk.active_profile_id, "openai");
+    }
+
+    #[test]
+    fn set_active_profile_rejects_an_unknown_id_without_saving() {
+        let f = fixture();
+        let err = f.core.set_active_profile("nope").unwrap_err();
+        assert_eq!(err.code, "invalid_input");
+        assert!(!f.core.paths.config.exists());
+    }
+
+    #[test]
+    fn update_config_applies_the_change_under_the_lock() {
+        let f = fixture();
+        let saved = f.core.update_config(|c| {
+            c.paste.trailing_space = false;
+            Ok(())
+        });
+        assert!(!saved.unwrap().paste.trailing_space);
+        assert!(!f.core.config().paste.trailing_space);
+    }
+
+    #[test]
     fn tray_profile_switch_is_saved() {
         let f = fixture();
         f.core.set_active_profile("openai").unwrap();
@@ -546,6 +908,74 @@ mod tests {
         assert_eq!(f.core.set_api_key("groq", "   ").unwrap_err().code, "invalid_input");
         f.core.delete_api_key("groq").unwrap();
         assert!(!f.core.has_api_key("groq").unwrap());
+    }
+
+    const USER_YAML: &str = "# my header\n\nschema: 1\nid: user\nname: Me\ncorrections:\n  Claude Code: [cloud code]\n";
+
+    #[test]
+    fn render_user_rules_keeps_the_header_and_validates() {
+        let pack = AppCore::parse_user_rules(USER_YAML).unwrap();
+        let yaml = AppCore::render_user_rules(&pack, USER_YAML).unwrap();
+        assert!(yaml.starts_with("# my header\n"));
+        assert_eq!(AppCore::parse_user_rules(&yaml).unwrap(), pack);
+        let mut bad = pack.clone();
+        bad.id = "Not Valid".into();
+        assert_eq!(AppCore::render_user_rules(&bad, USER_YAML).unwrap_err().code, "rules");
+    }
+
+    #[test]
+    fn correction_draft_adds_to_the_saved_file_without_saving() {
+        let f = fixture();
+        std::fs::create_dir_all(f.core.paths.user_rules.parent().unwrap()).unwrap();
+        std::fs::write(&f.core.paths.user_rules, USER_YAML).unwrap();
+        let draft = f.core.correction_draft("Claude Code", "klod kod").unwrap();
+        assert_eq!(draft.outcome, CorrectionOutcome::AddedVariant);
+        assert!(draft.yaml.starts_with("# my header\n"));
+        assert!(draft.yaml.contains("klod kod"));
+        assert_eq!(std::fs::read_to_string(&f.core.paths.user_rules).unwrap(), USER_YAML);
+        let preview = f.core.rules_preview("klod kod açtım", Some(&draft.yaml)).unwrap();
+        assert!(preview.text.starts_with("Claude Code"));
+    }
+
+    #[test]
+    fn correction_draft_works_without_a_user_file_and_rejects_bad_input() {
+        let f = fixture();
+        let draft = f.core.correction_draft("Opit", "opet").unwrap();
+        assert!(draft.yaml.contains("Opit"));
+        assert_eq!(f.core.correction_draft("", "x").unwrap_err().code, "invalid_input");
+    }
+
+    #[test]
+    fn history_audio_reads_only_files_in_the_audio_folder() {
+        let f = fixture();
+        let history = f.core.history.as_ref().unwrap();
+        let entry = |text: &'static str| NewDictation {
+            created_at_ms: 1,
+            profile_id: "groq",
+            raw_text: text,
+            text,
+            status: TranscriptStatus::Ok,
+            audio_ms: 1000,
+            latency_ms: 500,
+        };
+        // Row with an audio file inside paths.audio.
+        let inside = history.store().insert(&entry("a")).unwrap();
+        std::fs::create_dir_all(&f.core.paths.audio).unwrap();
+        let wav = f.core.paths.audio.join(format!("{inside}.wav"));
+        std::fs::write(&wav, b"RIFF1234").unwrap();
+        history.store().set_audio_path(inside, &wav.display().to_string()).unwrap();
+        assert_eq!(f.core.history_audio(inside).unwrap(), b"RIFF1234");
+        // Row pointing outside the audio folder.
+        let outside = history.store().insert(&entry("b")).unwrap();
+        let elsewhere = f.core.paths.root.join("config.json");
+        std::fs::create_dir_all(&f.core.paths.root).unwrap();
+        std::fs::write(&elsewhere, "{}").unwrap();
+        history.store().set_audio_path(outside, &elsewhere.display().to_string()).unwrap();
+        assert_eq!(f.core.history_audio(outside).unwrap_err().code, "invalid_input");
+        // Row without audio, and a missing row.
+        let none = history.store().insert(&entry("c")).unwrap();
+        assert_eq!(f.core.history_audio(none).unwrap_err().code, "unavailable");
+        assert_eq!(f.core.history_audio(9999).unwrap_err().code, "unavailable");
     }
 
     #[test]
