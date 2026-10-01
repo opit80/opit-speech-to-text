@@ -18,6 +18,18 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+    "publisher": "opit80",
+    "copyright": "Copyright (c) 2026 opit80",
+    "license": "MIT",
+    "homepage": "https://github.com/opit80/opit-speech-to-text",
+    "shortDescription": "Voice dictation for Windows with your own API key",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English", "Turkish"],
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
   }
 }
