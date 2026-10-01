@@ -85,28 +85,30 @@
       <div class="version muted">v{app.info?.version}</div>
     </nav>
     <main>
-      <div class="notices">
-        {#each app.notices as notice, i (i)}
-          <Banner tone="warning" ondismiss={() => dismissNotice(i)}>
-            {#if notice.kind === "config_reset"}
-              {notice.backup ? t("notice.config_reset", { backup: notice.backup }) : t("notice.config_reset_kept")}
-            {:else}
-              {t("notice.user_rules_broken", { reason: notice.reason })}
-            {/if}
-          </Banner>
-        {/each}
-        {#if app.hotkey.error}
-          <Banner tone="warning">{t("notice.hotkey_failed", { reason: app.hotkey.error })}</Banner>
-        {:else if app.hotkey.paused}
-          <Banner tone="info">
-            {t("notice.hotkey_paused")}
-            {#snippet action()}
-              <Button busy={resumeBusy} onclick={resumeHotkey}>{t("notice.resume")}</Button>
-            {/snippet}
-          </Banner>
-        {/if}
-        {#if resumeError}<Banner tone="error">{resumeError}</Banner>{/if}
-      </div>
+      {#if app.notices.length || app.hotkey.error || app.hotkey.paused || resumeError}
+        <div class="notices">
+          {#each app.notices as notice, i (i)}
+            <Banner tone="warning" ondismiss={() => dismissNotice(i)}>
+              {#if notice.kind === "config_reset"}
+                {notice.backup ? t("notice.config_reset", { backup: notice.backup }) : t("notice.config_reset_kept")}
+              {:else}
+                {t("notice.user_rules_broken", { reason: notice.reason })}
+              {/if}
+            </Banner>
+          {/each}
+          {#if app.hotkey.error}
+            <Banner tone="warning">{t("notice.hotkey_failed", { reason: app.hotkey.error })}</Banner>
+          {:else if app.hotkey.paused}
+            <Banner tone="info">
+              {t("notice.hotkey_paused")}
+              {#snippet action()}
+                <Button busy={resumeBusy} onclick={resumeHotkey}>{t("notice.resume")}</Button>
+              {/snippet}
+            </Banner>
+          {/if}
+          {#if resumeError}<Banner tone="error">{resumeError}</Banner>{/if}
+        </div>
+      {/if}
       {#if router.route === "home"}<Home />
       {:else if router.route === "history"}<History />
       {:else if router.route === "rules"}<Rules />
@@ -128,8 +130,6 @@
   .version { margin-top: auto; padding: var(--space-4) var(--space-2) var(--space-1); font-size: var(--text-sm); }
   main { padding: var(--space-5); overflow-y: auto; min-width: 0; }
   main :global(> *) { max-width: var(--content); margin-left: auto; margin-right: auto; }
-  .notices { display: flex; flex-direction: column; gap: var(--space-3); }
-  .notices:empty { display: none; }
-  .notices:not(:empty) { margin-bottom: var(--space-5); }
+  .notices { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-5); }
   .center { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
 </style>

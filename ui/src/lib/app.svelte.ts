@@ -5,6 +5,7 @@ import { onConfigChanged, onHotkeyState, onNavigate, onStatus, type UnlistenFn }
 import { resolveLang, translate, type MessageKey, type Params } from "./i18n";
 import { parseRoute } from "./route";
 import { navigate } from "./router.svelte";
+import { createSerialQueue } from "./serial";
 import type { AppConfig, AppInfo, DictationStatus, HotkeyState, Lang, StartupNotice } from "./types";
 
 interface AppState {
@@ -40,7 +41,7 @@ export function errorText(error: unknown): string {
 
 function setConfig(config: AppConfig): void {
   app.config = config;
-  app.lang = resolveLang(config.ui_language, app.info?.system_locale ?? navigator.language);
+  app.lang = resolveLang(config.ui_language, app.info?.system_locale);
   document.documentElement.lang = app.lang;
 }
 
@@ -93,12 +94,16 @@ export async function initApp(): Promise<() => void> {
   return stop;
 }
 
-/** Applies `mutate` to a copy of the current config, saves it, and adopts what Rust stored. */
-export async function saveConfig(mutate: (draft: AppConfig) => void): Promise<AppConfig> {
-  if (!app.config) throw new Error("config not loaded");
-  const draft = $state.snapshot(app.config) as AppConfig;
-  mutate(draft);
-  const saved = await api.saveConfig(draft);
-  setConfig(saved);
-  return saved;
+const enqueueSave = createSerialQueue();
+
+/** Queues a save using the latest config when it runs, then adopts what Rust stored. */
+export function saveConfig(mutate: (draft: AppConfig) => void): Promise<AppConfig> {
+  return enqueueSave(async () => {
+    if (!app.config) throw new Error("config not loaded");
+    const draft = $state.snapshot(app.config) as AppConfig;
+    mutate(draft);
+    const saved = await api.saveConfig(draft);
+    setConfig(saved);
+    return saved;
+  });
 }
