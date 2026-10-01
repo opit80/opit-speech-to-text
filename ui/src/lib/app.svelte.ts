@@ -6,6 +6,7 @@ import { resolveLang, translate, type MessageKey, type Params } from "./i18n";
 import { parseRoute } from "./route";
 import { navigate } from "./router.svelte";
 import { createSerialQueue } from "./serial";
+import { keepInstallError } from "./update";
 import type { AppConfig, AppInfo, DictationStatus, HotkeyState, Lang, StartupNotice, UpdateState } from "./types";
 
 interface AppState {
@@ -19,6 +20,8 @@ interface AppState {
   loadError: string | null;
   update: UpdateState;
   updateDismissed: string | null;
+  /** Why the last install failed; see `keepInstallError`. */
+  updateError: string | null;
 }
 
 export const app = $state<AppState>({
@@ -32,6 +35,7 @@ export const app = $state<AppState>({
   loadError: null,
   update: { kind: "idle" },
   updateDismissed: null,
+  updateError: null,
 });
 
 /** Reactive in templates: it reads `app.lang`. */
@@ -75,6 +79,7 @@ export async function initApp(): Promise<() => void> {
       onUpdateState((u) => {
         updateSeen = true;
         app.update = u;
+        app.updateError = keepInstallError(app.updateError, u);
       }),
     ]);
     for (const result of subscriptions) {

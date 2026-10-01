@@ -36,3 +36,12 @@ export function statusMessage(state: UpdateState): { key: MessageKey; params?: P
 export function dictationBusy(state: DictationState): boolean {
   return state === "recording" || state === "transcribing" || state === "pasting";
 }
+
+/**
+ * A failed install's error lives in shared state (the button that started the install is gone
+ * by the time it fails). It stays while that update is on offer or installing again and is
+ * dropped once a new check starts or the update is gone.
+ */
+export function keepInstallError(error: string | null, state: UpdateState): string | null {
+  return state.kind === "available" || state.kind === "installing" ? error : null;
+}
