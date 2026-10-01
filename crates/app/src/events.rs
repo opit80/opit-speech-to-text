@@ -16,6 +16,8 @@ pub const HISTORY_ADDED: &str = "history-added";
 pub const CONFIG_CHANGED: &str = "config-changed";
 /// Payload: `HotkeyState`. Sent when the shortcut is paused/resumed or re-registered.
 pub const HOTKEY_STATE: &str = "hotkey-state";
+/// Payload: `MicTestEvent` (`{ kind: "level", value }` or `{ kind: "failed", message }`).
+pub const MIC_TEST: &str = "mic-test";
 /// Payload: a route name such as `"settings"`.
 pub const NAVIGATE: &str = "navigate";
 

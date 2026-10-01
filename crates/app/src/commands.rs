@@ -13,7 +13,7 @@ use opit_core::rules::{RulePack, RuleWarning};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::app_core::{AppCore, CommandError, CorrectionDraft, HotkeyState, RulesPreview};
+use crate::app_core::{AppCore, CommandError, CorrectionDraft, HotkeyState, MicTestSink, RulesPreview};
 use crate::controller::{DictationStatus, Msg};
 use crate::startup::StartupNotice;
 use crate::{events, tray};
@@ -55,6 +55,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         set_active_profile,
         profile_presets,
         list_microphones,
+        mic_test_start,
+        mic_test_stop,
         has_api_key,
         set_api_key,
         delete_api_key,
@@ -74,6 +76,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         history_audio,
         get_hotkey_state,
         set_hotkey_paused,
+        set_hotkey_capture,
+        validate_hotkey,
         take_startup_notices,
     ]
 }
@@ -144,6 +148,21 @@ async fn list_microphones(core: Core<'_>) -> Result<Vec<String>> {
     tauri::async_runtime::spawn_blocking(move || core.microphones())
         .await
         .map_err(|_| CommandError::new("unavailable", "the microphone list could not be read"))
+}
+
+/// Opening a device can block for a moment, so this runs on the blocking pool.
+#[tauri::command]
+async fn mic_test_start(app: AppHandle, core: Core<'_>, device: Option<String>) -> Result<String> {
+    let core = core.inner().clone();
+    let sink: MicTestSink = Arc::new(move |event| events::emit(&app, events::MIC_TEST, event));
+    tauri::async_runtime::spawn_blocking(move || core.mic_test_start(device.as_deref(), sink))
+        .await
+        .map_err(|_| CommandError::new("unavailable", "the microphone test stopped unexpectedly"))?
+}
+
+#[tauri::command]
+fn mic_test_stop(core: Core<'_>) {
+    core.mic_test_stop();
 }
 
 #[tauri::command]
@@ -250,4 +269,14 @@ fn set_hotkey_paused(app: AppHandle, core: Core<'_>, paused: bool) -> HotkeyStat
 #[tauri::command]
 fn take_startup_notices(core: Core<'_>) -> Vec<StartupNotice> {
     core.take_notices()
+}
+
+#[tauri::command]
+fn set_hotkey_capture(core: Core<'_>, active: bool) {
+    core.inner().set_hotkey_capture(active);
+}
+
+#[tauri::command]
+fn validate_hotkey(keys: Vec<String>) -> Result<()> {
+    AppCore::validate_hotkey(&keys)
 }

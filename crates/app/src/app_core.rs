@@ -1,7 +1,7 @@
 //! Everything the invoke commands and the tray do, without Tauri types, so it can be
 //! tested with the platform fakes. `commands.rs` is a thin wrapper over this.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -14,10 +14,11 @@ use opit_core::rules::{PackError, RuleHit, RulePack, RuleSet, RuleWarning};
 use serde::Serialize;
 use tracing::{info, warn};
 
-use crate::controller::{ControllerHandle, DictationStatus, ErrorKind};
+use crate::controller::{ControllerHandle, DictationState, DictationStatus, ErrorKind};
 use crate::history_service::HistoryService;
 use crate::platform::{
-    Autostart, Hotkey, HotkeyError, Microphone, Overlay, OverlayView, SecretError, SecretStore, Tone,
+    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, Microphone, Overlay, OverlayView, SecretError,
+    SecretStore, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::{self, Paths, StartupNotice};
@@ -91,6 +92,18 @@ pub struct HotkeyState {
     pub error: Option<String>,
 }
 
+pub const MIC_TEST_LIMIT: Duration = Duration::from_secs(20);
+pub const HOTKEY_CAPTURE_LIMIT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MicTestEvent {
+    Level { value: f32 },
+    Failed { message: String },
+}
+
+pub type MicTestSink = Arc<dyn Fn(MicTestEvent) + Send + Sync>;
+
 /// Starter content for a personal pack that does not exist yet.
 pub const USER_PACK_TEMPLATE: &str = "schema: 1\nid: user\nname: Personal\nlanguage: tr\nterms: []\n";
 
@@ -114,6 +127,12 @@ pub struct AppCore {
     system_locale: Option<String>,
     hotkey_paused: AtomicBool,
     hotkey_error: Mutex<Option<String>>,
+    /// The running microphone test and its generation.
+    mic_test: Mutex<Option<(u64, Box<dyn Capture>)>>,
+    mic_test_generation: AtomicU64,
+    /// The UI is recording a new shortcut; the hook is paused meanwhile.
+    hotkey_capturing: AtomicBool,
+    hotkey_capture_generation: AtomicU64,
     notices: Mutex<Vec<StartupNotice>>,
     /// Serializes read-modify-write of config.json.
     config_lock: Mutex<()>,
@@ -145,6 +164,10 @@ impl AppCore {
             system_locale,
             hotkey_paused: AtomicBool::new(false),
             hotkey_error: Mutex::default(),
+            mic_test: Mutex::default(),
+            mic_test_generation: AtomicU64::new(0),
+            hotkey_capturing: AtomicBool::new(false),
+            hotkey_capture_generation: AtomicU64::new(0),
             notices: Mutex::new(notices),
             config_lock: Mutex::default(),
             bad_config_kept: AtomicBool::new(bad_config_kept),
@@ -287,7 +310,9 @@ impl AppCore {
     }
 
     fn sync_pause(&self, config: &AppConfig) {
-        let paused = self.hotkey_paused.load(Ordering::SeqCst) || !config.hotkey.enabled;
+        let paused = self.hotkey_paused.load(Ordering::SeqCst)
+            || self.hotkey_capturing.load(Ordering::SeqCst)
+            || !config.hotkey.enabled;
         self.platform.hotkey.set_paused(paused);
     }
 
@@ -301,6 +326,93 @@ impl AppCore {
             paused: self.hotkey_paused.load(Ordering::SeqCst),
             error: self.hotkey_error.lock().unwrap_or_else(PoisonError::into_inner).clone(),
         }
+    }
+
+    // ----- microphone test (wizard / settings level meter) -----
+
+    /// Opens `device` and streams its level to `sink` until `mic_test_stop`, a new test, or
+    /// MIC_TEST_LIMIT. Refused while a dictation is running. Returns the device opened.
+    pub fn mic_test_start(self: &Arc<Self>, device: Option<&str>, sink: MicTestSink) -> Result<String, CommandError> {
+        self.mic_test_start_for(device, sink, MIC_TEST_LIMIT)
+    }
+
+    pub(crate) fn mic_test_start_for(
+        self: &Arc<Self>,
+        device: Option<&str>,
+        sink: MicTestSink,
+        limit: Duration,
+    ) -> Result<String, CommandError> {
+        if self.status().state != DictationState::Idle {
+            return Err(CommandError::new("unavailable", "a dictation is running"));
+        }
+        self.mic_test_stop();
+        let generation = self.mic_test_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let capture_sink: CaptureSink = Arc::new(move |event| match event {
+            CaptureEvent::Level(value) => sink(MicTestEvent::Level { value }),
+            CaptureEvent::Failed(message) => sink(MicTestEvent::Failed { message }),
+        });
+        let started = self.platform.mic.start(device, capture_sink).map_err(|e| CommandError {
+            code: "unavailable",
+            message: e.to_string(),
+            kind: Some(ErrorKind::Microphone),
+        })?;
+        *self.mic_test.lock().unwrap_or_else(PoisonError::into_inner) = Some((generation, started.capture));
+        let core = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            std::thread::sleep(limit);
+            if let Some(core) = core.upgrade() {
+                core.stop_mic_test_if(generation);
+            }
+        });
+        Ok(started.device)
+    }
+
+    /// Stops the test; dropping the capture cancels it (nothing is kept).
+    pub fn mic_test_stop(&self) {
+        let taken = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner).take();
+        drop(taken);
+    }
+
+    fn stop_mic_test_if(&self, generation: u64) {
+        let mut slot = self.mic_test.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.as_ref().is_some_and(|(g, _)| *g == generation) {
+            let taken = slot.take();
+            drop(slot);
+            drop(taken);
+        }
+    }
+
+    // ----- shortcut capture -----
+
+    /// While active, the global hook delivers nothing, so pressing the current shortcut in
+    /// the capture box does not start a dictation. Expires after HOTKEY_CAPTURE_LIMIT even
+    /// if the window that asked for it is gone.
+    pub fn set_hotkey_capture(self: &Arc<Self>, active: bool) {
+        self.set_hotkey_capture_for(active, HOTKEY_CAPTURE_LIMIT);
+    }
+
+    pub(crate) fn set_hotkey_capture_for(self: &Arc<Self>, active: bool, limit: Duration) {
+        let generation = self.hotkey_capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.hotkey_capturing.store(active, Ordering::SeqCst);
+        self.sync_pause(&self.config());
+        if active {
+            let core = Arc::downgrade(self);
+            std::thread::spawn(move || {
+                std::thread::sleep(limit);
+                if let Some(core) = core.upgrade()
+                    && core.hotkey_capture_generation.load(Ordering::SeqCst) == generation
+                {
+                    core.hotkey_capturing.store(false, Ordering::SeqCst);
+                    core.sync_pause(&core.config());
+                }
+            });
+        }
+    }
+
+    pub fn validate_hotkey(keys: &[String]) -> Result<(), CommandError> {
+        crate::platform::keys::parse_combo(keys)
+            .map(|_| ())
+            .map_err(|e| CommandError::new("invalid_input", e.to_string()))
     }
 
     // ----- API keys -----
@@ -458,11 +570,13 @@ mod tests {
 
     use super::*;
     use crate::controller::{HistorySink, channel};
+    use crate::platform::MicError;
     use crate::platform::fake::*;
 
     struct Fixture {
         _dir: tempfile::TempDir,
         core: AppCore,
+        mic: Arc<FakeMic>,
         hotkey: Arc<FakeHotkey>,
         overlay: Arc<FakeOverlay>,
         autostart: Arc<FakeAutostart>,
@@ -480,15 +594,16 @@ mod tests {
             Arc::new(HistoryService::with_store(HistoryStore::open_in_memory().unwrap(), paths.audio.clone()));
         let (hotkey, overlay) = (Arc::new(FakeHotkey::default()), Arc::new(FakeOverlay::default()));
         let (autostart, secrets) = (Arc::new(FakeAutostart::default()), Arc::new(FakeSecrets::default()));
+        let mic = Arc::new(FakeMic::default());
         let platform = Platform {
             secrets: secrets.clone(),
             hotkey: hotkey.clone(),
-            mic: Arc::new(FakeMic::default()),
+            mic: mic.clone(),
             overlay: overlay.clone(),
             autostart: autostart.clone(),
         };
         let core = AppCore::new(paths, settings, channel().0, Some(history), platform, None, None, notices);
-        Fixture { _dir: dir, core, hotkey, overlay, autostart, secrets }
+        Fixture { _dir: dir, core, mic, hotkey, overlay, autostart, secrets }
     }
 
     /// A damaged config.json that start-up could not move aside, because another program
@@ -592,6 +707,80 @@ mod tests {
         config.hotkey.enabled = false;
         f.core.save_config(config).unwrap();
         assert!(*f.hotkey.paused.lock().unwrap(), "a disabled shortcut stays paused");
+    }
+
+    #[test]
+    fn mic_test_forwards_levels_and_stops() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = seen.clone();
+        let device = core.mic_test_start(None, Arc::new(move |event| sink_seen.lock().unwrap().push(event))).unwrap();
+        assert!(!device.is_empty());
+        mic.emit(CaptureEvent::Level(0.25));
+        mic.emit(CaptureEvent::Failed("unplugged".into()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [MicTestEvent::Level { value: 0.25 }, MicTestEvent::Failed { message: "unplugged".into() }]
+        );
+        core.mic_test_stop();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1, "stopping drops (cancels) the capture");
+    }
+
+    #[test]
+    fn a_second_mic_test_replaces_the_first() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        core.mic_test_start(None, Arc::new(|_| {})).unwrap();
+        core.mic_test_start(Some("Fake Mic"), Arc::new(|_| {})).unwrap();
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+        assert_eq!(mic.starts(), 2);
+    }
+
+    #[test]
+    fn mic_test_stops_by_itself_after_the_limit() {
+        let f = fixture();
+        let (mic, core) = (f.mic.clone(), Arc::new(f.core));
+        core.mic_test_start_for(None, Arc::new(|_| {}), Duration::from_millis(30)).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(mic.dropped.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn mic_test_errors_carry_the_microphone_kind() {
+        let f = fixture();
+        *f.mic.fail_start.lock().unwrap() = Some(MicError::NoDevice);
+        let core = Arc::new(f.core);
+        let err = core.mic_test_start(None, Arc::new(|_| {})).unwrap_err();
+        assert_eq!(err.kind, Some(ErrorKind::Microphone));
+    }
+
+    #[test]
+    fn hotkey_capture_pauses_the_hook_and_expires() {
+        let f = fixture();
+        let (hotkey, core) = (f.hotkey.clone(), Arc::new(f.core));
+        core.set_hotkey_capture_for(true, Duration::from_millis(30));
+        assert!(*hotkey.paused.lock().unwrap());
+        assert!(!core.hotkey_state().paused, "capture is not the user's pause");
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!*hotkey.paused.lock().unwrap(), "capture expired");
+    }
+
+    #[test]
+    fn ending_capture_keeps_a_user_pause() {
+        let f = fixture();
+        let (hotkey, core) = (f.hotkey.clone(), Arc::new(f.core));
+        core.set_hotkey_paused(true);
+        core.set_hotkey_capture(true);
+        core.set_hotkey_capture(false);
+        assert!(*hotkey.paused.lock().unwrap());
+    }
+
+    #[test]
+    fn validate_hotkey_uses_the_hook_key_names() {
+        assert!(AppCore::validate_hotkey(&["RightCtrl".into(), "F13".into()]).is_ok());
+        assert_eq!(AppCore::validate_hotkey(&[]).unwrap_err().code, "invalid_input");
+        assert_eq!(AppCore::validate_hotkey(&["Banana".into()]).unwrap_err().code, "invalid_input");
     }
 
     #[test]
