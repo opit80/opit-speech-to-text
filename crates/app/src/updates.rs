@@ -12,6 +12,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tracing::{info, warn};
 
 use crate::app_core::CommandError;
+use crate::controller::ControllerHandle;
 use crate::events;
 use crate::settings::SettingsHandle;
 
@@ -19,6 +20,11 @@ use crate::settings::SettingsHandle;
 pub const AUTO_CHECK_DELAY: Duration = Duration::from_secs(20);
 /// Then the app checks once a day while it keeps running in the tray.
 pub const AUTO_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// The plugin's requests never time out by default, so a stalled one (sleep, captive portal)
+/// would keep `Checking` or `Installing` until a restart. The check fetches a small JSON file.
+pub const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// The whole installer download (under 15 MB); when it runs out, the update can be tried again.
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UpdateInfo {
@@ -172,7 +178,7 @@ pub async fn check(app: &AppHandle) -> UpdateState {
         return current(app);
     }
     publish(app);
-    let found = match app.updater() {
+    let found = match app.updater_builder().timeout(CHECK_TIMEOUT).build() {
         Ok(updater) => updater.check().await.map_err(|err| err.to_string()),
         Err(err) => Err(err.to_string()),
     };
@@ -187,13 +193,17 @@ pub async fn check(app: &AppHandle) -> UpdateState {
 }
 
 /// Downloads, verifies and starts the installer. On Windows a successful install never returns:
-/// the plugin starts the installer and exits the process.
-pub async fn install(app: &AppHandle, dictation_busy: bool) -> Result<(), CommandError> {
+/// the plugin starts the installer and exits the process. No dictation can start in the meantime
+/// (the exit would kill it); when the install fails, dictation works again.
+pub async fn install(app: &AppHandle, controller: &ControllerHandle) -> Result<(), CommandError> {
     if cfg!(debug_assertions) {
         return Err(CommandError::new("unavailable", "only the installed app can update itself"));
     }
-    let update = app.state::<UpdateService>().with(|m| m.begin_install(dictation_busy))?;
+    // Lives until this function returns, i.e. until the app exits or the install failed.
+    let hold = controller.hold_for_update().await;
+    let mut update = app.state::<UpdateService>().with(|m| m.begin_install(hold.is_none()))?;
     publish(app);
+    update.timeout = Some(DOWNLOAD_TIMEOUT);
     info!(version = %update.version, "downloading the update");
     let progress_app = app.clone();
     let result = update
