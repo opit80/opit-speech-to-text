@@ -242,7 +242,7 @@ findings are listed in "Plan 4 — deferred findings" below.
 - Ruling: "delete my data" is Tauri's own uninstaller checkbox, "Delete the application data" / "Uygulama verilerini sil". It is unchecked by default and ignored in update mode. Out of the box it removes `%APPDATA%\<identifier>` and `%LOCALAPPDATA%\<identifier>` (WebView2 data). Our `hooks.nsh` extends it to `%APPDATA%\opit-speech-to-text\` and to this app's Credential Manager entries: the uninstaller runs `opit-speech-to-text.exe --delete-credentials` while the exe still exists. When the box is left unticked, the uninstaller removes only the program, the shortcuts and the Run value, and the data stays for a reinstall. Cost if wrong: an unticked box leaves data behind (the README documents manual removal), and a mis-guarded hook would wipe data during an update. Task 1's guard test and the checklist's update line exist to catch that.
 
 **View the app (user, before any release):**
-1. Close the old app that runs from `target\release`: tray icon → Exit. The installed app is a
+1. Close the old app that runs from `target\release`: tray icon → Quit (Çıkış). The installed app is a
    single instance, so it will not start while the old one runs.
 2. Back up `%APPDATA%\opit-speech-to-text\rules\user.yaml` (the installed app uses the real data
    folder). Backing up the whole `%APPDATA%\opit-speech-to-text\` folder is safer still.
