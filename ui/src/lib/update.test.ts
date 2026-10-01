@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bannerVersion, dictationBusy, progressPercent, statusMessage } from "./update";
+import { bannerVersion, dictationBusy, keepInstallError, progressPercent, statusMessage } from "./update";
 import type { DictationState, UpdateInfo, UpdateState } from "./types";
 
 const info: UpdateInfo = { version: "0.2.0", current_version: "0.1.0", notes: null };
@@ -61,5 +61,24 @@ describe("dictationBusy", () => {
     const free: DictationState[] = ["idle", "cancelled", "error"];
     for (const s of busy) expect(dictationBusy(s), s).toBe(true);
     for (const s of free) expect(dictationBusy(s), s).toBe(false);
+  });
+});
+
+describe("keepInstallError", () => {
+  const error = "Update failed: signature mismatch";
+  it("keeps a failed install's error while the update is on offer or installing again", () => {
+    // The install's rejection and the `available` event that undoes `installing` may arrive in either order.
+    expect(keepInstallError(error, { kind: "available", info })).toBe(error);
+    expect(keepInstallError(error, { kind: "installing", info, downloaded: 0, total: null })).toBe(error);
+  });
+  it("drops it once a new check starts or the update is gone", () => {
+    const gone: UpdateState[] = [
+      { kind: "idle" },
+      { kind: "checking" },
+      { kind: "up_to_date" },
+      { kind: "check_failed", message: "offline" },
+    ];
+    for (const state of gone) expect(keepInstallError(error, state), state.kind).toBeNull();
+    expect(keepInstallError(null, { kind: "available", info })).toBeNull();
   });
 });
