@@ -614,6 +614,57 @@ async fn history_follows_the_live_config() {
 }
 
 #[tokio::test]
+async fn an_update_hold_refuses_new_dictations_until_every_hold_is_released() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Err(ProviderError::Server(500)), Err(ProviderError::Server(500)), Ok("sonra")]);
+    h.send(Msg::Toggle);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording, Transcribing]).await;
+    h.expect_error(ErrorKind::Server).await;
+    assert!(h.handle.status().can_retry);
+
+    let first = h.handle.hold_for_update().await.expect("idle: the update may install");
+    let second = h.handle.hold_for_update().await.expect("holds stack");
+    h.send(Msg::Toggle);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.send(Msg::Retry);
+    h.send(Msg::Overlay(OverlayAction::Retry));
+    h.settle().await;
+    assert_eq!(h.mic.starts(), 1, "no recording while an update installs");
+    assert_eq!(h.providers.calls(), 2, "no Try again while an update installs");
+    assert_eq!(h.handle.status().state, Idle);
+    assert_eq!(h.overlay.last().text, "Installing an update…");
+
+    drop(first);
+    h.send(Msg::Toggle);
+    h.settle().await;
+    assert_eq!(h.mic.starts(), 1, "still held by the second install attempt");
+
+    drop(second);
+    h.send(Msg::Retry);
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["sonra "]);
+}
+
+#[tokio::test]
+async fn no_update_hold_while_a_dictation_is_in_flight() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("bitti")]);
+    h.providers.gate.forget_permits(1_000);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    assert!(h.handle.hold_for_update().await.is_none(), "recording");
+    h.send(Msg::Toggle);
+    h.expect(&[Transcribing]).await;
+    assert!(h.handle.hold_for_update().await.is_none(), "transcribing");
+
+    h.providers.gate.add_permits(1_000);
+    h.expect(&[Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["bitti "], "the refused hold changed nothing");
+    assert!(h.handle.hold_for_update().await.is_some());
+}
+
+#[tokio::test]
 async fn shutdown_releases_the_microphone_quietly() {
     let mut h = harness(AppConfig::default());
     h.send(Msg::Toggle);

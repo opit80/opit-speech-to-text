@@ -14,7 +14,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use crate::app_core::{AppCore, CommandError, CorrectionDraft, HotkeyState, MicTestSink, RulesPreview};
-use crate::controller::{DictationState, DictationStatus, Msg};
+use crate::controller::{DictationStatus, Msg};
 use crate::startup::StartupNotice;
 use crate::updates::{self, UpdateState};
 use crate::{events, tray};
@@ -304,9 +304,5 @@ async fn check_for_updates(app: AppHandle) -> UpdateState {
 /// On success the app exits and the installer takes over.
 #[tauri::command]
 async fn install_update(app: AppHandle, core: Core<'_>) -> Result<()> {
-    let busy = matches!(
-        core.status().state,
-        DictationState::Recording | DictationState::Transcribing | DictationState::Pasting
-    );
-    updates::install(&app, busy).await
+    updates::install(&app, &core.controller).await
 }
