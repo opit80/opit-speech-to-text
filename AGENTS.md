@@ -4,13 +4,16 @@ Windows voice-dictation tray app: press a hotkey, speak, the transcript is paste
 Transcription uses the user's own API key (Groq / OpenAI / any OpenAI-compatible server).
 Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md`.
 
-## Status (2026-10-01)
+## Status (2026-10-03)
 
 - Plans 1–4 are all implemented and merged to `main` (core, app shell, UI, release). Plan index,
   outcomes, open manual passes and **deferred findings** (candidates for the next work):
   `docs/superpowers/plans/README.md` — read it before starting new work.
-- Nothing is published yet: no GitHub remote, no tag, no release. Do **not** add a remote, push,
-  tag or create releases unless the user asks in that conversation.
+- The first public release **v0.1.3** is published as stable **Latest** at
+  `https://github.com/opit80/opit-speech-to-text/releases/tag/v0.1.3`; `origin` is configured.
+  Windows/Linux/UI CI, release packaging and production updater downloads passed. See
+  `docs/PUBLICATION-REPORT.md` for evidence and the explicitly untested installation/hardware boundary.
+- Do **not** push additional changes, tag or create releases unless the user asks in that conversation.
 
 ## Layout
 
