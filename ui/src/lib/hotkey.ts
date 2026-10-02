@@ -7,9 +7,18 @@ const NAMED: Record<string, string> = {
   ControlLeft: "LeftCtrl", ControlRight: "RightCtrl", ShiftLeft: "LeftShift", ShiftRight: "RightShift",
   AltLeft: "LeftAlt", AltRight: "RightAlt", Space: "Space", CapsLock: "CapsLock", ScrollLock: "ScrollLock",
   Pause: "Pause", Insert: "Insert", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
+  MetaLeft: "LeftWin", MetaRight: "RightWin", Escape: "Escape", Tab: "Tab", Enter: "Enter", NumpadEnter: "Enter",
+  Backspace: "Backspace", Delete: "Delete", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown",
+  PrintScreen: "PrintScreen", ContextMenu: "ContextMenu", NumLock: "NumLock",
+  Numpad0: "Numpad0", Numpad1: "Numpad1", Numpad2: "Numpad2", Numpad3: "Numpad3", Numpad4: "Numpad4", Numpad5: "Numpad5", Numpad6: "Numpad6", Numpad7: "Numpad7", Numpad8: "Numpad8", Numpad9: "Numpad9",
+  NumpadAdd: "NumpadAdd", NumpadSubtract: "NumpadSubtract", NumpadMultiply: "NumpadMultiply", NumpadDivide: "NumpadDivide", NumpadDecimal: "NumpadDecimal",
+  Backquote: "Backquote", Minus: "Minus", Equal: "Equal", BracketLeft: "BracketLeft", BracketRight: "BracketRight", Backslash: "Backslash", Semicolon: "Semicolon", Quote: "Quote", Comma: "Comma", Period: "Period", Slash: "Slash", IntlBackslash: "IntlBackslash",
+  AudioVolumeMute: "AudioVolumeMute", AudioVolumeUp: "AudioVolumeUp", AudioVolumeDown: "AudioVolumeDown", MediaPlayPause: "MediaPlayPause", MediaStop: "MediaStop", MediaTrackNext: "MediaTrackNext", MediaTrackPrevious: "MediaTrackPrevious",
 };
 
-/** Win keys are left out on purpose: Windows opens Start before the page sees the release. */
+export const SELECTABLE_KEYS = [...new Set(Object.values(NAMED)), ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)), ...Array.from({ length: 10 }, (_, i) => String(i)), ...Array.from({ length: 24 }, (_, i) => `F${i + 1}`)];
+
+/** Matches the names in Rust's platform/keys.rs; the picker covers OS-intercepted keys. */
 export function keyNameFromCode(code: string): string | null {
   if (Object.hasOwn(NAMED, code)) return NAMED[code];
   const letter = /^Key([A-Z])$/.exec(code);
@@ -20,7 +29,7 @@ export function keyNameFromCode(code: string): string | null {
   return null;
 }
 
-const MODIFIER_ORDER = ["LeftCtrl", "RightCtrl", "LeftShift", "RightShift", "LeftAlt", "RightAlt"];
+const MODIFIER_ORDER = ["LeftCtrl", "RightCtrl", "LeftShift", "RightShift", "LeftAlt", "RightAlt", "LeftWin", "RightWin"];
 
 export function sortCombo(keys: string[]): string[] {
   const mods = MODIFIER_ORDER.filter((m) => keys.includes(m));
@@ -57,22 +66,16 @@ export class ComboRecorder {
   }
 }
 
-export type ComboProblem = "empty" | "typing_only" | "single_modifier" | "too_many";
+export type ComboProblem = "empty";
 
-const TYPING = /^([A-Z0-9]|Space)$/;
-
-/** Why a combo would misfire in daily use, or null when it is fine. */
+/** Single letters and modifiers are deliberate choices; only an empty chord is refused. */
 export function comboProblem(keys: string[]): ComboProblem | null {
   if (keys.length === 0) return "empty";
-  if (keys.length > 4) return "too_many";
-  if (keys.every((k) => TYPING.test(k))) return "typing_only";
-  // A lone modifier fires on every Ctrl+C / capital letter: ComboDown comes as soon as it is held.
-  if (keys.length === 1 && MODIFIER_ORDER.includes(keys[0])) return "single_modifier";
   return null;
 }
 
 function keyLabel(key: string, lang: Lang): string {
-  const side = /^(Left|Right)(Ctrl|Shift|Alt)$/.exec(key);
+  const side = /^(Left|Right)(Ctrl|Shift|Alt|Win)$/.exec(key);
   if (side) return `${translate(lang, side[1] === "Left" ? "hotkey.left" : "hotkey.right")} ${side[2]}`;
   if (key === "Space") return translate(lang, "hotkey.space");
   return key;

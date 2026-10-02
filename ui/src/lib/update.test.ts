@@ -1,8 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { bannerVersion, dictationBusy, keepInstallError, progressPercent, statusMessage } from "./update";
+import { bannerVersion, checkUpdateState, dictationBusy, keepInstallError, progressPercent, statusMessage } from "./update";
 import type { DictationState, UpdateInfo, UpdateState } from "./types";
 
 const info: UpdateInfo = { version: "0.2.0", current_version: "0.1.0", notes: null };
+
+describe("checkUpdateState", () => {
+  it("does not overwrite an event that arrives before a stale command reply", async () => {
+    let revision = 0;
+    const adopted: UpdateState[] = [];
+    await checkUpdateState(async () => {
+      adopted.push({ kind: "available", info });
+      revision++;
+      return { kind: "checking" };
+    }, () => revision, (state) => adopted.push(state));
+    expect(adopted).toEqual([{ kind: "available", info }]);
+  });
+
+  it("adopts a command result when no event arrives", async () => {
+    const adopted: UpdateState[] = [];
+    await checkUpdateState(async () => ({ kind: "up_to_date" }), () => 0, (state) => adopted.push(state));
+    expect(adopted).toEqual([{ kind: "up_to_date" }]);
+  });
+
+  it("propagates command failures without changing state", async () => {
+    const adopted: UpdateState[] = [];
+    await expect(checkUpdateState(async () => { throw new Error("offline"); }, () => 0,
+      (state) => adopted.push(state))).rejects.toThrow("offline");
+    expect(adopted).toEqual([]);
+  });
+});
 
 describe("bannerVersion", () => {
   it("announces an available update until that version is dismissed", () => {

@@ -2,6 +2,17 @@
 import type { MessageKey, Params } from "./i18n";
 import type { DictationState, UpdateState } from "./types";
 
+/** An event received during an invoke is newer than its potentially stale reply. */
+export async function checkUpdateState(
+  check: () => Promise<UpdateState>,
+  revision: () => number,
+  adopt: (state: UpdateState) => void,
+): Promise<void> {
+  const started = revision();
+  const state = await check();
+  if (revision() === started) adopt(state);
+}
+
 /** The version the shell banner announces: only an available update the user has not dismissed. */
 export function bannerVersion(state: UpdateState, dismissed: string | null): string | null {
   if (state.kind !== "available") return null;

@@ -100,7 +100,14 @@ async fn evaluate(
     terms: &[String],
     retry_delay: Duration,
 ) -> Outcome {
-    let ctx = PipelineContext { primary: client, fallback: None, rules, prompt_context, retry_delay };
+    let ctx = PipelineContext {
+        primary: client,
+        fallback: None,
+        rules,
+        prompt_context,
+        retry_delay,
+        numbers_as_words: false,
+    };
     match pipeline::transcribe(audio, &ctx).await {
         Ok(transcript) => Outcome {
             wer: wer(&sample.reference, &transcript.text),

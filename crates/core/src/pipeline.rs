@@ -84,6 +84,7 @@ pub struct PipelineContext<'a, T> {
     pub rules: &'a RuleSet,
     pub prompt_context: &'a str,
     pub retry_delay: Duration,
+    pub numbers_as_words: bool,
 }
 
 pub fn prepare(recording: &Recording) -> Result<PreparedAudio, PipelineError> {
@@ -123,7 +124,8 @@ pub async fn transcribe<T: Transcriber>(
     };
 
     let profile = used.profile();
-    let (text, status, hits) = postprocess(&raw.text, ctx.rules, profile.apply_rules);
+    let (text, status, hits) =
+        postprocess_with_numbers(&raw.text, ctx.rules, profile.apply_rules, ctx.numbers_as_words, &profile.language);
     Ok(Transcript {
         raw_text: raw.text,
         text,
@@ -137,6 +139,16 @@ pub async fn transcribe<T: Transcriber>(
 }
 
 pub fn postprocess(raw: &str, rules: &RuleSet, apply_rules: bool) -> (String, TranscriptStatus, Vec<RuleHit>) {
+    postprocess_with_numbers(raw, rules, apply_rules, false, "tr")
+}
+
+pub fn postprocess_with_numbers(
+    raw: &str,
+    rules: &RuleSet,
+    apply_rules: bool,
+    numbers_as_words: bool,
+    language: &str,
+) -> (String, TranscriptStatus, Vec<RuleHit>) {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return (String::new(), TranscriptStatus::Empty, Vec::new());
@@ -147,7 +159,12 @@ pub fn postprocess(raw: &str, rules: &RuleSet, apply_rules: bool) -> (String, Tr
     if rules.is_hallucination(trimmed) {
         return (String::new(), TranscriptStatus::Hallucination, Vec::new());
     }
-    let (text, hits) = rules.apply_traced(trimmed);
+    let (mut text, mut hits) = rules.apply_traced(trimmed);
+    if numbers_as_words {
+        let (converted, number_hits) = crate::rules::numbers::spell_integers(&text, language);
+        text = converted;
+        hits.extend(number_hits);
+    }
     (text, TranscriptStatus::Ok, hits)
 }
 
@@ -258,7 +275,14 @@ mod tests {
         fallback: Option<&'a Scripted>,
         rules: &'a RuleSet,
     ) -> PipelineContext<'a, Scripted> {
-        PipelineContext { primary, fallback, rules, prompt_context: "", retry_delay: Duration::ZERO }
+        PipelineContext {
+            primary,
+            fallback,
+            rules,
+            prompt_context: "",
+            retry_delay: Duration::ZERO,
+            numbers_as_words: false,
+        }
     }
 
     fn tech_rules() -> RuleSet {
@@ -282,6 +306,15 @@ mod tests {
         assert_eq!(TranscriptStatus::parse("nope"), None);
     }
 
+    #[test]
+    fn number_setting_preserves_raw_output_when_off_or_rules_disabled() {
+        let rules = RuleSet::empty();
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, true, "tr").0, "On iki kişi");
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, false, "tr").0, "12 kişi");
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, false, true, "tr").0, "12 kişi");
+        assert_eq!(postprocess_with_numbers(" ", &rules, true, true, "tr").1, TranscriptStatus::Empty);
+    }
+
     #[tokio::test]
     async fn retries_the_primary_once() {
         let rules = RuleSet::empty();
@@ -299,6 +332,22 @@ mod tests {
         let t = transcribe(&speech(), &ctx(&primary, Some(&fallback), &rules)).await.unwrap();
         assert_eq!((t.text.as_str(), t.used_fallback, t.profile_id.as_str()), ("yedek", true, "b"));
         assert_eq!((primary.calls(), fallback.calls()), (2, 1));
+    }
+
+    #[tokio::test]
+    async fn number_spelling_uses_the_profile_that_produced_the_transcript() {
+        let rules = RuleSet::empty();
+        let mut primary = Scripted::new("a", vec![Err(ProviderError::Server(502)), Err(ProviderError::Timeout)]);
+        primary.profile.language = "en".into();
+        let mut fallback = Scripted::new("b", vec![Ok("12 kişi")]);
+        fallback.profile.language = "tr".into();
+        let mut context = ctx(&primary, Some(&fallback), &rules);
+        context.numbers_as_words = true;
+        let transcript = transcribe(&speech(), &context).await.unwrap();
+        assert_eq!(transcript.raw_text, "12 kişi");
+        assert_eq!(transcript.text, "On iki kişi");
+        assert!(transcript.used_fallback);
+        assert_eq!(transcript.profile_id, "b");
     }
 
     #[tokio::test]

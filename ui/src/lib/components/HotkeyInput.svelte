@@ -2,10 +2,11 @@
   import { tick } from "svelte";
   import { api } from "../api";
   import { app, errorText, t } from "../app.svelte";
-  import { ComboRecorder, comboProblem, formatCombo, keyNameFromCode, type ComboProblem } from "../hotkey";
+  import { ComboRecorder, comboProblem, formatCombo, keyNameFromCode, SELECTABLE_KEYS, type ComboProblem } from "../hotkey";
   import type { MessageKey } from "../i18n";
   import Button from "./Button.svelte";
   import Field from "./Field.svelte";
+  import Select from "./Select.svelte";
 
   interface Props {
     keys: string[];
@@ -16,9 +17,6 @@
   const DEFAULT_KEYS = ["RightCtrl", "RightShift"];
   const PROBLEM_KEYS: Record<ComboProblem, MessageKey> = {
     empty: "settings.combo.empty",
-    typing_only: "settings.combo.typing_only",
-    single_modifier: "settings.combo.single_modifier",
-    too_many: "settings.combo.too_many",
   };
   const recorder = new ComboRecorder();
   let box = $state<HTMLInputElement>();
@@ -27,6 +25,10 @@
   let checking = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let chosenKey = $state("F13");
+  let selectedKeys = $state<string[]>([]);
+  const keyOptions = $derived(SELECTABLE_KEYS.map((key) => ({ value: key, label: formatCombo([key], app.lang) })));
+  let expiry: ReturnType<typeof setTimeout> | undefined;
   // Bumped whenever a capture ends, so a late validation result of that capture is ignored.
   let session = 0;
   let disposed = false;
@@ -53,6 +55,7 @@
     session++;
     recorder.reset();
     capturing = true;
+    expiry = setTimeout(stopCapture, 30_000);
     await tick();
     box?.focus();
   }
@@ -61,6 +64,7 @@
   function stopCapture() {
     if (!capturing) return;
     capturing = false;
+    clearTimeout(expiry);
     checking = false;
     session++;
     recorder.reset();
@@ -106,12 +110,7 @@
 
   function keydown(event: KeyboardEvent) {
     if (!capturing) return;
-    if (event.code === "Escape") {
-      event.preventDefault();
-      stopCapture();
-      return;
-    }
-    if (keyNameFromCode(event.code) === null) return; // Tab still moves focus (and cancels).
+    if (keyNameFromCode(event.code) === null) return;
     event.preventDefault();
     if (event.repeat) return;
     recorder.down(event.code);
@@ -130,9 +129,21 @@
     void apply([...DEFAULT_KEYS]);
   }
 
+  async function useSelectedKey() {
+    if (saving || starting || checking) return;
+    stopCapture();
+    error = null;
+    checking = true;
+    const combo = selectedKeys.length ? [...selectedKeys] : [chosenKey];
+    try { await api.validateHotkey(combo); if (!disposed) await apply(combo); }
+    catch (e) { if (!disposed) error = errorText(e); }
+    finally { if (!disposed) checking = false; }
+  }
+
   // Leaving the page mid-capture resumes the hook (Rust also expires the capture after 30 s).
   $effect(() => () => {
     disposed = true;
+    clearTimeout(expiry);
     if (capturing) {
       capturing = false;
       void api.setHotkeyCapture(false).catch(() => {});
@@ -151,11 +162,24 @@
         {t("settings.change")}
       </Button>
       <Button variant="ghost" disabled={saving} onclick={reset}>{t("settings.reset_default")}</Button>
+      {#if capturing}<Button variant="ghost" onclick={stopCapture}>{t("settings.capture_cancel")}</Button>{/if}
     </div>
   {/snippet}
 </Field>
+<details>
+  <summary>{t("settings.select_keys")}</summary>
+  <p class="key-note muted">{t("settings.shortcut_details")}</p>
+  <div class="picker"><Select label={t("settings.key_choice")} options={keyOptions} bind:value={chosenKey} disabled={saving || checking} /><Button disabled={saving || checking} onclick={() => { if (!selectedKeys.includes(chosenKey)) selectedKeys = [...selectedKeys, chosenKey]; }}>{t("settings.add_key")}</Button></div>
+  <div class="picker">
+    {#each selectedKeys as key (key)}<Button variant="ghost" disabled={saving || checking} aria-label={t("settings.remove_key", { key: formatCombo([key], app.lang) })} onclick={() => { selectedKeys = selectedKeys.filter((item) => item !== key); }}>{formatCombo([key], app.lang)} ×</Button>{/each}
+    <Button disabled={saving || starting || checking} onclick={() => void useSelectedKey()}>{t("settings.apply_shortcut")}</Button>
+  </div>
+</details>
 
 <style>
   .combo { flex: 1; min-width: 180px; font-weight: 600; cursor: default; }
   .combo.capturing { border-color: var(--accent); font-weight: 400; color: var(--text-muted); }
+  summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); }
+  .picker { display: flex; align-items: flex-end; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
+  .key-note { font-size: var(--text-sm); margin-top: var(--space-2); max-width: 65ch; }
 </style>

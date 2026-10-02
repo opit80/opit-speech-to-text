@@ -2,7 +2,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
-  Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState,
+  Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
 } from "./types";
 
 export const api = {
@@ -42,6 +42,7 @@ export const api = {
 
   historyRecent: (limit: number, beforeId: number | null) =>
     invoke<Dictation[]>("history_recent", { limit, beforeId }),
+  usageStats: (sinceMs: number | null, untilMs: number) => invoke<UsageStats>("usage_stats", { sinceMs, untilMs }),
   historySearch: (query: string, limit: number) => invoke<Dictation[]>("history_search", { query, limit }),
   historyDelete: (id: number) => invoke<void>("history_delete", { id }),
   historyClear: () => invoke<void>("history_clear"),

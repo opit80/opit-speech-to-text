@@ -4,7 +4,7 @@ Open-source voice dictation for Windows. Press a hotkey, speak, and the text is 
 cursor is. Transcription runs on **your own API key** (Groq, OpenAI, or any OpenAI-compatible
 server); nothing goes through a third-party server of ours.
 
-> **Status:** v1 is in pre-release. Installers will be on the
+> Download stable installers from the
 > [Releases page](https://github.com/opit80/opit-speech-to-text/releases). The design lives in
 > [`docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md`](docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md).
 
@@ -18,8 +18,8 @@ for your user only, in `%LOCALAPPDATA%\Opit Speech to Text`, without an admin pr
 WebView2 runtime is missing, the installer downloads and adds it (this needs internet).
 
 **SmartScreen.** v1 installers are not code-signed yet, so Windows may show "Windows protected
-your PC". Click **More info → Run anyway**. Code-signing certificates are paid, so the project is
-applying for free open-source signing through SignPath Foundation. Updates are signed regardless:
+your PC". Click **More info → Run anyway**. Code-signing certificates are paid, so the project plans
+to apply for free open-source signing through SignPath Foundation. Updates are signed regardless:
 the app installs only an update whose signature matches the key built into it.
 
 The last installer page can start the app (and create a desktop shortcut). The setup wizard
@@ -50,18 +50,42 @@ pasted where your cursor is. **Esc** cancels. In push-to-talk mode you hold the 
 speak. A dictation started from the app's own window goes to the clipboard instead of being
 pasted.
 
+The latest dictation stays on the clipboard by default, and each new dictation replaces it.
+To bring back the previous clipboard after automatic pasting, enable **Restore the clipboard
+after pasting** in Settings.
+
 **Pages** (left sidebar):
 
 | Page | What it does |
 |---|---|
-| Home | Dictation status, a start/stop button, a quick profile switch and the latest dictations. Warns when the active profile has no API key. |
+| Home | Dictation status, a start/stop button, a quick profile switch and up to five latest dictations. Warns when the active profile has no API key. |
 | History | Search every dictation (Turkish letters match loosely: `ı`/`i`, `ş`/`s` …), copy, delete, clear, and play the audio when audio saving is on. Select a misrecognised word and use **Add correction rule** to fix it in future dictations, with a before/after preview. |
 | Rules | Turn the built-in rule packs (`tr-core`, `tr-tech`, `fivem`) on or off, set the context sentence, and watch the prompt budget gauge. Edit your personal rules (`user.yaml`) as a table or as raw YAML, and try them on any text before saving. |
 | Profiles | Transcription providers from presets (Groq, OpenAI, custom server): base URL, model, language, prompt options and a fallback profile. Store or remove the API key and test the connection. |
 | Settings | Interface language, start with Windows, start in the tray, sound feedback, the shortcut (capture a new one, mode, pause), microphone with a level test, maximum recording length, paste options, overlay position, history, audio saving and retention. **Updates** checks for and installs new versions. **About** shows the version and the data and log folders. |
+| Usage guide | An interactive illustration of cursor placement, speech, transcription and pasting, with your current shortcut and mode, first-dictation steps and answers about the clipboard, corrections, tray and privacy. The illustration does not record audio, call a provider or change the clipboard. |
+| Usage | Dictation count, total recording time, written characters and average processing time for today, the last seven local calendar days or all retained history. Deleted records disappear from the totals; dictations made with history off are not counted. This is local activity, not provider billing or quota. |
 
 Settings are saved as soon as you change them. Profiles and the rules editor have a **Save**
 button. Closing the window keeps the app running in the tray; open it again from the tray icon.
+
+**Simplified controls.** Settings keeps shortcut and microphone controls visible; general,
+pasting, history, update and about options expand on demand. Rules keeps number spelling,
+pack toggles and text preview visible; context/prompt details and the personal editor expand.
+
+**Number spelling.** Rules → **Write numbers as words** spells standalone integers in Turkish
+or English, following the profile that produced the transcript (including fallback). It defaults
+off, needs the profile's **Apply rules** option, preserves the raw transcript, and leaves dates,
+times, decimals, leading-zero identifiers and unsupported languages unchanged. For example,
+`12 kişi` becomes `On iki kişi`; turning the switch off preserves the provider's output.
+
+**Flexible shortcuts.** Single letters and modifiers, navigation, punctuation, numpad, media,
+Windows keys and combinations can be selected. Capture by pressing the keys, or build a chord
+with **Choose a key from the list** → **Add key** → **Apply shortcut**. The keys retain their
+normal function in other apps; system shortcuts can be intercepted by Windows. Hardware-only
+keys such as Fn are unavailable, and Num Lock affects numpad keys. If Escape is part of the
+configured shortcut, cancel a dictation from Home instead. Capture ends after 30 seconds or
+when focus leaves the capture field.
 
 **Where settings live.** Everything is under `%APPDATA%\opit-speech-to-text\`: `config.json`
 (settings and profiles), `rules\user.yaml` (your personal rules), `history.db`, `audio\` (only
@@ -95,7 +119,8 @@ The uninstaller always removes the program, its shortcuts and the "Start with Wi
 
 - `%APPDATA%\opit-speech-to-text\` (settings, `rules\user.yaml`, history, audio, logs),
 - the WebView data in `%LOCALAPPDATA%\io.github.opit80.opit-speech-to-text`,
-- the API keys this app stored in Windows Credential Manager.
+- the preset and current profile API keys in Windows Credential Manager. Keys orphaned by an
+  earlier configuration reset may remain; remove these manually as described below.
 
 **Back up `rules\user.yaml` first if you want to keep your rules.**
 
@@ -142,6 +167,14 @@ only) or `cargo tauri build --no-sign` (an unsigned installer, which cannot serv
 
 Developer notes:
 
+- To review the usage guide without a microphone, credentials or a Tauri process, run
+  `cd ui` then `npm run dev -- --port 5199 --strictPort` and open
+  `http://127.0.0.1:5199/guide-preview.html#/guide`. This dev-only entry uses synthetic history
+  and configuration and is excluded from the application build. Its switches and shortcut
+  editor affect only in-memory demo state, reset on reload, and never access real devices or
+  credentials. Number preview demonstrates the fixed `12` example; Rust tests verify the actual
+  converter. Query parameters: `lang=en`, `mode=ptt`, `paused=true`, `recording=true`, `empty=true`
+  (before the hash). Other pages: `#/usage`, `#/settings`, `#/rules`, `#/home`.
 - Set `OPIT_DATA_DIR` to run against a scratch data folder instead of
   `%APPDATA%\opit-speech-to-text`. An empty folder starts like a fresh install, wizard included.
 - API keys live in Windows Credential Manager. The Profiles page and the wizard store them there,
@@ -158,19 +191,26 @@ Developer notes:
 
 For maintainers:
 
-1. Bump `version` under `[workspace.package]` in `Cargo.toml` and commit it (with the updated
-   `Cargo.lock`) on `main`.
+1. Bump `version` under `[workspace.package]` in `Cargo.toml` and keep `Cargo.lock`,
+   `ui/package.json` and `ui/package-lock.json` in sync. Review and commit the changes on `main`.
 2. `git tag vX.Y.Z` (exactly `v` plus that version) and push the tag. The *Release* workflow
    (`.github/workflows/release.yml`) checks the tag against `Cargo.toml`, builds the signed
-   installer and `latest.json`, and attaches them to a **draft** release.
+   installer, `.sig`, `latest.json` and `SHA256SUMS`, verifies the installer signature and signed
+   version against the app's public key, and attaches them to a **draft** release. A rerun
+   refreshes a draft; it refuses to overwrite an already published release.
 3. Run [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md) on a clean Windows with the
-   draft's installer, then publish the draft. Publishing is what makes
+   draft's installer, then publish the draft with **Pre-release off** and **Set as latest release
+   on**. Publishing is what makes
    `https://github.com/opit80/opit-speech-to-text/releases/latest/download/latest.json` visible
    to the installed apps; drafts are ignored.
 
 Repository secrets: `TAURI_SIGNING_PRIVATE_KEY` (the content of the private key file) and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never regenerate the key: installed apps accept only updates
 signed with it, so a new key strands every installed copy.
+
+For the first publication, follow [docs/FIRST-RELEASE.md](docs/FIRST-RELEASE.md).
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Private vulnerability reporting:
+[SECURITY.md](SECURITY.md).
 
 ## Measuring accuracy
 

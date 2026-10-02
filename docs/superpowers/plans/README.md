@@ -291,6 +291,13 @@ are in the next section.
 
 ## Plan 4 — deferred findings
 
+**Follow-up (2026-10-03):** local pre-release preparation addresses the early credential deletion,
+the stale update-check UI reply, mismatched signing keys and same-tag draft reruns. It also corrects
+the cleanup documentation to cover preset/current profile keys, rather than promising enumeration
+of every orphaned credential. See [../../PRE-RELEASE-REPORT.md](../../PRE-RELEASE-REPORT.md) and
+[../../FIRST-RELEASE.md](../../FIRST-RELEASE.md) for current evidence and remaining acceptance work.
+The original review findings below are retained as historical context. Nothing has been published.
+
 **Deferred findings (candidates for a later plan)** from the final whole-branch review; its three
 Important findings were fixed in one wave:
 - Uninstaller: `hooks.nsh` PREUNINSTALL deletes the credentials before Tauri's

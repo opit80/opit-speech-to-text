@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use opit_core::config::AppConfig;
-use opit_core::history::Dictation;
+use opit_core::history::{Dictation, UsageStats};
 use opit_core::provider::Profile;
 use opit_core::rules::builtin::PackInfo;
 use opit_core::rules::prompt::BuiltPrompt;
@@ -71,6 +71,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         render_user_rules,
         correction_draft,
         history_recent,
+        usage_stats,
         history_search,
         history_delete,
         history_clear,
@@ -238,6 +239,11 @@ async fn correction_draft(core: Core<'_>, canonical: String, variant: String) ->
 #[tauri::command]
 async fn history_recent(core: Core<'_>, limit: usize, before_id: Option<i64>) -> Result<Vec<Dictation>> {
     blocking(core.inner().clone(), move |core| core.history_recent(limit, before_id)).await
+}
+
+#[tauri::command]
+async fn usage_stats(core: Core<'_>, since_ms: Option<i64>, until_ms: i64) -> Result<UsageStats> {
+    blocking(core.inner().clone(), move |core| core.usage_stats(since_ms, until_ms)).await
 }
 
 #[tauri::command]

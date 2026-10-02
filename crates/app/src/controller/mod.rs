@@ -481,6 +481,7 @@ impl<P: Providers> Controller<P> {
                 rules: &task_settings.rules,
                 prompt_context: &task_settings.config.rules.prompt_context,
                 retry_delay,
+                numbers_as_words: task_settings.config.rules.numbers_as_words,
             };
             let result = pipeline::transcribe(&audio, &ctx).await;
             let _ = tx.send(Msg::Transcribed { session, audio: Some(audio), result });

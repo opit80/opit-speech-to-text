@@ -7,8 +7,13 @@ release notes draft.
 
 ## Before tagging
 - [ ] `version` under `[workspace.package]` in `Cargo.toml` is the new version; CI is green on `main`.
+- [ ] UI package and lockfile versions match. Reviewed source and Git history contain no credentials
+      or personal data; updater key backup is confirmed outside the repository.
 - [ ] `git tag vX.Y.Z` points at that commit; the *Release* workflow finished and created a draft
-      with `opit-speech-to-text_X.Y.Z_x64-setup.exe`, its `.sig` and `latest.json`.
+      with `opit-speech-to-text_X.Y.Z_x64-setup.exe`, its `.sig`, `latest.json` and `SHA256SUMS`.
+- [ ] `node scripts/release/latest-json.mjs verify vX.Y.Z <downloaded-assets-dir>` passes against
+      the actual draft files (signature, signed version, manifest and checksums). Only drafts may
+      be rebuilt/reuploaded; use a new version after publication.
 - [ ] `latest.json` → `version` is X.Y.Z, `platforms."windows-x86_64".url` ends in the asset name
       above, `platforms."windows-x86_64".signature` equals the `.sig` content.
 
@@ -42,8 +47,10 @@ release notes draft.
 
 ## Update
 
-Run this from the second release on. For the very first release: publish vX.Y.Z, then cut
-vX.Y.Z+1 at once and run this section before telling anyone about the release.
+Run this from the second release on, or update a lower installed version to the first published
+release. Before publication, local updater download/verification tests can use a fixture server;
+they do not prove the live GitHub endpoint, Windows installation or restart. Do not create a fake
+release solely to increment the version. Complete a real update before broad distribution.
 
 - [ ] Install the previous published version, finish the wizard, make two dictations, store a key.
 - [ ] Publish the new draft. In the old app: banner "Version … is available" appears within a
@@ -58,10 +65,15 @@ vX.Y.Z+1 at once and run this section before telling anyone about the release.
 - [ ] Uninstall **without** "Delete the application data": program, shortcuts and Run value are
       gone; `%APPDATA%\opit-speech-to-text` and the Credential Manager entries remain.
 - [ ] Reinstall, then uninstall **with** the box ticked: `%APPDATA%\opit-speech-to-text`,
-      `%LOCALAPPDATA%\io.github.opit80.opit-speech-to-text` and every `*.opit-speech-to-text`
-      Credential Manager entry (`cmdkey /list`) are gone.
+      `%LOCALAPPDATA%\io.github.opit80.opit-speech-to-text` and the preset/current profile keys in
+      Credential Manager are gone. Orphaned keys from old/reset configurations may remain; remove
+      these manually as documented in the README.
+- [ ] With the app running and "Delete the application data" ticked, cancel the app-close prompt:
+      application, data and credentials remain. Silent reinstalls and updates never delete data.
 
 ## Publish
-- [ ] Edit the draft notes (what changed, known issues, the SmartScreen note), then **Publish**.
+- [ ] Enable private vulnerability reporting and verify the reporting instructions in SECURITY.md.
+- [ ] Edit the draft notes (what changed, known issues, the SmartScreen note), then **Publish** with
+      **Pre-release disabled** and **Set as latest release enabled**.
 - [ ] `https://github.com/opit80/opit-speech-to-text/releases/latest/download/latest.json` serves
       the new version.

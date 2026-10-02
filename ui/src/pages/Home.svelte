@@ -12,7 +12,8 @@
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import Select from "../lib/components/Select.svelte";
-  import StatusBadge from "../lib/components/StatusBadge.svelte";
+  import DictationControl from "../lib/components/DictationControl.svelte";
+
 
   let recent = $state<Dictation[]>([]);
   let listBusy = $state(true);
@@ -30,7 +31,6 @@
   let listRequest = 0;
 
   const active = $derived(app.config?.profiles.find((p) => p.id === app.config?.active_profile_id) ?? null);
-  const busyState = $derived(app.status.state === "transcribing" || app.status.state === "pasting");
   const keyProblem = $derived(
     app.status.kind === "missing_key" || app.status.kind === "invalid_key" || app.status.kind === "credentials",
   );
@@ -41,8 +41,8 @@
     listBusy = true;
     listError = null;
     try {
-      const rows = await api.historyRecent(8, null);
-      if (!disposed && request === listRequest) recent = rows;
+      const rows = await api.historyRecent(5, null);
+      if (!disposed && request === listRequest) recent = rows.slice(0, 5);
     } catch (error) {
       if (!disposed && request === listRequest) listError = errorText(error);
     } finally {
@@ -143,23 +143,11 @@
 <div>
   <PageHeader title={t("home.title")} />
   <div class="home-cards">
-    <section class="card status-card stack" aria-label={t("home.title")}>
-      <div role="status"><StatusBadge status={app.status} /></div>
-      <div class="row">
-        <div class="primary-action">
-          <Button variant="primary" busy={actionBusy} disabled={busyState || profileBusy}
-            onclick={() => void runDictation(api.toggleDictation)}>
-            {#if busyState}{t("home.working")}
-            {:else if app.status.state === "recording"}<Icon name="stop" />{t("home.stop")}
-            {:else}<Icon name="mic" />{t("home.start")}{/if}
-          </Button>
-        </div>
-        {#if app.status.state === "recording" || busyState}
-          <Button variant="ghost" disabled={actionBusy} onclick={() => void runDictation(api.cancelDictation)}>
-            {t("home.cancel")}
-          </Button>
-        {/if}
-      </div>
+    <DictationControl status={app.status} busy={actionBusy} disabled={profileBusy} feedbackVisible={app.status.state === "error" || !!actionError}
+      profileName={active?.name} shortcut={formatCombo(app.config?.hotkey.keys ?? [], app.lang)}
+      shortcutEnabled={app.config?.hotkey.enabled ?? false} mode={app.config?.hotkey.mode ?? "toggle"}
+      ontoggle={() => void runDictation(api.toggleDictation)} oncancel={() => void runDictation(api.cancelDictation)}>
+      {#snippet feedback()}
       {#if app.status.state === "error"}
         <Banner tone="error">
           {app.status.message}
@@ -178,16 +166,8 @@
         </Banner>
       {/if}
       {#if actionError}<Banner tone="error">{actionError}</Banner>{/if}
-      {#if app.config}
-        <p class="muted">
-          {app.config.hotkey.enabled ? t("home.shortcut", {
-            combo: formatCombo(app.config.hotkey.keys, app.lang),
-            mode: t(app.config.hotkey.mode === "toggle" ? "home.mode.toggle" : "home.mode.push_to_talk"),
-          }) : t("home.shortcut_off")}
-        </p>
-      {/if}
-      <p class="muted own-window">{t("home.own_window")}</p>
-    </section>
+      {/snippet}
+    </DictationControl>
 
     <section class="card stack" aria-label={t("home.profile")} aria-busy={profileBusy || keyBusy}>
       <Select label={t("home.profile")}
@@ -250,9 +230,6 @@
 
 <style>
   .home-cards { display: flex; flex-direction: column; gap: var(--space-4); }
-  .status-card { padding: var(--space-5); }
-  .primary-action :global(button) { min-height: 48px; min-width: 200px; font-size: var(--text-lg); padding: var(--space-3) var(--space-4); }
-  .own-window { font-size: var(--text-sm); }
   .recent-header { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
   a { color: var(--accent); text-underline-offset: 2px; }
   a:hover { color: var(--accent-hover); }
