@@ -257,7 +257,7 @@ async fn toggle_records_transcribes_pastes_and_saves() {
     h.expect(&[Transcribing, Pasting, Idle]).await;
 
     assert_eq!(h.paster.texts(), ["Claude Code'u aç "]);
-    assert!(h.paster.pasted.lock().unwrap()[0].1, "clipboard restore follows the config");
+    assert!(!h.paster.pasted.lock().unwrap()[0].1, "the latest dictation stays on the clipboard by default");
     let saved = h.history.entries();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].raw_text, "cloud code'u aç");
@@ -274,6 +274,21 @@ async fn toggle_records_transcribes_pastes_and_saves() {
     assert!(!h.hotkey.escape_captured());
     assert_eq!((h.mic.finished.load(SeqCst), h.providers.warmups.load(SeqCst)), (1, 1));
     assert_eq!(h.handle.status(), DictationStatus::default());
+}
+
+#[tokio::test]
+async fn consecutive_dictations_write_the_latest_text_without_restoring_the_clipboard() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("ilk dikte"), Ok("son dikte")]);
+
+    for _ in 0..2 {
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        h.send(Msg::Toggle);
+        h.expect(&[Transcribing, Pasting, Idle]).await;
+    }
+
+    assert_eq!(*h.paster.pasted.lock().unwrap(), [("ilk dikte ".into(), false), ("son dikte ".into(), false)]);
 }
 
 #[tokio::test]

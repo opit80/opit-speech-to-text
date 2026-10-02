@@ -17,18 +17,23 @@
   import Profiles from "./pages/Profiles.svelte";
   import Settings from "./pages/Settings.svelte";
   import Setup from "./pages/Setup.svelte";
+  import Guide from "./pages/Guide.svelte";
+  import Usage from "./pages/Usage.svelte";
 
-  const NAV: { route: Route; icon: "home" | "history" | "rules" | "profiles" | "settings" }[] = [
+
+  const NAV: { route: Route; icon: "home" | "history" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [
     { route: "home", icon: "home" },
     { route: "history", icon: "history" },
     { route: "rules", icon: "rules" },
     { route: "profiles", icon: "profiles" },
     { route: "settings", icon: "settings" },
+    { route: "usage", icon: "usage" },
+    { route: "guide", icon: "guide" },
   ];
 
   const navKeys: Record<Route, MessageKey> = {
     home: "nav.home", history: "nav.history", rules: "nav.rules",
-    profiles: "nav.profiles", settings: "nav.settings", setup: "nav.setup",
+    profiles: "nav.profiles", settings: "nav.settings", usage: "nav.usage", guide: "nav.guide", setup: "nav.setup",
   };
 
   function navKey(route: Route): MessageKey {
@@ -84,8 +89,8 @@
     <nav aria-label={t("nav.main")}>
       <div class="brand">{t("app.name")}</div>
       {#each NAV as item (item.route)}
-        <a href={`#/${item.route}`} aria-current={router.route === item.route ? "page" : undefined}>
-          <Icon name={item.icon} />{t(navKey(item.route))}
+        <a href={`#/${item.route}`} aria-label={t(navKey(item.route))} title={t(navKey(item.route))} aria-current={router.route === item.route ? "page" : undefined}>
+          <Icon name={item.icon} /><span class="nav-label">{t(navKey(item.route))}</span>
         </a>
       {/each}
       <div class="version muted">v{app.info?.version}</div>
@@ -130,7 +135,9 @@
       {:else if router.route === "history"}<History />
       {:else if router.route === "rules"}<Rules />
       {:else if router.route === "profiles"}<Profiles />
-      {:else if router.route === "settings"}<Settings />{/if}
+      {:else if router.route === "settings"}<Settings />
+      {:else if router.route === "guide"}<Guide />
+      {:else if router.route === "usage"}<Usage />{/if}
     </main>
   </div>
 {/if}
@@ -149,4 +156,11 @@
   main :global(> *) { max-width: var(--content); margin-left: auto; margin-right: auto; }
   .notices { display: flex; flex-direction: column; gap: var(--space-3); margin-bottom: var(--space-5); }
   .center { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  @media (max-width: 600px) {
+    .shell { grid-template-columns: 56px minmax(0, 1fr); }
+    nav { padding: var(--space-4) var(--space-2); gap: var(--space-2); }
+    nav a { justify-content: center; min-height: 40px; padding: 0; }
+    .nav-label, .brand, .version { display: none; }
+    main { padding: var(--space-4); }
+  }
 </style>

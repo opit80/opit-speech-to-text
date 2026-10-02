@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import {
-  assetName, downloadUrl, findInstaller, manifest, rfc3339, versionFromTag, workspaceVersion,
+  assetName, assets, checkVersion, downloadUrl, findInstaller, manifest, releaseFiles, rfc3339, versionFromTag, workspaceVersion,
 } from "./latest-json.mjs";
 
 test("release tags are v<major>.<minor>.<patch>", () => {
@@ -52,4 +54,29 @@ test("latest.json uses the updater's static format", () => {
 
 test("pub_date is RFC 3339 without milliseconds", () => {
   assert.equal(rfc3339(new Date(Date.UTC(2026, 9, 1, 12, 0, 0, 123))), "2026-10-01T12:00:00Z");
+});
+
+test("refuses version mismatches before building or writing release assets", () => {
+  const version = workspaceVersion(readFileSync(new URL("../../Cargo.toml", import.meta.url), "utf8"));
+  assert.equal(checkVersion(`v${version}`), version);
+  assert.throws(() => checkVersion("v999.999.999"), /does not match/);
+});
+
+test("a bogus signature never produces a manifest or copies an installer", () => {
+  const version = workspaceVersion(readFileSync(new URL("../../Cargo.toml", import.meta.url), "utf8"));
+  const base = resolve(tmpdir());
+  const dir = mkdtempSync(join(base, "opit-release-test-"));
+  try {
+    const bundle = join(dir, "bundle");
+    const out = join(dir, "out");
+    mkdirSync(bundle);
+    writeFileSync(join(bundle, assetName(version)), "not an installer");
+    writeFileSync(join(bundle, `${assetName(version)}.sig`), "not a signature");
+    assert.throws(() => assets(`v${version}`, bundle, out), /encoding/i);
+    assert.equal(existsSync(out), false);
+    assert.deepEqual(releaseFiles(version), [assetName(version), `${assetName(version)}.sig`, "latest.json", "SHA256SUMS"]);
+  } finally {
+    assert.equal(dirname(dir), base, "cleanup stays within the allocated temporary directory");
+    rmSync(dir, { recursive: true });
+  }
 });

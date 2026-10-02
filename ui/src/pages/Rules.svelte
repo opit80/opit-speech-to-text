@@ -15,7 +15,7 @@
   import RulesTable from "./RulesTable.svelte";
 
   const kindKeys: Record<RuleKind, MessageKey> = {
-    correction: "rules.kind.correction", replacement: "rules.kind.replacement", casing: "rules.kind.casing",
+    correction: "rules.kind.correction", replacement: "rules.kind.replacement", casing: "rules.kind.casing", numbers: "rules.kind.numbers",
   };
   const enqueueRender = createSerialQueue();
   let disposed = false;
@@ -27,6 +27,8 @@
   let packsError = $state<string | null>(null);
   let configBusy = $state(false);
   let packsSaveError = $state<string | null>(null);
+  let numbersError = $state<string | null>(null);
+  let numbersRevision = $state(0);
   let contextText = $state("");
   let contextError = $state<string | null>(null);
   let budget = $state<BuiltPrompt | null>(null);
@@ -52,6 +54,19 @@
 
   const dirty = $derived(yamlText !== savedText);
   const editorLocked = $derived(!editorLoaded || editorBusy || saveBusy);
+  const numbersView = $derived.by(() => { void numbersRevision; return { checked: app.config?.rules.numbers_as_words ?? false }; });
+
+  async function setNumbers(checked: boolean) {
+    if (configBusy || disposed) return;
+    configBusy = true;
+    numbersError = null;
+    try {
+      await saveConfig((draft) => { draft.rules.numbers_as_words = checked; });
+      if (!disposed) toast(t("common.saved"));
+    } catch (error) {
+      if (!disposed) { numbersError = errorText(error); numbersRevision++; }
+    } finally { if (!disposed) configBusy = false; }
+  }
 
   async function loadPacks() {
     packsBusy = true;
@@ -278,6 +293,11 @@
 <div>
   <PageHeader title={t("rules.title")} description={t("rules.description")} />
   <div class="rules-sections">
+    <section class="card stack">
+      <Switch label={t("rules.numbers")} hint={t("rules.numbers_hint")} checked={numbersView.checked}
+        disabled={configBusy || !app.config} onchange={(checked) => void setNumbers(checked)} />
+      {#if numbersError}<Banner tone="error">{numbersError}</Banner>{/if}
+    </section>
     <section class="card stack" aria-labelledby="rules-packs" aria-busy={packsBusy || configBusy}>
       <h2 id="rules-packs">{t("rules.packs")}</h2>
       <div class="personal-row"><p>{t("rules.personal")}</p><p class="muted hint">{t("rules.personal_hint")}</p></div>
@@ -293,8 +313,33 @@
       {#if packsSaveError}<Banner tone="error">{packsSaveError}</Banner>{/if}
     </section>
 
-    <section class="card stack" aria-labelledby="rules-prompt">
-      <h2 id="rules-prompt">{t("rules.prompt")}</h2>
+    <section class="card stack" aria-labelledby="rules-try">
+      <h2 id="rules-try">{t("rules.try")}</h2>
+      <Field label={t("rules.try_input")} error={previewError}>
+        {#snippet children(id)}
+          <textarea {id} rows="3" bind:value={tryText} aria-invalid={!!previewError}
+            aria-describedby={previewError ? `${id}-description` : undefined}></textarea>
+        {/snippet}
+      </Field>
+      <div class="stack" aria-live="polite" aria-busy={previewBusy}>
+        {#if previewBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
+        {#if preview}
+          <h3>{t("rules.try_result")}</h3><p class="result-text">{preview.text}</p>
+          {#if preview.hallucination}<Banner tone="warning">{t("rules.try_hallucination")}</Banner>{/if}
+          {#if preview.hits.length}
+            <h3>{t("rules.try_hits")}</h3>
+            <ul>{#each preview.hits as hit, index (index)}<li><code>{hit.from}</code> → <code>{hit.to}</code> <span class="muted">({hit.rule.pack_id} · {t(kindKeys[hit.rule.kind])})</span></li>{/each}</ul>
+          {/if}
+          {#if preview.warnings.length}
+            <Banner tone="warning"><p>{t("rules.skipped")}</p><ul>{#each preview.warnings as warning, index (index)}<li>{warning.pack_id}: {warning.message}</li>{/each}</ul></Banner>
+          {/if}
+        {/if}
+      </div>
+    </section>
+
+    <details class="card advanced" open={!!contextError || !!budgetError}>
+      <summary>{t("rules.advanced_prompt")}</summary>
+      <div class="stack advanced-body">
       <Field label={t("rules.context")} hint={t("rules.context_hint")} error={contextError}>
         {#snippet children(id)}
           <textarea {id} rows="2" bind:value={contextText} disabled={configBusy || !app.config} onchange={() => void saveContext()}
@@ -315,10 +360,12 @@
           {#if budget.dropped_terms.length}<Banner tone="warning">{t("rules.dropped", { terms: budget.dropped_terms.join(", ") })}</Banner>{/if}
         {/if}
       </div>
-    </section>
+    </div>
+    </details>
 
-    <section class="card stack" aria-labelledby="rules-editor" aria-busy={editorBusy || renderBusy || saveBusy}>
-      <h2 id="rules-editor">{t("rules.editor")}</h2>
+    <details class="card advanced" open={!!editorError || dirty}>
+      <summary>{t("rules.advanced_editor")}</summary>
+      <div class="stack advanced-body">
       {#if dirty}<Banner tone="warning">{t("rules.unsaved")}</Banner>{/if}
       <div class="tabs" role="tablist" aria-label={t("rules.editor")}>
         <button type="button" id="rules-tab-table" role="tab" bind:this={tableTab} aria-selected={tab === "table"}
@@ -355,35 +402,16 @@
         {#if dirty}<Button variant="ghost" disabled={editorLocked || renderBusy} onclick={() => void revert()}>{t("rules.revert")}</Button>{/if}
         <Button variant="primary" busy={saveBusy} disabled={!dirty || editorLocked || renderBusy} onclick={() => void saveRules()}>{t("common.save")}</Button>
       </div>
-    </section>
+    </div>
+    </details>
 
-    <section class="card stack" aria-labelledby="rules-try">
-      <h2 id="rules-try">{t("rules.try")}</h2>
-      <Field label={t("rules.try_input")} error={previewError}>
-        {#snippet children(id)}
-          <textarea {id} rows="3" bind:value={tryText} aria-invalid={!!previewError}
-            aria-describedby={previewError ? `${id}-description` : undefined}></textarea>
-        {/snippet}
-      </Field>
-      <div class="stack" aria-live="polite" aria-busy={previewBusy}>
-        {#if previewBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
-        {#if preview}
-          <h3>{t("rules.try_result")}</h3><p class="result-text">{preview.text}</p>
-          {#if preview.hallucination}<Banner tone="warning">{t("rules.try_hallucination")}</Banner>{/if}
-          {#if preview.hits.length}
-            <h3>{t("rules.try_hits")}</h3>
-            <ul>{#each preview.hits as hit, index (index)}<li><code>{hit.from}</code> → <code>{hit.to}</code> <span class="muted">({hit.rule.pack_id} · {t(kindKeys[hit.rule.kind])})</span></li>{/each}</ul>
-          {/if}
-          {#if preview.warnings.length}
-            <Banner tone="warning"><p>{t("rules.skipped")}</p><ul>{#each preview.warnings as warning, index (index)}<li>{warning.pack_id}: {warning.message}</li>{/each}</ul></Banner>
-          {/if}
-        {/if}
-      </div>
-    </section>
+
   </div>
 </div>
 
 <style>
+  summary { cursor: pointer; font-weight: 600; }
+  .advanced-body { margin-top: var(--space-4); }
   .rules-sections { display: flex; flex-direction: column; gap: var(--space-4); }
   .personal-row { border-bottom: 1px solid var(--border); padding-bottom: var(--space-3); }
   .hint { font-size: var(--text-sm); }

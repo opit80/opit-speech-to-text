@@ -1,4 +1,4 @@
-export const ROUTES = ["home", "history", "rules", "profiles", "settings", "setup"] as const;
+export const ROUTES = ["home", "history", "rules", "profiles", "settings", "usage", "guide", "setup"] as const;
 export type Route = (typeof ROUTES)[number];
 
 /** `#/settings` → "settings"; anything unknown → "home". Rust opens `index.html#/<route>`. */

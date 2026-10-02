@@ -48,7 +48,7 @@ export interface AppConfig {
   recording: { microphone: string | null; max_seconds: number };
   paste: { restore_clipboard: boolean; trailing_space: boolean };
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number };
-  rules: { enabled_packs: string[]; prompt_context: string };
+  rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
   ui: {
     start_in_tray: boolean;
     autostart: boolean;
@@ -81,7 +81,15 @@ export interface Dictation {
   audio_path: string | null;
 }
 
-export type RuleKind = "correction" | "replacement" | "casing";
+export type RuleKind = "correction" | "replacement" | "casing" | "numbers";
+
+export interface UsageStats {
+  dictations: number;
+  successful: number;
+  audio_ms: number;
+  characters: number;
+  average_latency_ms: number;
+}
 export interface RuleHit {
   rule: { pack_id: string; kind: RuleKind; index: number };
   from: string;

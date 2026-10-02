@@ -13,9 +13,14 @@ describe("keyNameFromCode", () => {
     expect(keyNameFromCode("Pause")).toBe("Pause");
   });
   it("rejects keys the hook does not know or that cannot be captured", () => {
-    for (const code of ["MetaLeft", "MetaRight", "Escape", "Tab", "Enter", "F25", "Numpad1", "Backquote"]) {
+    for (const code of ["Fn", "Unidentified", "F25"]) {
       expect(keyNameFromCode(code), code).toBeNull();
     }
+  });
+  it("supports navigation, Windows, punctuation and numpad keys", () => {
+    expect(keyNameFromCode("MetaLeft")).toBe("LeftWin");
+    for (const code of ["Escape", "Tab", "Enter", "Numpad1", "Backquote", "ArrowUp", "Delete", "MediaPlayPause"]) expect(keyNameFromCode(code)).toBe(code);
+    expect(keyNameFromCode("NumpadEnter")).toBe("Enter");
   });
 });
 
@@ -30,7 +35,7 @@ describe("ComboRecorder", () => {
   });
   it("ignores unknown keys and starts over after a combo", () => {
     const r = new ComboRecorder();
-    expect(r.down("MetaLeft")).toBe(false);
+    expect(r.down("Fn")).toBe(false);
     r.down("ShiftRight");
     expect(r.up("ShiftRight")).toEqual(["RightShift"]);
     r.down("F13");
@@ -45,14 +50,9 @@ describe("comboProblem", () => {
     expect(comboProblem(["F13"])).toBeNull();
     expect(comboProblem(["Pause"])).toBeNull();
   });
-  it("rejects combos that would fire while typing or using shortcuts", () => {
+  it("allows deliberate single-key and large combinations but refuses empty ones", () => {
     expect(comboProblem([])).toBe("empty");
-    expect(comboProblem(["A"])).toBe("typing_only");
-    expect(comboProblem(["A", "B"])).toBe("typing_only");
-    expect(comboProblem(["Space"])).toBe("typing_only");
-    expect(comboProblem(["RightShift"])).toBe("single_modifier");
-    expect(comboProblem(["LeftCtrl"])).toBe("single_modifier");
-    expect(comboProblem(["LeftCtrl", "LeftShift", "LeftAlt", "A", "B"])).toBe("too_many");
+    for (const combo of [["A"], ["A", "B"], ["Space"], ["RightShift"], ["LeftCtrl"], ["Escape"], ["LeftCtrl", "LeftShift", "LeftAlt", "A", "B"]]) expect(comboProblem(combo)).toBeNull();
   });
 });
 

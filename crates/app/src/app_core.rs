@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use opit_core::config::{AppConfig, ConfigError};
-use opit_core::history::{Dictation, HistoryError};
+use opit_core::history::{Dictation, HistoryError, UsageStats};
 use opit_core::provider::{OpenAiCompatible, Profile, ProviderError};
 use opit_core::rules::pack::{CorrectionOutcome, header_comments};
 use opit_core::rules::prompt::{BuiltPrompt, build_prompt};
@@ -531,7 +531,13 @@ impl AppCore {
             }
         };
         let hallucination = rules.is_hallucination(text.trim());
-        let (text, hits) = rules.apply_traced(text.trim());
+        let (mut text, mut hits) = rules.apply_traced(text.trim());
+        if current.config.rules.numbers_as_words {
+            let language = current.config.active_profile().map_or("tr", |p| p.language.as_str());
+            let (converted, number_hits) = opit_core::rules::numbers::spell_integers(&text, language);
+            text = converted;
+            hits.extend(number_hits);
+        }
         Ok(RulesPreview { text, hits, warnings, hallucination })
     }
 
@@ -550,6 +556,10 @@ impl AppCore {
 
     pub fn history_recent(&self, limit: usize, before_id: Option<i64>) -> Result<Vec<Dictation>, CommandError> {
         Ok(self.history()?.store().recent(limit.min(500), before_id)?)
+    }
+
+    pub fn usage_stats(&self, since_ms: Option<i64>, until_ms: i64) -> Result<UsageStats, CommandError> {
+        Ok(self.history()?.store().usage(since_ms, until_ms)?)
     }
 
     pub fn history_search(&self, query: &str, limit: usize) -> Result<Vec<Dictation>, CommandError> {
@@ -973,6 +983,18 @@ mod tests {
     }
 
     const USER_YAML: &str = "# my header\n\nschema: 1\nid: user\nname: Me\ncorrections:\n  Claude Code: [cloud code]\n";
+
+    #[test]
+    fn number_preview_follows_saved_config_and_profile_language() {
+        let f = fixture();
+        assert_eq!(f.core.rules_preview("12 kişi", None).unwrap().text, "12 kişi");
+        let mut config = f.core.config();
+        config.rules.numbers_as_words = true;
+        f.core.save_config(config).unwrap();
+        let preview = f.core.rules_preview("12 kişi", None).unwrap();
+        assert_eq!(preview.text, "On iki kişi");
+        assert_eq!(preview.hits[0].rule.kind, opit_core::rules::RuleKind::Numbers);
+    }
 
     #[test]
     fn render_user_rules_keeps_the_header_and_validates() {
