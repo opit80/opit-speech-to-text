@@ -64,6 +64,17 @@ Verify unauthenticated access to
 `https://github.com/opit80/opit-speech-to-text/releases/latest/download/latest.json`
 and its installer URL. The manifest must advertise 0.1.3 and the exact verified signature.
 
+For a repeatable production-endpoint check on Windows, download the four release files and set
+`OPIT_RELEASE_ASSETS` to that directory, then run:
+
+```sh
+cargo test -p opit-speech-to-text --test updater_live -- --ignored
+```
+
+This uses the actual Tauri updater and the configured public GitHub HTTPS endpoint. It verifies
+that 0.1.2 discovers/downloads the signed release, downloaded bytes match the verified assets,
+and an already-current version gets no update. It never installs or restarts the running app.
+
 Test a lower installed version updating to 0.1.3, or use the next actual release to test
 0.1.3 → a higher version. Do not create a fake release solely to increment the number.
 Use a disposable Windows environment and verify restart, version, preserved data and the
