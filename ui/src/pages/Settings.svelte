@@ -1,7 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { api } from "../lib/api";
-  import { app, errorText, saveConfig, t } from "../lib/app.svelte";
+  import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
   import type { AppConfig, HotkeyMode, OverlayPosition } from "../lib/types";
@@ -168,7 +168,7 @@
   async function checkNow() {
     errors.update_check = null;
     try {
-      app.update = await api.checkForUpdates();
+      await checkForUpdates();
     } catch (e) {
       if (!disposed) errors.update_check = errorText(e);
     }
@@ -220,11 +220,12 @@
 {/snippet}
 
 <div>
-  <PageHeader title={t("settings.title")} />
+  <PageHeader title={t("settings.title")} description={t("settings.description")} />
   {#if config && view}
     <div class="sections">
-      <section class="card stack" aria-labelledby="settings-general">
-        <h2 id="settings-general">{t("settings.general")}</h2>
+      <details class="card settings-group" open={["language", "autostart", "start_in_tray", "sound"].some((field) => !!errors[field])}>
+        <summary>{t("settings.general")}</summary>
+        <div class="stack group-body">
         <Select label={t("settings.language")} options={languageOptions} value={view.language}
           onchange={(v) => void save("language", (c) => { c.ui_language = v === "system" ? null : v; })} />
         {@render fieldError("language")}
@@ -240,7 +241,8 @@
         <Switch label={t("settings.sound")} hint={t("settings.sound_hint")} checked={view.sound}
           onchange={(v) => void save("sound", (c) => { c.ui.sound_feedback = v; })} />
         {@render fieldError("sound")}
-      </section>
+      </div>
+      </details>
 
       <section class="card stack" aria-labelledby="settings-shortcut">
         <h2 id="settings-shortcut">{t("settings.shortcut")}</h2>
@@ -249,7 +251,7 @@
           onchange={(keys) => save("hotkey_keys", (c) => { c.hotkey.keys = keys; })} />
         {@render fieldError("hotkey_keys")}
         <Select label={t("settings.mode")} options={modeOptions} value={view.mode}
-          hint={t(config.hotkey.mode === "toggle" ? "settings.mode_toggle_hint" : "settings.mode_ptt_hint")}
+          hint={t(config.hotkey.keys.includes("Escape") ? "guide.cancel_from_home" : config.hotkey.mode === "toggle" ? "settings.mode_toggle_hint" : "settings.mode_ptt_hint")}
           onchange={(v) => void save("mode", (c) => { c.hotkey.mode = v as HotkeyMode; })} />
         {@render fieldError("mode")}
         <Switch label={t("settings.shortcut_enabled")} checked={view.hotkeyEnabled}
@@ -279,8 +281,9 @@
           (c) => c.recording.max_seconds, (c, n) => { c.recording.max_seconds = n; })}
       </section>
 
-      <section class="card stack" aria-labelledby="settings-pasting">
-        <h2 id="settings-pasting">{t("settings.pasting")}</h2>
+      <details class="card settings-group" open={["restore_clipboard", "trailing_space", "overlay"].some((field) => !!errors[field])}>
+        <summary>{t("settings.pasting")}</summary>
+        <div class="stack group-body">
         <Switch label={t("settings.restore_clipboard")} hint={t("settings.restore_clipboard_hint")}
           checked={view.restoreClipboard}
           onchange={(v) => void save("restore_clipboard", (c) => { c.paste.restore_clipboard = v; })} />
@@ -291,10 +294,12 @@
         <Select label={t("settings.overlay")} options={overlayOptions} value={view.overlay}
           onchange={(v) => void save("overlay", (c) => { c.ui.overlay_position = v as OverlayPosition; })} />
         {@render fieldError("overlay")}
-      </section>
+      </div>
+      </details>
 
-      <section class="card stack" aria-labelledby="settings-history">
-        <h2 id="settings-history">{t("settings.history")}</h2>
+      <details class="card settings-group" open={["history_enabled", "save_audio", "retention"].some((field) => !!errors[field])}>
+        <summary>{t("settings.history")}</summary>
+        <div class="stack group-body">
         <Switch label={t("settings.history_enabled")} checked={view.historyEnabled}
           onchange={(v) => void save("history_enabled", (c) => { c.history.enabled = v; })} />
         {@render fieldError("history_enabled")}
@@ -305,10 +310,12 @@
         {@render numberInput("retention", t("settings.retention"), undefined, 1, 365, 1,
           !config.history.enabled || !config.history.save_audio,
           (c) => c.history.audio_retention_days, (c, n) => { c.history.audio_retention_days = n; })}
-      </section>
+      </div>
+      </details>
 
-      <section class="card stack" aria-labelledby="settings-updates">
-        <h2 id="settings-updates">{t("settings.updates")}</h2>
+      <details class="card settings-group" open={installing !== null || !!errors.update_check}>
+        <summary>{t("settings.updates")}</summary>
+        <div class="stack group-body">
         <Switch label={t("settings.check_updates")} checked={view.checkUpdates} disabled={debugBuild}
           hint={debugBuild ? t("update.debug") : t("settings.check_updates_hint")}
           onchange={(v) => void save("check_updates", (c) => { c.ui.check_updates = v; })} />
@@ -321,10 +328,12 @@
           {#if app.update.kind === "available"}<UpdateInstallButton />{/if}
         </div>
         {@render fieldError("update_check")}
-      </section>
+      </div>
+      </details>
 
-      <section class="card stack" aria-labelledby="settings-about">
-        <h2 id="settings-about">{t("settings.about")}</h2>
+      <details class="card settings-group" open={!!errors.copy_data || !!errors.copy_log}>
+        <summary>{t("settings.about")}</summary>
+        <div class="stack group-body">
         {#if app.info}
           <p>{t("settings.version", { version: app.info.version })}</p>
           <dl class="paths">
@@ -349,12 +358,15 @@
         {/if}
         <p class="muted">{t("settings.keys_note")}</p>
         <p class="muted">{t("settings.logs_note")}</p>
-      </section>
+      </div>
+      </details>
     </div>
   {/if}
 </div>
 
 <style>
+  summary { cursor: pointer; font-weight: 600; }
+  .group-body { margin-top: var(--space-4); }
   .sections { display: flex; flex-direction: column; gap: var(--space-4); }
   .error { color: var(--danger); font-size: var(--text-sm); }
   .mic-row { display: flex; align-items: flex-end; gap: var(--space-2); }

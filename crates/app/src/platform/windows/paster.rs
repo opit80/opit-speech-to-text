@@ -301,6 +301,27 @@ mod tests {
         String::from_utf16_lossy(&units).trim_end_matches('\0').to_string()
     }
 
+    /// Verifies replacement and retention on the actual Windows clipboard without sending keys.
+    #[test]
+    #[ignore = "touches the real clipboard"]
+    fn latest_dictation_stays_on_clipboard_smoke() {
+        struct RestoreUserClipboard(Snapshot);
+        impl Drop for RestoreUserClipboard {
+            fn drop(&mut self) {
+                if let Ok(clipboard) = Clipboard::open() {
+                    let _ = clipboard.restore(&self.0);
+                }
+            }
+        }
+        let _restore = RestoreUserClipboard(Clipboard::open().unwrap().snapshot());
+        for text in ["first dictation", "latest dictation ğüş"] {
+            let (backup, _) = put_text(text, false).unwrap();
+            assert!(backup.is_none());
+            thread::sleep(CLIPBOARD_RESTORE_DELAY + Duration::from_millis(100));
+            assert_eq!(text_of(&read(CF_UNICODETEXT).unwrap()), text);
+        }
+    }
+
     /// Round-trips text + a custom format through put_text / restore_if_unchanged and prints
     /// the integrity levels. Saves and puts back the user's clipboard around the test.
     #[test]
