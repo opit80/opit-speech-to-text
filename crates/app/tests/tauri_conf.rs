@@ -51,6 +51,20 @@ fn the_hooks_target_the_apps_data_folder_and_cleanup_flag() {
 }
 
 #[test]
+fn cancelling_uninstall_cannot_delete_credentials_and_silent_runs_keep_data() {
+    let pre = HOOKS.split("!macro NSIS_HOOK_PREUNINSTALL").nth(1).unwrap().split("!macroend").next().unwrap();
+    let check = pre.find("!insertmacro CheckIfAppIsRunning").expect("confirm before deleting credentials");
+    let cleanup = pre.find("ExecWait").unwrap();
+    assert!(check < cleanup, "the cancellation point must precede credential deletion");
+    for block in HOOKS.split("!macro ").skip(1) {
+        let body = block.split("!macroend").next().unwrap();
+        if body.contains("ExecWait") || body.contains("RmDir") {
+            assert!(body.contains("${AndIfNot} ${Silent}"), "silent runs must not delete user data");
+        }
+    }
+}
+
+#[test]
 fn the_updater_reads_the_github_manifest_and_requires_signed_versions() {
     let conf = conf();
     let updater: tauri_plugin_updater::Config =

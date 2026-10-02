@@ -34,6 +34,52 @@ pub fn vk_for(name: &str) -> Option<u32> {
         "end" => 0x23,
         "pageup" => 0x21,
         "pagedown" => 0x22,
+        "escape" => VK_ESCAPE,
+        "tab" => 0x09,
+        "enter" => 0x0D,
+        "backspace" => 0x08,
+        "delete" => 0x2E,
+        "arrowleft" => 0x25,
+        "arrowup" => 0x26,
+        "arrowright" => 0x27,
+        "arrowdown" => 0x28,
+        "printscreen" => 0x2C,
+        "contextmenu" => 0x5D,
+        "numlock" => 0x90,
+        "numpad0" => 0x60,
+        "numpad1" => 0x61,
+        "numpad2" => 0x62,
+        "numpad3" => 0x63,
+        "numpad4" => 0x64,
+        "numpad5" => 0x65,
+        "numpad6" => 0x66,
+        "numpad7" => 0x67,
+        "numpad8" => 0x68,
+        "numpad9" => 0x69,
+        "numpadmultiply" => 0x6A,
+        "numpadadd" => 0x6B,
+        "numpadsubtract" => 0x6D,
+        "numpaddecimal" => 0x6E,
+        "numpaddivide" => 0x6F,
+        "semicolon" => 0xBA,
+        "equal" => 0xBB,
+        "comma" => 0xBC,
+        "minus" => 0xBD,
+        "period" => 0xBE,
+        "slash" => 0xBF,
+        "backquote" => 0xC0,
+        "bracketleft" => 0xDB,
+        "backslash" => 0xDC,
+        "bracketright" => 0xDD,
+        "quote" => 0xDE,
+        "intlbackslash" => 0xE2,
+        "audiovolumemute" => 0xAD,
+        "audiovolumedown" => 0xAE,
+        "audiovolumeup" => 0xAF,
+        "mediatracknext" => 0xB0,
+        "mediatrackprevious" => 0xB1,
+        "mediastop" => 0xB2,
+        "mediaplaypause" => 0xB3,
         _ => 0,
     };
     if named != 0 {
@@ -137,7 +183,7 @@ impl KeyTracker {
             self.lone_candidate = None;
             return Some(HotkeyEvent::ComboDown);
         }
-        (vk == VK_ESCAPE).then_some(HotkeyEvent::Escape)
+        (vk == VK_ESCAPE && !self.combo.contains(&VK_ESCAPE)).then_some(HotkeyEvent::Escape)
     }
 
     fn on_up(&mut self, vk: u32) -> Option<HotkeyEvent> {
@@ -267,7 +313,42 @@ mod tests {
         assert_eq!(vk_for("PageUp"), Some(0x21));
         assert_eq!(vk_for("PageDown"), Some(0x22));
         assert_eq!(vk_for("Ctrl"), None, "generic modifiers are not accepted");
-        assert_eq!(vk_for("Escape"), None);
+        assert_eq!(vk_for("Escape"), Some(VK_ESCAPE));
+    }
+
+    #[test]
+    fn flexible_keys_and_single_key_shortcuts_work() {
+        for (name, vk) in [
+            ("Tab", 0x09),
+            ("Enter", 0x0D),
+            ("ArrowDown", 0x28),
+            ("Numpad1", 0x61),
+            ("Backquote", 0xC0),
+            ("MediaPlayPause", 0xB3),
+        ] {
+            assert_eq!(vk_for(name), Some(vk));
+            let mut tracker = KeyTracker::new(parse_combo(&names(&[name])).unwrap());
+            assert_eq!(tracker.on_key(vk, true), Some(ComboDown));
+            assert_eq!(tracker.on_key(vk, true), None);
+            assert_eq!(tracker.on_key(vk, false), Some(ComboUp));
+        }
+        let mut tracker = KeyTracker::new(vec![VK_ESCAPE]);
+        assert_eq!(
+            tracker.on_key(VK_ESCAPE, true),
+            Some(ComboDown),
+            "configured Escape is a shortcut, not cancellation"
+        );
+        assert_eq!(tracker.on_key(VK_ESCAPE, false), Some(ComboUp));
+    }
+
+    #[test]
+    fn escape_in_a_chord_does_not_cancel_before_the_chord_is_complete() {
+        let mut tracker = KeyTracker::new(vec![VK_ESCAPE, KEY_A]);
+        assert_eq!(tracker.on_key(VK_ESCAPE, true), None);
+        assert_eq!(tracker.on_key(KEY_A, true), Some(ComboDown));
+        assert_eq!(tracker.on_key(KEY_A, false), Some(ComboUp));
+        assert_eq!(tracker.on_key(VK_ESCAPE, false), None);
+        assert_eq!(rctrl_rshift().on_key(VK_ESCAPE, true), Some(Escape));
     }
 
     #[test]

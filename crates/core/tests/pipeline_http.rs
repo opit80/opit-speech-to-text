@@ -49,6 +49,7 @@ async fn groq_style_round_trip_with_rules() {
         rules: &rules,
         prompt_context: "Yazılım konuşması",
         retry_delay: Duration::ZERO,
+        numbers_as_words: false,
     };
 
     let transcript = assert_send(pipeline::run(&speech(), &ctx)).await.unwrap();
@@ -83,6 +84,7 @@ async fn http_fallback_after_two_server_errors() {
         rules: &rules,
         prompt_context: "",
         retry_delay: Duration::ZERO,
+        numbers_as_words: false,
     };
 
     let transcript = pipeline::run(&speech(), &ctx).await.unwrap();
@@ -111,6 +113,7 @@ async fn a_shared_client_works_inside_a_spawned_task() {
             rules: &rules,
             prompt_context: "",
             retry_delay: Duration::ZERO,
+            numbers_as_words: false,
         };
         pipeline::transcribe(&audio, &ctx).await
     });
