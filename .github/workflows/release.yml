@@ -35,6 +35,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release/draft-release.mjs check "$env:OPIT_RELEASE_TAG"
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install UI dependencies
         working-directory: ui
