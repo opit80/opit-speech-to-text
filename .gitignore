@@ -5,3 +5,11 @@ node_modules/
 /eval-data/
 /crates/app/gen/
 /release-assets/
+/crates/app/target/
+/.superpowers/
+.env
+.env.*
+!.env.example
+*.key
+*.key.password
+*.password

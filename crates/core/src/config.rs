@@ -85,13 +85,14 @@ impl Default for RecordingConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PasteConfig {
+    /// Opt in to restoring the previous clipboard; otherwise keep the latest dictation.
     pub restore_clipboard: bool,
     pub trailing_space: bool,
 }
 
 impl Default for PasteConfig {
     fn default() -> Self {
-        Self { restore_clipboard: true, trailing_space: true }
+        Self { restore_clipboard: false, trailing_space: true }
     }
 }
 
@@ -115,11 +116,17 @@ pub struct RulesConfig {
     pub enabled_packs: Vec<String>,
     /// Short context sentence placed at the start of the Whisper prompt.
     pub prompt_context: String,
+    /// Spell standalone integers in the transcription profile's language.
+    pub numbers_as_words: bool,
 }
 
 impl Default for RulesConfig {
     fn default() -> Self {
-        Self { enabled_packs: vec!["tr-core".into(), "tr-tech".into()], prompt_context: String::new() }
+        Self {
+            enabled_packs: vec!["tr-core".into(), "tr-tech".into()],
+            prompt_context: String::new(),
+            numbers_as_words: false,
+        }
     }
 }
 
@@ -261,7 +268,7 @@ mod tests {
         assert_eq!(c.hotkey.keys, ["RightCtrl", "RightShift"]);
         assert_eq!(c.hotkey.mode, HotkeyMode::Toggle);
         assert_eq!(c.recording.max_seconds, 180);
-        assert!(c.paste.restore_clipboard && c.paste.trailing_space);
+        assert!(!c.paste.restore_clipboard && c.paste.trailing_space);
         assert!(c.history.enabled && !c.history.save_audio);
         assert_eq!(c.history.audio_retention_days, 30);
         assert_eq!(c.rules.enabled_packs, ["tr-core", "tr-tech"]);
@@ -280,8 +287,15 @@ mod tests {
     fn partial_json_fills_defaults_and_ignores_unknown_fields() {
         let c = AppConfig::from_json(r#"{"schema_version":1,"paste":{"trailing_space":false},"future":true}"#).unwrap();
         assert!(!c.paste.trailing_space);
-        assert!(c.paste.restore_clipboard);
+        assert!(!c.paste.restore_clipboard);
         assert_eq!(c.profiles.len(), 2);
+    }
+
+    #[test]
+    fn clipboard_restore_remains_an_explicit_opt_in() {
+        let c = AppConfig::from_json(r#"{"paste":{"restore_clipboard":true}}"#).unwrap();
+        assert!(c.paste.restore_clipboard);
+        assert!(AppConfig::from_json(&c.to_json()).unwrap().paste.restore_clipboard);
     }
 
     #[test]
@@ -295,6 +309,15 @@ mod tests {
     fn newer_schema_is_rejected() {
         let err = AppConfig::from_json(r#"{"schema_version":99}"#).unwrap_err();
         assert!(matches!(err, ConfigError::TooNew { found: 99 }));
+    }
+
+    #[test]
+    fn number_spelling_defaults_off_for_existing_configs_and_round_trips() {
+        let old = AppConfig::from_json(r#"{"rules":{"enabled_packs":[],"prompt_context":""}}"#).unwrap();
+        assert!(!old.rules.numbers_as_words);
+        let mut config = old;
+        config.rules.numbers_as_words = true;
+        assert!(AppConfig::from_json(&config.to_json()).unwrap().rules.numbers_as_words);
     }
 
     #[test]

@@ -24,6 +24,12 @@ export function formatSeconds(ms: number, lang: Lang): string {
   return `${n} ${translate(lang, "common.seconds")}`;
 }
 
+/** Keep processing latency in milliseconds, with locale-aware grouping. */
+export function formatMilliseconds(ms: number, lang: Lang): string {
+  const n = new Intl.NumberFormat(LOCALES[lang], { maximumFractionDigits: 0 }).format(ms);
+  return `${n} ${translate(lang, "common.milliseconds")}`;
+}
+
 /** 125400 → "2:05". */
 export function formatClock(ms: number): string {
   const total = Math.round(ms / 1000);

@@ -10,6 +10,9 @@
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
+  ${AndIfNot} ${Silent}
+    ; Tauri checks again after this hook, but cancellation must precede any credential deletion.
+    !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
     ; The exe is still in place here. It deletes this app's Credential Manager entries and exits.
     ExecWait '"$INSTDIR\${MAINBINARYNAME}.exe" --delete-credentials'
   ${EndIf}
@@ -18,6 +21,7 @@
 !macro NSIS_HOOK_POSTUNINSTALL
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1
+  ${AndIfNot} ${Silent}
     SetShellVarContext current
     RmDir /r "$APPDATA\opit-speech-to-text"
   ${EndIf}

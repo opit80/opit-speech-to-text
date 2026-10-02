@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatClock, formatDateTime, formatSeconds } from "./format";
+import { formatClock, formatDateTime, formatMilliseconds, formatSeconds } from "./format";
 
 describe("format", () => {
   const now = new Date(2026, 9, 1, 18, 0).getTime();
@@ -18,5 +18,11 @@ describe("format", () => {
   it("formats a clock", () => {
     expect(formatClock(5000)).toBe("0:05");
     expect(formatClock(125400)).toBe("2:05");
+  });
+  it("keeps latency in milliseconds, rounding averages and grouping by locale", () => {
+    expect(formatMilliseconds(900, "tr")).toBe("900 ms");
+    expect(formatMilliseconds(1200.4, "tr")).toBe("1.200 ms");
+    expect(formatMilliseconds(1200.6, "en")).toBe("1,201 ms");
+    expect(formatMilliseconds(0, "en")).toBe("0 ms");
   });
 });

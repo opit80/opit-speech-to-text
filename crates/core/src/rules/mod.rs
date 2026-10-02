@@ -4,6 +4,7 @@ pub mod builtin;
 pub mod engine;
 pub mod hallucination;
 pub mod matcher;
+pub mod numbers;
 pub mod pack;
 pub mod prompt;
 

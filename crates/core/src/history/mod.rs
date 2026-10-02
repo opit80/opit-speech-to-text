@@ -87,6 +87,15 @@ pub struct HistoryStore {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct UsageStats {
+    pub dictations: u64,
+    pub successful: u64,
+    pub audio_ms: u64,
+    pub characters: u64,
+    pub average_latency_ms: f64,
+}
+
 impl HistoryStore {
     pub fn open(path: &Path) -> Result<Self, HistoryError> {
         if let Some(parent) = path.parent() {
@@ -137,6 +146,27 @@ impl HistoryStore {
     pub fn set_audio_path(&self, id: i64, path: &str) -> Result<(), HistoryError> {
         self.conn.execute("UPDATE dictations SET audio_path = ?1 WHERE id = ?2", params![path, id])?;
         Ok(())
+    }
+
+    /// Aggregates all retained history, without returning transcript content to the caller.
+    /// `since_ms` is inclusive and `until_ms` is exclusive (local-day bounds supplied by the UI).
+    pub fn usage(&self, since_ms: Option<i64>, until_ms: i64) -> Result<UsageStats, HistoryError> {
+        Ok(self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(status = 'ok'), 0), COALESCE(SUM(audio_ms), 0),
+             COALESCE(SUM(CASE WHEN status = 'ok' THEN LENGTH(text) ELSE 0 END), 0),
+             COALESCE(AVG(CASE WHEN status = 'ok' THEN latency_ms END), 0)
+             FROM dictations WHERE created_at_ms >= ?1 AND created_at_ms < ?2",
+            params![since_ms.unwrap_or(i64::MIN), until_ms],
+            |row| {
+                Ok(UsageStats {
+                    dictations: row.get::<_, i64>(0)?.max(0) as u64,
+                    successful: row.get::<_, i64>(1)?.max(0) as u64,
+                    audio_ms: row.get::<_, i64>(2)?.max(0) as u64,
+                    characters: row.get::<_, i64>(3)?.max(0) as u64,
+                    average_latency_ms: row.get(4)?,
+                })
+            },
+        )?)
     }
 
     pub fn get(&self, id: i64) -> Result<Option<Dictation>, HistoryError> {
@@ -227,6 +257,27 @@ pub fn fts_query(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_aggregates_all_rows_with_inclusive_start_and_exclusive_end() {
+        let store = HistoryStore::open_in_memory().unwrap();
+        for i in 0..12 {
+            store.insert(&entry("üç", "x", i)).unwrap();
+        }
+        let mut empty = entry("", "", 12);
+        empty.status = TranscriptStatus::Empty;
+        empty.latency_ms = 9_000;
+        store.insert(&empty).unwrap();
+        let stats = store.usage(Some(5), 13).unwrap();
+        assert_eq!(stats.dictations, 8);
+        assert_eq!(stats.successful, 7);
+        assert_eq!(stats.characters, 14);
+        assert_eq!(stats.audio_ms, 8_000);
+        assert_eq!(stats.average_latency_ms, 800.0);
+        assert_eq!(store.usage(None, 12).unwrap().dictations, 12);
+        store.clear().unwrap();
+        assert_eq!(store.usage(None, 13).unwrap(), UsageStats::default());
+    }
 
     fn entry<'a>(text: &'a str, raw_text: &'a str, created_at_ms: i64) -> NewDictation<'a> {
         NewDictation {

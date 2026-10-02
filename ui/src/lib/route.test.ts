@@ -7,6 +7,8 @@ describe("parseRoute", () => {
     expect(parseRoute("#settings")).toBe("settings");
     expect(parseRoute("#/history?q=x")).toBe("history");
     expect(parseRoute("#/rules/extra")).toBe("rules");
+    expect(parseRoute("#/guide")).toBe("guide");
+    expect(parseRoute("#/usage")).toBe("usage");
   });
   it("falls back to home", () => {
     expect(parseRoute("")).toBe("home");
