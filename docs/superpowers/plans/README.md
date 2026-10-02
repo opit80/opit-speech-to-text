@@ -14,6 +14,11 @@ guessed ones.
 
 ## Plan 1 outcome — what later plans build on
 
+**Publication follow-up (2026-10-03):** the first stable Latest release is **v0.1.3** at
+`https://github.com/opit80/opit-speech-to-text/releases/tag/v0.1.3`. See
+[../../PUBLICATION-REPORT.md](../../PUBLICATION-REPORT.md) for CI and live updater evidence.
+The plan outcomes below retain their original historical status and manual acceptance boundaries.
+
 **Entry points in `opit-core`** (read the code; these are the stable seams):
 - `pipeline::prepare(&Recording) -> Result<PreparedAudio, PipelineError>` runs the silence gate and resamples to 16 kHz mono. Keep the `PreparedAudio` around for "Try again".
 - `pipeline::transcribe(&PreparedAudio, &PipelineContext<T>)` does one retry, then falls back once, then runs the rules. `pipeline::run` does both steps. The future is `Send`.

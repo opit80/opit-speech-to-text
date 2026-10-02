@@ -1,5 +1,8 @@
 # Pre-release readiness report — 2026-10-03
 
+**Historical preparation snapshot.** Publication was subsequently authorized and completed;
+see [PUBLICATION-REPORT.md](PUBLICATION-REPORT.md) for the live release and download evidence.
+
 **Outcome:** the local 0.1.3 source candidate, updater fixes, automated checks and signed release
 package are prepared. **This is not approval to publish:** clean-Windows acceptance, source
 commit/merge, GitHub setup/CI and live installation/restart remain unverified or unperformed.
