@@ -16,6 +16,7 @@ pub enum RuleKind {
     Correction,
     Replacement,
     Casing,
+    Numbers,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

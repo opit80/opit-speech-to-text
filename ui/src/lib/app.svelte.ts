@@ -6,7 +6,7 @@ import { resolveLang, translate, type MessageKey, type Params } from "./i18n";
 import { parseRoute } from "./route";
 import { navigate } from "./router.svelte";
 import { createSerialQueue } from "./serial";
-import { keepInstallError } from "./update";
+import { checkUpdateState, keepInstallError } from "./update";
 import type { AppConfig, AppInfo, DictationStatus, HotkeyState, Lang, StartupNotice, UpdateState } from "./types";
 
 interface AppState {
@@ -37,6 +37,19 @@ export const app = $state<AppState>({
   updateDismissed: null,
   updateError: null,
 });
+
+let updateRevision = 0;
+
+function setUpdate(state: UpdateState): void {
+  updateRevision++;
+  app.update = state;
+  app.updateError = keepInstallError(app.updateError, state);
+}
+
+/** Preserve newer update events when the check command returns late. */
+export function checkForUpdates(): Promise<void> {
+  return checkUpdateState(api.checkForUpdates, () => updateRevision, setUpdate);
+}
 
 /** Reactive in templates: it reads `app.lang`. */
 export function t(key: MessageKey, params?: Params): string {
@@ -78,8 +91,7 @@ export async function initApp(): Promise<() => void> {
       onNavigate((route) => navigate(parseRoute(`#/${route}`))),
       onUpdateState((u) => {
         updateSeen = true;
-        app.update = u;
-        app.updateError = keepInstallError(app.updateError, u);
+        setUpdate(u);
       }),
     ]);
     for (const result of subscriptions) {
@@ -100,7 +112,7 @@ export async function initApp(): Promise<() => void> {
     setConfig(configSeen && app.config ? app.config : config);
     if (!statusSeen) app.status = status;
     if (!hotkeySeen) app.hotkey = hotkey;
-    if (!updateSeen) app.update = update;
+    if (!updateSeen) setUpdate(update);
     app.notices = notices;
     app.ready = true;
   } catch (error) {

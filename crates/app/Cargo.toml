@@ -49,6 +49,7 @@ windows-native-keyring-store.workspace = true
 windows-registry.workspace = true
 
 [dev-dependencies]
+tauri = { workspace = true, features = ["test"] }
 hound.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

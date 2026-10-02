@@ -17,18 +17,17 @@
 
 <style>
   button {
-    display: inline-grid;
-    grid-template-columns: 12px auto 12px;
+    display: inline-flex;
+    justify-content: center;
     align-items: center;
     gap: var(--space-2);
     min-height: 32px;
-    padding: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     background: var(--surface);
     cursor: pointer;
   }
-  button::after { content: ""; }
   .label { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); }
   button:hover { background: var(--surface-2); }
   button:active { transform: translateY(1px); }
@@ -40,5 +39,6 @@
   button:disabled { opacity: 0.6; cursor: default; transform: none; }
   .spinner { width: 12px; height: 12px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; visibility: hidden; }
   .spinner.active { visibility: visible; animation: spin 0.8s linear infinite; }
+  .spinner:not(.active) { display: none; }
   @keyframes spin { to { transform: rotate(360deg); } }
 </style>
