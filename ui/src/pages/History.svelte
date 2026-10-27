@@ -23,6 +23,8 @@
   let moreError = $state<string | null>(null);
   let hasMore = $state(false);
   let copyingId = $state<number | null>(null);
+  let retryingIds = $state<number[]>([]);
+  let retryError = $state<string | null>(null);
   let copyError = $state<string | null>(null);
   let audioBusy = $state(false);
   let audioError = $state<string | null>(null);
@@ -131,6 +133,23 @@
       if (!disposed) copyError = errorText(error);
     } finally {
       if (!disposed) copyingId = null;
+    }
+  }
+
+  async function retry(row: Dictation) {
+    if (disposed || mutationBusy || retryingIds.includes(row.id)) return;
+    retryingIds = [...retryingIds, row.id];
+    retryError = null;
+    try {
+      const updated = await api.historyRetry(row.id);
+      if (disposed) return;
+      rows = rows.map((item) => item.id === row.id ? updated : item);
+      if (audioId === row.id) stopAudio();
+      toast(t(updated.text ? "history.retry_copied" : "dictation.empty"));
+    } catch (error) {
+      if (!disposed) retryError = errorText(error);
+    } finally {
+      if (!disposed) retryingIds = retryingIds.filter((id) => id !== row.id);
     }
   }
 
@@ -246,6 +265,7 @@
         </Banner>
       {/if}
       {#if copyError}<Banner tone="error">{copyError}</Banner>{/if}
+      {#if retryError}<Banner tone="error">{retryError}</Banner>{/if}
       {#if liveError}<Banner tone="error">{liveError}</Banner>{/if}
       {#if audioError}<Banner tone="error">{audioError}</Banner>{/if}
       {#if mutationError && !deleteOpen && !clearOpen}<Banner tone="error">{mutationError}</Banner>{/if}
@@ -253,13 +273,16 @@
       {:else if !rows.length && !listError}<p class="muted">{query ? t("history.no_results", { query }) : t("history.empty")}</p>{/if}
       <ul>
         {#each rows as row (row.id)}
-          <li>
+          <li class:failed={row.status === "failed"}>
             <div class="metadata muted">
               <time datetime={new Date(row.created_at_ms).toISOString()}>{formatDateTime(row.created_at_ms, app.lang)}</time>
               <span>{row.profile_id}</span>
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
               <span>{t("history.audio_length", { duration: formatClock(row.audio_ms) })}</span>
             </div>
+            {#if row.status === "failed"}
+              <p class="failure"><span class="failed-badge">{t("history.failed")}</span> {t(`error.kind.${row.error_code ?? "rejected"}`)}</p>
+            {:else}
             <!-- A caret enables keyboard selection; beforeinput keeps the single text node read-only. -->
             <div class="transcript" data-transcript contenteditable="plaintext-only" role="textbox" aria-readonly="true"
               aria-label={t("history.transcript")} onbeforeinput={(event) => event.preventDefault()}>{row.text}</div>
@@ -267,16 +290,22 @@
             {#if row.raw_text !== row.text}
               <details><summary>{t("history.show_original")}</summary><p class="transcript">{row.raw_text}</p></details>
             {/if}
+            {/if}
             <div class="row actions">
+              {#if row.status === "failed"}
+                <Button busy={retryingIds.includes(row.id)} disabled={mutationBusy || !row.audio_path || app.config?.history.enabled === false}
+                  onclick={() => void retry(row)}>{t("common.retry")}</Button>
+              {:else}
               <Button variant="ghost" title={t("common.copy")} aria-label={t("common.copy")}
                 busy={copyingId === row.id} disabled={copyingId !== null} onclick={() => void copy(row)}><Icon name="copy" /></Button>
+              {/if}
               {#if row.audio_path}
                 <Button variant="ghost" title={t("history.play")} aria-label={t("history.play")}
                   disabled={mutationBusy} onclick={() => void play(row)}><Icon name="play" /></Button>
               {/if}
-              <Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
+              {#if row.status !== "failed"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
                 disabled={mutationBusy} onpointerdown={(event) => event.preventDefault()}
-                onclick={(event) => addCorrection(row, event.currentTarget)}><Icon name="wand" /></Button>
+                onclick={(event) => addCorrection(row, event.currentTarget)}><Icon name="wand" /></Button>{/if}
               <Button variant="ghost" title={t("common.delete")} aria-label={t("common.delete")} disabled={mutationBusy}
                 onclick={() => { deleteTarget = row; mutationError = null; deleteOpen = true; }}><Icon name="trash" /></Button>
             </div>
@@ -322,6 +351,8 @@
   li + li { border-top: 1px solid var(--border); }
   .metadata { display: flex; gap: var(--space-3); flex-wrap: wrap; font-size: var(--text-sm); margin-bottom: var(--space-2); }
   .transcript { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .failure { color: var(--danger); }
+  .failed-badge { display: inline-block; font-size: var(--text-sm); font-weight: 600; border: 1px solid currentColor; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); margin-right: var(--space-2); }
   details { margin-top: var(--space-2); }
   summary { cursor: pointer; color: var(--text-muted); }
   details p { margin-top: var(--space-2); }

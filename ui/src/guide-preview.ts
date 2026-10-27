@@ -32,8 +32,11 @@ let rows: Dictation[] = Array.from({ length: params.get("empty") === "true" ? 0 
   id: 9 - i, created_at_ms: now - i * 3_600_000, profile_id: "preview",
   raw_text: "Toplantıdan önce github değişikliklerini kontrol edelim.",
   text: "Toplantıdan önce GitHub değişikliklerini kontrol edelim.",
-  status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null,
+  status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null, error_code: null,
 }));
+if (params.get("failed") === "true" && rows[0]) {
+  Object.assign(rows[0], { status: "failed", raw_text: "", text: "", error_code: "rate_limited", audio_path: "audio/9.wav" });
+}
 let paused = params.get("paused") === "true";
 let status: DictationStatus = { state: params.get("recording") === "true" ? "recording" : "idle", can_retry: false, waiting: 0, paused: false };
 let completion: ReturnType<typeof setTimeout> | undefined;
@@ -68,6 +71,13 @@ mockIPC(async (command, payload) => {
     case "history_search": return rows;
     case "history_delete": rows = rows.filter(row => row.id !== (payload as {id: number}).id); return;
     case "history_clear": rows = []; return;
+    case "history_retry": {
+      const row = rows.find(row => row.id === (payload as {id: number}).id);
+      if (!row) throw { code: "unavailable", message: "Preview row is missing", kind: null };
+      await new Promise(resolve => setTimeout(resolve, 500));
+      Object.assign(row, { status: "ok", error_code: null, raw_text: "Recovered preview text.", text: "Recovered preview text.", audio_path: null });
+      return structuredClone(row);
+    }
     case "usage_stats": {
       const { sinceMs, untilMs } = payload as { sinceMs: number | null; untilMs: number };
       const selected = rows.filter(row => row.created_at_ms >= (sinceMs ?? -Infinity) && row.created_at_ms < untilMs);

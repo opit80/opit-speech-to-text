@@ -74,6 +74,20 @@ impl Lang {
         self.pick("Transcribing…", "Çevriliyor…")
     }
 
+    pub fn retry_wait(self, progress: opit_core::provider::retry::RetryWait) -> String {
+        let reason = match progress.kind {
+            "rate_limited" => self.error(ErrorKind::RateLimited),
+            "server" => self.error(ErrorKind::Server),
+            "timeout" => self.error(ErrorKind::Timeout),
+            _ => self.error(ErrorKind::Network),
+        };
+        let (seconds, attempt, total) = (progress.seconds, progress.attempt, progress.total);
+        match self {
+            Self::En => format!("{reason} — retrying in {seconds} s ({attempt}/{total})"),
+            Self::Tr => format!("{reason} — {seconds} sn sonra tekrar denenecek ({attempt}/{total})"),
+        }
+    }
+
     /// `Pasted (0.9 s)` / `Yapıştırıldı (0,9 sn)`.
     pub fn pasted(self, seconds: f32) -> String {
         match self {
@@ -151,6 +165,7 @@ impl Lang {
             Microphone => self.pick("Microphone unavailable", "Mikrofon kullanılamıyor"),
             Credentials => self.pick("Credential Manager error", "Kimlik bilgisi deposu hatası"),
             Paste => self.pick("Could not paste — text is in History", "Yapıştırılamadı — metin Geçmiş'te"),
+            Cancelled => self.pick("Retry cancelled — audio kept", "Tekrar deneme iptal edildi — ses saklandı"),
         }
     }
 

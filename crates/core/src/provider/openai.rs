@@ -134,40 +134,36 @@ impl Transcriber for OpenAiCompatible {
         async move {
             let response = builder.send().await.map_err(send_error)?;
             let status = response.status().as_u16();
-            let body = response.text().await.map_err(send_error)?;
             if !(200..300).contains(&status) {
-                return Err(status_error(status, &body));
+                if status == 429
+                    && let Some(delay) = response
+                        .headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| super::retry::retry_after(v, std::time::SystemTime::now()))
+                {
+                    return Err(ProviderError::RateLimitedAfter(delay));
+                }
+                return Err(status_error(status, ""));
             }
+            let body = response.text().await.map_err(send_error)?;
             parse_body(&body, verbose)
         }
     }
 }
 
 fn send_error(err: reqwest::Error) -> ProviderError {
-    if err.is_timeout() { ProviderError::Timeout } else { ProviderError::Network(err.to_string()) }
+    if err.is_timeout() { ProviderError::Timeout } else { ProviderError::Network("connection failed".into()) }
 }
 
-fn status_error(status: u16, body: &str) -> ProviderError {
+fn status_error(status: u16, _body: &str) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Unauthorized(status),
         413 => ProviderError::PayloadTooLarge,
         429 => ProviderError::RateLimited,
         500..=599 => ProviderError::Server(status),
-        _ => ProviderError::Http { status, message: error_message(body) },
+        _ => ProviderError::Http { status, message: "request refused".into() },
     }
-}
-
-/// OpenAI-style `{"error":{"message":…}}`, else the first 200 chars of the body.
-fn error_message(body: &str) -> String {
-    #[derive(Deserialize)]
-    struct Envelope {
-        error: ErrorBody,
-    }
-    #[derive(Deserialize)]
-    struct ErrorBody {
-        message: String,
-    }
-    serde_json::from_str::<Envelope>(body).map(|e| e.error.message).unwrap_or_else(|_| body.chars().take(200).collect())
 }
 
 #[derive(Deserialize)]
@@ -350,13 +346,29 @@ mod tests {
             (
                 400,
                 r#"{"error":{"message":"model not found"}}"#,
-                ProviderError::Http { status: 400, message: "model not found".into() },
+                ProviderError::Http { status: 400, message: "request refused".into() },
             ),
         ];
         for (status, body, expected) in cases {
             let server = server(status, body).await;
             assert_eq!(send(profile_for(&server), None, None, &[]).await.unwrap_err(), expected, "HTTP {status}");
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_header_is_preserved_without_reading_the_error_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("Retry-After", "300").set_body_string("private body"),
+            )
+            .mount(&server)
+            .await;
+        assert_eq!(
+            send(profile_for(&server), None, None, &[]).await.unwrap_err(),
+            ProviderError::RateLimitedAfter(Duration::from_secs(120))
+        );
+        assert!(!status_error(400, "private body").to_string().contains("private"));
     }
 
     #[tokio::test]

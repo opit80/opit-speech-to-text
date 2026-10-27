@@ -599,6 +599,42 @@ impl AppCore {
         std::fs::read(&file).map_err(|e| CommandError::new("history", e.to_string()))
     }
 
+    /// Loads only a retained failure. Called on the blocking pool, never on the UI thread.
+    pub fn history_retry_audio(&self, id: i64) -> Result<opit_core::pipeline::PreparedAudio, CommandError> {
+        if !self.settings.current().config.history.enabled {
+            return Err(CommandError::new("unavailable", "history is disabled"));
+        }
+        let row = self
+            .history()?
+            .store()
+            .get(id)?
+            .ok_or_else(|| CommandError::new("unavailable", "history row is missing"))?;
+        if row.status != opit_core::pipeline::TranscriptStatus::Failed {
+            return Err(CommandError::new("invalid_input", "only failed dictations can be retried"));
+        }
+        let bytes = self.history_audio(id)?;
+        let invalid = || CommandError::new("invalid_input", "saved audio is not a prepared WAV");
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).map_err(|_| invalid())?;
+        let spec = reader.spec();
+        if spec.channels != 1
+            || spec.sample_rate != 16_000
+            || spec.bits_per_sample != 16
+            || spec.sample_format != hound::SampleFormat::Int
+        {
+            return Err(invalid());
+        }
+        let samples = reader
+            .samples::<i16>()
+            .map(|s| s.map(|v| f32::from(v) / 32768.0))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid())?;
+        if samples.is_empty() {
+            return Err(invalid());
+        }
+        let audio_ms = samples.len() as u64 * 1000 / 16_000;
+        Ok(opit_core::pipeline::PreparedAudio { samples, audio_ms, speech_ms: audio_ms })
+    }
+
     pub fn microphones(&self) -> Vec<String> {
         self.platform.mic.devices()
     }
@@ -1067,6 +1103,7 @@ mod tests {
             status: TranscriptStatus::Ok,
             audio_ms: 1000,
             latency_ms: 500,
+            error_code: None,
         };
         // Row with an audio file inside paths.audio.
         let inside = history.store().insert(&entry("a")).unwrap();
@@ -1082,10 +1119,51 @@ mod tests {
         std::fs::write(&elsewhere, "{}").unwrap();
         history.store().set_audio_path(outside, &elsewhere.display().to_string()).unwrap();
         assert_eq!(f.core.history_audio(outside).unwrap_err().code, "invalid_input");
+        let traversal = f.core.paths.audio.join("..").join("config.json");
+        history.store().set_audio_path(outside, &traversal.display().to_string()).unwrap();
+        assert_eq!(f.core.history_audio(outside).unwrap_err().code, "invalid_input");
+        let mut failed = entry("");
+        failed.status = TranscriptStatus::Failed;
+        failed.error_code = Some("network");
+        let retry = history.store().insert(&failed).unwrap();
+        history.store().set_audio_path(retry, &traversal.display().to_string()).unwrap();
+        assert_eq!(f.core.history_retry_audio(retry).unwrap_err().code, "invalid_input");
         // Row without audio, and a missing row.
         let none = history.store().insert(&entry("c")).unwrap();
         assert_eq!(f.core.history_audio(none).unwrap_err().code, "unavailable");
         assert_eq!(f.core.history_audio(9999).unwrap_err().code, "unavailable");
+    }
+
+    #[test]
+    fn failed_history_wav_loads_after_reopen_and_requires_history_enabled() {
+        let mut f = fixture();
+        let db = f.core.paths.root.join("retry.db");
+        let history = Arc::new(HistoryService::open(&db, f.core.paths.audio.clone()).unwrap());
+        let entry = NewDictation {
+            created_at_ms: 123,
+            profile_id: "old",
+            raw_text: "",
+            text: "",
+            status: TranscriptStatus::Failed,
+            audio_ms: 1000,
+            latency_ms: 100,
+            error_code: Some("timeout"),
+        };
+        let audio = opit_core::pipeline::PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 };
+        let id = history.record(&entry, Some(&audio)).unwrap();
+        drop(history);
+        f.core.history = Some(Arc::new(HistoryService::open(&db, f.core.paths.audio.clone()).unwrap()));
+        let loaded = f.core.history_retry_audio(id).unwrap();
+        assert_eq!((loaded.samples.len(), loaded.audio_ms), (16_000, 1000));
+        let history = f.core.history.as_ref().unwrap();
+        let claim = history.claim_retry(id).unwrap();
+        assert!(history.claim_retry(id).is_none());
+        drop(claim);
+        assert!(history.claim_retry(id).is_some());
+        let mut config = f.core.config();
+        config.history.enabled = false;
+        f.core.settings.replace(Settings::build(config, None, None).0);
+        assert_eq!(f.core.history_retry_audio(id).unwrap_err().code, "unavailable");
     }
 
     #[test]
@@ -1142,6 +1220,7 @@ mod tests {
                 status: TranscriptStatus::Ok,
                 audio_ms: 1,
                 latency_ms: 1,
+                error_code: None,
             };
             history.record(&entry, None).unwrap();
         }

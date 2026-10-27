@@ -76,6 +76,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         history_delete,
         history_clear,
         history_audio,
+        history_retry,
         get_hotkey_state,
         set_hotkey_paused,
         set_hotkey_capture,
@@ -265,6 +266,31 @@ async fn history_clear(core: Core<'_>) -> Result<()> {
 async fn history_audio(core: Core<'_>, id: i64) -> Result<tauri::ipc::Response> {
     let bytes = blocking(core.inner().clone(), move |core| core.history_audio(id)).await?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+#[tauri::command]
+async fn history_retry(core: Core<'_>, id: i64) -> Result<Dictation> {
+    let core = core.inner().clone();
+    let _claim = core
+        .history
+        .as_ref()
+        .and_then(|history| history.claim_retry(id))
+        .ok_or_else(|| CommandError::new("unavailable", "history retry is already running or unavailable"))?;
+    let audio = blocking(core.clone(), move |core| core.history_retry_audio(id)).await?;
+    core.controller.retry_history(id, audio).await.map_err(|kind| CommandError {
+        code: "provider",
+        message: core.settings.current().lang.error(kind).into(),
+        kind: Some(kind),
+    })?;
+    blocking(core, move |core| {
+        core.history
+            .as_ref()
+            .ok_or_else(|| CommandError::new("unavailable", "history is unavailable"))?
+            .store()
+            .get(id)?
+            .ok_or_else(|| CommandError::new("unavailable", "history row was deleted"))
+    })
+    .await
 }
 
 #[tauri::command]

@@ -46,7 +46,9 @@
     </div>
     <div class="copy">
       <h2 id="record-title">{t(status.paused ? "status.paused" : titles[status.state])}</h2>
-      <p>{t(bodyKey)}</p>
+      {#if status.retry_wait}
+        <p role="status">{t(`error.kind.${status.retry_wait.kind}`)} — {t("dictation.retry_wait", status.retry_wait)}</p>
+      {:else}<p>{t(bodyKey)}</p>{/if}
       {#if recording}
         <div class="wave" class:paused={status.paused} aria-hidden="true">{#each wave as height, i}<span style:height={`${height}px`} style:animation-delay={`${i * -0.11}s`}></span>{/each}</div>
       {:else if profileName}<span class="provider"><Icon name="profiles" size={12} />{t("home.control.provider", { name: profileName })}</span>{/if}

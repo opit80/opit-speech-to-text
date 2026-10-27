@@ -3103,6 +3103,7 @@ dependencies = [
  "claxon",
  "flacenc",
  "hound",
+ "httpdate",
  "indexmap 2.14.2",
  "regex",
  "reqwest",

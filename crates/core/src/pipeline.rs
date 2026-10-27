@@ -8,7 +8,7 @@ use serde::Serialize;
 use crate::audio::encode::{EncodeError, EncodedAudio, encode};
 use crate::audio::gate::{self, GateVerdict};
 use crate::audio::{self, Recording, TARGET_RATE};
-use crate::provider::retry::with_retry;
+use crate::provider::retry::{PATIENT_DELAYS, RetryWait};
 use crate::provider::{ProviderError, RawTranscript, TranscribeRequest, Transcriber};
 use crate::rules::prompt::{build_prompt, keywords};
 use crate::rules::{RuleHit, RuleSet};
@@ -21,6 +21,8 @@ pub enum TranscriptStatus {
     Empty,
     /// The whole output matched a known silence hallucination.
     Hallucination,
+    /// Transcription failed; retained audio can be retried.
+    Failed,
 }
 
 impl TranscriptStatus {
@@ -29,6 +31,7 @@ impl TranscriptStatus {
             Self::Ok => "ok",
             Self::Empty => "empty",
             Self::Hallucination => "hallucination",
+            Self::Failed => "failed",
         }
     }
 
@@ -37,6 +40,7 @@ impl TranscriptStatus {
             "ok" => Some(Self::Ok),
             "empty" => Some(Self::Empty),
             "hallucination" => Some(Self::Hallucination),
+            "failed" => Some(Self::Failed),
             _ => None,
         }
     }
@@ -70,6 +74,8 @@ pub struct PreparedAudio {
 pub enum PipelineError {
     #[error("the recording is too short")]
     TooShort,
+    #[error("retry cancelled; audio retained for another attempt")]
+    RetryCancelled,
     #[error("no speech was detected")]
     NoSpeech,
     #[error(transparent)]
@@ -103,25 +109,77 @@ pub async fn transcribe<T: Transcriber>(
     audio: &PreparedAudio,
     ctx: &PipelineContext<'_, T>,
 ) -> Result<Transcript, PipelineError> {
+    transcribe_with_wait(audio, ctx, |_, delay| async move {
+        tokio::time::sleep(delay).await;
+        true
+    })
+    .await
+}
+
+/// Waits are injectable, including the quick retry. Returning false cancels before
+/// another request. Each patient rung calls primary once, then fallback once.
+pub async fn transcribe_with_wait<T, W, F>(
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'_, T>,
+    mut wait: W,
+) -> Result<Transcript, PipelineError>
+where
+    T: Transcriber,
+    W: FnMut(RetryWait, Duration) -> F,
+    F: Future<Output = bool>,
+{
     let started = Instant::now();
     let primary_audio = encode(&audio.samples, ctx.primary.profile().audio_format)?;
-    let (raw, used, used_fallback) = match call(ctx.primary, &primary_audio, audio, ctx, true).await {
-        Ok(raw) => (raw, ctx.primary, false),
-        Err(err) => match ctx.fallback {
-            Some(fallback) if err.is_retryable() => {
-                let format = fallback.profile().audio_format;
-                let fallback_audio;
-                let encoded = if format == primary_audio.format {
-                    &primary_audio
-                } else {
-                    fallback_audio = encode(&audio.samples, format)?;
-                    &fallback_audio
-                };
-                (call(fallback, encoded, audio, ctx, false).await?, fallback, true)
-            }
-            _ => return Err(err.into()),
-        },
-    };
+    let mut fallback_audio = None;
+    let mut result = call(ctx.primary, &primary_audio, audio, ctx).await;
+    if let Err(err) = &result
+        && err.is_retryable()
+    {
+        let delay = ctx.retry_delay.max(err.retry_after().unwrap_or_default());
+        if !wait(RetryWait { kind: err.code(), seconds: delay.as_secs(), attempt: 1, total: 5 }, delay).await {
+            return Err(PipelineError::RetryCancelled);
+        }
+        result = call(ctx.primary, &primary_audio, audio, ctx).await;
+    }
+    let mut used = ctx.primary;
+    let mut used_fallback = false;
+    let mut delays = PATIENT_DELAYS.into_iter().enumerate();
+    loop {
+        // A fallback failure must not discard the primary's rate-limit deadline.
+        let primary_retry_after = result.as_ref().err().and_then(ProviderError::retry_after).unwrap_or_default();
+        if let Err(err) = &result
+            && err.is_retryable()
+            && let Some(fallback) = ctx.fallback
+        {
+            let format = fallback.profile().audio_format;
+            let encoded = if format == primary_audio.format {
+                &primary_audio
+            } else {
+                if fallback_audio.is_none() {
+                    fallback_audio = Some(encode(&audio.samples, format)?);
+                }
+                fallback_audio.as_ref().expect("fallback audio was encoded above")
+            };
+            result = call(fallback, encoded, audio, ctx).await;
+            used = fallback;
+            used_fallback = true;
+        }
+        let err = match &result {
+            Ok(_) => break,
+            Err(err) if err.is_retryable() => err,
+            Err(err) => return Err(err.clone().into()),
+        };
+        let Some((rung, seconds)) = delays.next() else { return Err(err.clone().into()) };
+        let delay = Duration::from_secs(seconds).max(primary_retry_after).max(err.retry_after().unwrap_or_default());
+        let progress = RetryWait { kind: err.code(), seconds: delay.as_secs(), attempt: rung + 2, total: 5 };
+        if !wait(progress, delay).await {
+            return Err(PipelineError::RetryCancelled);
+        }
+        result = call(ctx.primary, &primary_audio, audio, ctx).await;
+        used = ctx.primary;
+        used_fallback = false;
+    }
+    let raw = result?;
 
     let profile = used.profile();
     let (text, status, hits) =
@@ -181,7 +239,6 @@ async fn call<T: Transcriber>(
     encoded: &EncodedAudio,
     audio: &PreparedAudio,
     ctx: &PipelineContext<'_, T>,
-    retry: bool,
 ) -> Result<RawTranscript, ProviderError> {
     let profile = transcriber.profile();
     let prompt = if profile.send_prompt {
@@ -196,11 +253,7 @@ async fn call<T: Transcriber>(
         prompt: prompt.as_deref(),
         keywords: &keyword_list,
     };
-    if retry {
-        with_retry(ctx.retry_delay, || transcriber.transcribe(&request)).await
-    } else {
-        transcriber.transcribe(&request).await
-    }
+    transcriber.transcribe(&request).await
 }
 
 #[cfg(test)]
@@ -289,6 +342,80 @@ mod tests {
         RuleSet::compile(&assemble(None, &["tr-core".to_string(), "tr-tech".to_string()])).0
     }
 
+    #[tokio::test]
+    async fn patient_ladder_waits_are_injected_and_cancel_stops_requests() {
+        let rules = RuleSet::empty();
+        let primary = Scripted::new("a", vec![Err(ProviderError::Timeout); 6]);
+        let mut waits = Vec::new();
+        let err = transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |progress, delay| {
+            waits.push((progress, delay));
+            async { true }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, PipelineError::Provider(ProviderError::Timeout));
+        assert_eq!(primary.calls(), 6);
+        assert_eq!(waits.iter().map(|(_, d)| d.as_secs()).collect::<Vec<_>>(), [0, 10, 30, 60, 120]);
+        assert_eq!(waits.last().unwrap().0.attempt, 5);
+        let primary = Scripted::new("a", vec![Err(ProviderError::Timeout); 2]);
+        let err = transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |progress, _| async move {
+            progress.attempt == 1
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, PipelineError::RetryCancelled);
+        assert_eq!(primary.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_after_is_honoured_and_permanent_errors_never_wait() {
+        let rules = RuleSet::empty();
+        let primary =
+            Scripted::new("a", vec![Err(ProviderError::RateLimitedAfter(Duration::from_secs(300))), Ok("ok")]);
+        let mut waits = Vec::new();
+        transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |_, delay| {
+            waits.push(delay.as_secs());
+            async { true }
+        })
+        .await
+        .unwrap();
+        assert_eq!(waits, [120]);
+        for status in [400, 401, 403, 404, 413] {
+            let primary = Scripted::new("a", vec![Err(ProviderError::Http { status, message: "private".into() })]);
+            let err = transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |_, _| async {
+                panic!("permanent errors must not wait")
+            })
+            .await;
+            assert!(err.is_err());
+            assert_eq!(primary.calls(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fallback_failure_preserves_the_primary_retry_after() {
+        let rules = RuleSet::empty();
+        let primary = Scripted::new(
+            "primary",
+            vec![
+                Err(ProviderError::Timeout),
+                Err(ProviderError::RateLimitedAfter(Duration::from_secs(90))),
+                Ok("recovered"),
+            ],
+        );
+        let fallback = Scripted::new("fallback", vec![Err(ProviderError::Server(503))]);
+        let mut waits = Vec::new();
+        let transcript = transcribe_with_wait(&speech(), &ctx(&primary, Some(&fallback), &rules), |_, delay| {
+            waits.push(delay.as_secs());
+            async { true }
+        })
+        .await
+        .unwrap();
+        assert_eq!(waits, [0, 90]);
+        assert_eq!(transcript.profile_id, "primary");
+        assert_eq!(transcript.text, "recovered");
+        assert_eq!((primary.calls(), fallback.calls()), (3, 1));
+    }
+
     #[test]
     fn prepare_rejects_short_and_silent_recordings() {
         assert_eq!(prepare(&tone_recording(0.2)).unwrap_err(), PipelineError::TooShort);
@@ -300,7 +427,9 @@ mod tests {
 
     #[test]
     fn status_strings_round_trip() {
-        for status in [TranscriptStatus::Ok, TranscriptStatus::Empty, TranscriptStatus::Hallucination] {
+        for status in
+            [TranscriptStatus::Ok, TranscriptStatus::Empty, TranscriptStatus::Hallucination, TranscriptStatus::Failed]
+        {
             assert_eq!(TranscriptStatus::parse(status.as_str()), Some(status));
         }
         assert_eq!(TranscriptStatus::parse("nope"), None);
@@ -353,11 +482,13 @@ mod tests {
     #[tokio::test]
     async fn fallback_gets_a_single_attempt() {
         let rules = RuleSet::empty();
-        let primary = Scripted::new("a", vec![Err(ProviderError::RateLimited), Err(ProviderError::RateLimited)]);
-        let fallback = Scripted::new("b", vec![Err(ProviderError::Server(500))]);
-        let err = transcribe(&speech(), &ctx(&primary, Some(&fallback), &rules)).await.unwrap_err();
+        let primary = Scripted::new("a", vec![Err(ProviderError::RateLimited); 6]);
+        let fallback = Scripted::new("b", vec![Err(ProviderError::Server(500)); 5]);
+        let err = transcribe_with_wait(&speech(), &ctx(&primary, Some(&fallback), &rules), |_, _| async { true })
+            .await
+            .unwrap_err();
         assert_eq!(err, PipelineError::Provider(ProviderError::Server(500)));
-        assert_eq!(fallback.calls(), 1);
+        assert_eq!(fallback.calls(), 5);
     }
 
     #[tokio::test]

@@ -103,6 +103,15 @@ impl Transcriber for ElevenLabs {
             .send()
             .await
             .map_err(send_error)?;
+        if response.status().as_u16() == 429
+            && let Some(delay) = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| super::retry::retry_after(v, std::time::SystemTime::now()))
+        {
+            return Err(ProviderError::RateLimitedAfter(delay));
+        }
         check_status(response.status().as_u16())?;
         let body = response.text().await.map_err(send_error)?;
         #[derive(Deserialize)]
@@ -241,6 +250,20 @@ mod tests {
             client.warm_up().await;
             assert!(server.received_requests().await.unwrap().iter().all(|r| r.method.as_str() == "GET"));
         }
+    }
+
+    #[tokio::test]
+    async fn transcription_preserves_the_rate_limit_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "90").set_body_string("private body"))
+            .mount(&server)
+            .await;
+        let client = ElevenLabs::new(profile(&server), None).unwrap();
+        let audio = encode(&[0.1; 16_000], AudioFormat::Wav).unwrap();
+        let result =
+            client.transcribe(&TranscribeRequest { audio: &audio, audio_ms: 1000, prompt: None, keywords: &[] }).await;
+        assert_eq!(result.unwrap_err(), ProviderError::RateLimitedAfter(Duration::from_secs(90)));
     }
 
     #[tokio::test]

@@ -20,10 +20,11 @@ pub enum ErrorKind {
     Microphone,
     Credentials,
     Paste,
+    Cancelled,
 }
 
 impl ErrorKind {
-    pub const ALL: [ErrorKind; 13] = [
+    pub const ALL: [ErrorKind; 14] = [
         ErrorKind::MissingKey,
         ErrorKind::InvalidKey,
         ErrorKind::TooLarge,
@@ -37,6 +38,7 @@ impl ErrorKind {
         ErrorKind::Microphone,
         ErrorKind::Credentials,
         ErrorKind::Paste,
+        ErrorKind::Cancelled,
     ];
 
     /// Errors the user fixes in Settings rather than by trying again.
@@ -50,7 +52,7 @@ impl From<&ProviderError> for ErrorKind {
         match err {
             ProviderError::Unauthorized(_) => ErrorKind::InvalidKey,
             ProviderError::PayloadTooLarge => ErrorKind::TooLarge,
-            ProviderError::RateLimited => ErrorKind::RateLimited,
+            ProviderError::RateLimited | ProviderError::RateLimitedAfter(_) => ErrorKind::RateLimited,
             ProviderError::Server(_) => ErrorKind::Server,
             ProviderError::Http { .. } => ErrorKind::Rejected,
             ProviderError::Network(_) => ErrorKind::Network,
@@ -64,6 +66,7 @@ impl From<&PipelineError> for ErrorKind {
     fn from(err: &PipelineError) -> Self {
         match err {
             PipelineError::Provider(e) => e.into(),
+            PipelineError::RetryCancelled => ErrorKind::Cancelled,
             PipelineError::Encode(_) | PipelineError::TooShort | PipelineError::NoSpeech => ErrorKind::Audio,
         }
     }
@@ -94,11 +97,13 @@ pub struct DictationStatus {
     /// Finished recordings waiting behind the current processing item.
     pub waiting: usize,
     pub paused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_wait: Option<opit_core::provider::retry::RetryWait>,
 }
 
 impl Default for DictationStatus {
     fn default() -> Self {
-        Self { state: DictationState::Idle, can_retry: false, waiting: 0, paused: false }
+        Self { state: DictationState::Idle, can_retry: false, waiting: 0, paused: false, retry_wait: None }
     }
 }
 
@@ -122,6 +127,7 @@ mod tests {
             can_retry: true,
             waiting: 2,
             paused: false,
+            retry_wait: None,
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(

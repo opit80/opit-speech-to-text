@@ -15,8 +15,9 @@ use opit_core::audio::encode::EncodeError;
 use opit_core::config::HotkeyMode;
 use opit_core::history::NewDictation;
 use opit_core::pipeline::{self, PipelineContext, PipelineError, PreparedAudio, Transcript, TranscriptStatus};
+use opit_core::provider::retry::RetryWait;
 use opit_core::provider::{Profile, Transcriber};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::AbortHandle;
 use tracing::{info, warn};
 
@@ -71,6 +72,7 @@ impl SetupError {
 pub trait HistorySink: Send + Sync {
     /// Stores one dictation (and its 16 kHz audio when given); returns the row id.
     fn record(&self, entry: &NewDictation<'_>, audio: Option<&PreparedAudio>) -> Result<i64, String>;
+    fn replace(&self, id: i64, entry: &NewDictation<'_>, keep_audio: bool) -> Result<(), String>;
 }
 
 /// Notifications for the tray and the web UI.
@@ -103,6 +105,16 @@ pub enum Msg {
     PauseResume,
     Cancel,
     Retry,
+    RetryHistory {
+        id: i64,
+        audio: Arc<PreparedAudio>,
+        reply: oneshot::Sender<Result<(), ErrorKind>>,
+    },
+    RetryProgress {
+        session: u64,
+        progress: Option<RetryWait>,
+    },
+    HistoryStored(i64),
     Hotkey(HotkeyEvent),
     Overlay(OverlayAction),
     Shutdown,
@@ -189,6 +201,12 @@ impl ControllerHandle {
         self.status.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
+    pub async fn retry_history(&self, id: i64, audio: PreparedAudio) -> Result<(), ErrorKind> {
+        let (reply, result) = oneshot::channel();
+        self.send(Msg::RetryHistory { id, audio: Arc::new(audio), reply });
+        result.await.unwrap_or(Err(ErrorKind::Cancelled))
+    }
+
     /// Stops new dictations so an update can install. `None` while a dictation is recording,
     /// waiting, transcribing or pasting (or after shutdown). The controller answers in order with its
     /// other messages, so no dictation can slip in between the answer and the hold.
@@ -223,6 +241,8 @@ struct Job {
     /// When the user stopped recording (or pressed "Try again"); latency is measured from here.
     started: Instant,
     auto_paste: bool,
+    history_id: Option<i64>,
+    reply: Option<oneshot::Sender<Result<(), ErrorKind>>>,
 }
 
 enum Input {
@@ -264,6 +284,8 @@ enum Phase {
         session: u64,
         job: Job,
         task: AbortHandle,
+        cancel: watch::Sender<bool>,
+        progress: Option<RetryWait>,
     },
     Pasting {
         session: u64,
@@ -313,6 +335,17 @@ impl<P: Providers> Controller<P> {
             Msg::PauseResume => self.pause_resume(),
             Msg::Cancel => self.cancel(true),
             Msg::Retry | Msg::Overlay(OverlayAction::Retry) => self.retry(),
+            Msg::RetryHistory { id, audio, reply } => self.retry_history(id, audio, reply),
+            Msg::HistoryStored(id) => self.env.events.history_added(id),
+            Msg::RetryProgress { session, progress } => {
+                if let Phase::Transcribing { session: active, progress: current, .. } = &mut self.phase
+                    && *active == session
+                {
+                    *current = progress;
+                    self.show_progress();
+                    self.set_state(DictationState::Transcribing);
+                }
+            }
             Msg::Overlay(OverlayAction::OpenSettings) => self.env.events.open_settings(),
             Msg::Hotkey(event) => self.on_hotkey(event),
             Msg::Capture { session, event } => self.on_capture(session, event),
@@ -461,7 +494,7 @@ impl<P: Providers> Controller<P> {
         let recording = r.capture.finish();
         self.waiting.push_back(Pending {
             session: r.session,
-            job: Job { settings: r.settings, started: Instant::now(), auto_paste },
+            job: Job { settings: r.settings, started: Instant::now(), auto_paste, history_id: None, reply: None },
             clients: r.clients,
             input: Input::Raw(recording),
             salvage: false,
@@ -489,7 +522,13 @@ impl<P: Providers> Controller<P> {
         self.session += 1;
         info!(session = self.session, "retrying the last dictation");
         self.env.hotkey.set_capture_escape(true);
-        let job = Job { settings, started: Instant::now(), auto_paste: self.env.paster.can_auto_paste() };
+        let job = Job {
+            settings,
+            started: Instant::now(),
+            auto_paste: self.env.paster.can_auto_paste(),
+            history_id: None,
+            reply: None,
+        };
         self.begin_transcription(self.session, job, clients, Input::Prepared(audio));
     }
 
@@ -500,6 +539,10 @@ impl<P: Providers> Controller<P> {
         let retry_delay = self.env.retry_delay;
         let task_settings = settings.clone();
         let worker_tx = tx.clone();
+        let history = self.env.history.clone();
+        let history_id = job.history_id;
+        let started = job.started;
+        let (cancel, cancel_rx) = watch::channel(false);
         let worker = tokio::spawn(async move {
             let tx = worker_tx;
             let audio = match input {
@@ -520,7 +563,32 @@ impl<P: Providers> Controller<P> {
                 retry_delay,
                 numbers_as_words: task_settings.config.rules.numbers_as_words,
             };
-            let result = pipeline::transcribe(&audio, &ctx).await;
+            let mut result = pipeline::transcribe_with_wait(&audio, &ctx, |progress, delay| {
+                wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
+            })
+            .await;
+            if task_settings.config.history.enabled && (result.is_err() || history_id.is_some()) {
+                let saved = save_transcription(
+                    history,
+                    task_settings,
+                    history_id,
+                    audio.clone(),
+                    result.clone(),
+                    started.elapsed(),
+                )
+                .await;
+                match saved {
+                    Ok(id) => {
+                        let _ = tx.send(Msg::HistoryStored(id));
+                    }
+                    Err(_) => {
+                        warn!("history write failed");
+                        if history_id.is_some() {
+                            result = Err(PipelineError::Encode(EncodeError("history retry could not be saved".into())));
+                        }
+                    }
+                }
+            }
             let _ = tx.send(Msg::Transcribed { session, audio: Some(audio), result });
         });
         let task = worker.abort_handle();
@@ -530,8 +598,44 @@ impl<P: Providers> Controller<P> {
                 let _ = tx.send(Msg::Transcribed { session, audio: None, result });
             }
         });
-        self.phase = Phase::Transcribing { session, job, task };
+        self.phase = Phase::Transcribing { session, job, task, cancel, progress: None };
         self.set_state(DictationState::Transcribing);
+    }
+
+    fn retry_history(&mut self, id: i64, audio: Arc<PreparedAudio>, reply: oneshot::Sender<Result<(), ErrorKind>>) {
+        let duplicate = matches!(&self.phase, Phase::Transcribing { job, .. } | Phase::Pasting { job, .. } if job.history_id == Some(id))
+            || self.waiting.iter().any(|p| p.job.history_id == Some(id));
+        let settings = self.env.settings.current();
+        // A live recording already owns one future queue slot.
+        let occupied = self.waiting.len() + usize::from(self.recording.is_some());
+        if duplicate || occupied >= MAX_WAITING || self.update_holds != 0 || !settings.config.history.enabled {
+            let _ = reply.send(Err(ErrorKind::Rejected));
+            return;
+        }
+        let clients = match self.clients(&settings) {
+            Ok(clients) => clients,
+            Err(error) => {
+                let _ = reply.send(Err(error.kind()));
+                return;
+            }
+        };
+        self.session += 1;
+        self.waiting.push_back(Pending {
+            session: self.session,
+            job: Job { settings, started: Instant::now(), auto_paste: false, history_id: Some(id), reply: Some(reply) },
+            clients,
+            input: Input::Prepared(audio),
+            salvage: false,
+        });
+    }
+
+    fn show_progress(&self) {
+        let lang = self.env.settings.current().lang;
+        let text = match &self.phase {
+            Phase::Transcribing { progress: Some(progress), .. } => lang.retry_wait(*progress),
+            _ => lang.transcribing().into(),
+        };
+        self.show(view(Tone::Busy, text, None));
     }
 
     fn on_capture(&mut self, session: u64, event: CaptureEvent) {
@@ -551,7 +655,13 @@ impl<P: Providers> Controller<P> {
                 let recording = r.capture.finish();
                 self.waiting.push_back(Pending {
                     session,
-                    job: Job { settings: r.settings, started: Instant::now(), auto_paste: false },
+                    job: Job {
+                        settings: r.settings,
+                        started: Instant::now(),
+                        auto_paste: false,
+                        history_id: None,
+                        reply: None,
+                    },
                     clients: r.clients,
                     input: Input::Raw(recording),
                     salvage: true,
@@ -586,7 +696,7 @@ impl<P: Providers> Controller<P> {
         if !matches!(self.phase, Phase::Transcribing { session: current, .. } if current == session) {
             return; // cancelled meanwhile
         }
-        let Phase::Transcribing { job, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
+        let Phase::Transcribing { mut job, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
             unreachable!("checked above")
         };
         let lang = job.settings.lang;
@@ -601,7 +711,10 @@ impl<P: Providers> Controller<P> {
                 return self.finish_info(lang.no_speech());
             }
             Err(err) => {
-                warn!(session, error = %err, "transcription failed");
+                warn!(session, kind = ?ErrorKind::from(&err), "transcription failed");
+                if let Some(reply) = job.reply.take() {
+                    let _ = reply.send(Err(ErrorKind::from(&err)));
+                }
                 self.retry = audio;
                 return self.fail(ErrorKind::from(&err), lang);
             }
@@ -619,12 +732,15 @@ impl<P: Providers> Controller<P> {
         );
         if transcript.status != TranscriptStatus::Ok || transcript.text.is_empty() {
             self.record(&job, &transcript, audio.as_deref());
+            if let Some(reply) = job.reply.take() {
+                let _ = reply.send(Ok(()));
+            }
             return self.finish_info(lang.empty());
         }
 
         let paste = &job.settings.config.paste;
         let text = if paste.trailing_space { format!("{} ", transcript.text) } else { transcript.text.clone() };
-        let restore = paste.restore_clipboard;
+        let restore = job.history_id.is_none() && paste.restore_clipboard;
         let auto_paste = job.auto_paste;
         let paster = self.env.paster.clone();
         let tx = self.tx.clone();
@@ -640,12 +756,15 @@ impl<P: Providers> Controller<P> {
         if !matches!(self.phase, Phase::Pasting { session: current, .. } if current == session) {
             return;
         }
-        let Phase::Pasting { job, transcript, audio, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
+        let Phase::Pasting { mut job, transcript, audio, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
             unreachable!("checked above")
         };
         let lang = job.settings.lang;
         let elapsed = job.started.elapsed();
         self.record(&job, &transcript, audio.as_deref());
+        if let Some(reply) = job.reply.take() {
+            let _ = reply.send(if matches!(outcome, PasteOutcome::Failed(_)) { Err(ErrorKind::Paste) } else { Ok(()) });
+        }
         match outcome {
             PasteOutcome::Pasted => {
                 info!(session, total_ms = elapsed.as_millis() as u64, "pasted");
@@ -671,7 +790,7 @@ impl<P: Providers> Controller<P> {
 
     fn record(&self, job: &Job, transcript: &Transcript, audio: Option<&PreparedAudio>) {
         let history = &job.settings.config.history;
-        if !history.enabled {
+        if !history.enabled || job.history_id.is_some() {
             return;
         }
         let entry = NewDictation {
@@ -682,6 +801,7 @@ impl<P: Providers> Controller<P> {
             status: transcript.status,
             audio_ms: transcript.audio_ms,
             latency_ms: job.started.elapsed().as_millis() as u64,
+            error_code: None,
         };
         let audio = if history.save_audio { audio } else { None };
         match self.env.history.record(&entry, audio) {
@@ -720,7 +840,12 @@ impl<P: Providers> Controller<P> {
                 info!(session, "cancelled after the microphone was lost");
                 settings.lang
             }
-            Phase::Transcribing { session, task, job } => {
+            Phase::Transcribing { session, task, job, cancel, progress } => {
+                if progress.is_some() {
+                    let _ = cancel.send(true);
+                    self.phase = Phase::Transcribing { session, task, job, cancel, progress };
+                    return;
+                }
                 task.abort();
                 info!(session, "transcription cancelled");
                 job.settings.lang
@@ -836,7 +961,7 @@ impl<P: Providers> Controller<P> {
             if self.recording.is_some() {
                 self.show_recording();
             } else if !matches!(self.phase, Phase::Idle) {
-                self.show(view(Tone::Busy, self.env.settings.current().lang.transcribing(), None));
+                self.show_progress();
             }
             self.set_state(state);
         }
@@ -871,6 +996,10 @@ impl<P: Providers> Controller<P> {
             can_retry: self.is_idle() && self.retry.is_some(),
             waiting: self.waiting.len(),
             paused: self.recording.as_ref().is_some_and(|r| r.paused),
+            retry_wait: match &self.phase {
+                Phase::Transcribing { progress, .. } => *progress,
+                _ => None,
+            },
         };
         if *self.status.lock().unwrap_or_else(PoisonError::into_inner) == status {
             return;
@@ -878,6 +1007,78 @@ impl<P: Providers> Controller<P> {
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
         self.env.events.status_changed(&status);
     }
+}
+
+/// Publishes only safe metadata. The cancellation signal also wakes a sleeping wait.
+async fn wait_for_retry(
+    tx: mpsc::UnboundedSender<Msg>,
+    session: u64,
+    mut cancelled: watch::Receiver<bool>,
+    progress: RetryWait,
+    delay: Duration,
+) -> bool {
+    let deadline = tokio::time::Instant::now() + delay;
+    loop {
+        if *cancelled.borrow() {
+            return false;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        if !delay.is_zero() {
+            let mut progress = progress;
+            progress.seconds = remaining.as_millis().div_ceil(1000) as u64;
+            let _ = tx.send(Msg::RetryProgress { session, progress: Some(progress) });
+        }
+        tokio::select! {
+            _ = cancelled.changed() => { return false; }
+            _ = tokio::time::sleep(remaining.min(Duration::from_secs(1))) => {}
+        }
+    }
+    if !delay.is_zero() {
+        let _ = tx.send(Msg::RetryProgress { session, progress: None });
+    }
+    true
+}
+
+/// Failure audio ignores save_audio, but obeys history.enabled at the worker call site.
+/// A History retry replaces its existing row before any clipboard operation.
+async fn save_transcription(
+    history: Arc<dyn HistorySink>,
+    settings: Arc<Settings>,
+    history_id: Option<i64>,
+    audio: Arc<PreparedAudio>,
+    result: Result<Transcript, PipelineError>,
+    elapsed: Duration,
+) -> Result<i64, String> {
+    tokio::task::spawn_blocking(move || {
+        let failure_code = match &result {
+            Err(PipelineError::Provider(error)) => Some(error.code()),
+            Err(PipelineError::RetryCancelled) => Some("cancelled"),
+            Err(_) => Some("audio"),
+            Ok(_) => None,
+        };
+        let transcript = result.ok();
+        let entry = NewDictation {
+            created_at_ms: now_ms(),
+            profile_id: transcript.as_ref().map_or(settings.config.active_profile_id.as_str(), |t| &t.profile_id),
+            raw_text: transcript.as_ref().map_or("", |t| &t.raw_text),
+            text: transcript.as_ref().map_or("", |t| &t.text),
+            status: transcript.as_ref().map_or(TranscriptStatus::Failed, |t| t.status),
+            audio_ms: audio.audio_ms,
+            latency_ms: elapsed.as_millis() as u64,
+            error_code: failure_code,
+        };
+        match history_id {
+            Some(id) => {
+                history.replace(id, &entry, failure_code.is_some() || settings.config.history.save_audio).map(|()| id)
+            }
+            None => history.record(&entry, Some(&audio)),
+        }
+    })
+    .await
+    .map_err(|_| "history worker stopped".to_string())?
 }
 
 /// Runs the CPU-heavy prepare step (resample + silence gate) on the blocking pool.

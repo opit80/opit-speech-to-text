@@ -21,7 +21,7 @@ The plan outcomes below retain their original historical status and manual accep
 
 **Entry points in `opit-core`** (read the code; these are the stable seams):
 - `pipeline::prepare(&Recording) -> Result<PreparedAudio, PipelineError>` runs the silence gate and resamples to 16 kHz mono. Keep the `PreparedAudio` around for "Try again".
-- `pipeline::transcribe(&PreparedAudio, &PipelineContext<T>)` does one retry, then falls back once, then runs the rules. `pipeline::run` does both steps. The future is `Send`.
+- `pipeline::transcribe(&PreparedAudio, &PipelineContext<T>)` does a quick retry and fallback, then patient retries for transient errors, and runs the rules. `transcribe_with_wait` accepts injectable cancellable waits. `pipeline::run` does preparation and transcription. The future is `Send`.
 - `provider::OpenAiCompatible::new(Profile, Option<String>)`, `.test_connection()`, and the `Transcriber` trait. Key trimming is done inside the core.
 - `rules::builtin::assemble(user_pack, &enabled_ids)` → `RuleSet::compile` gives `(RuleSet, Vec<RuleWarning>)`. `RuleSet::apply_traced` is the source for the rules preview.
 - `rules::load_pack_file`, `RulePack::{from_yaml, to_yaml}` read and write `user.yaml`. `rules::prompt::build_prompt` feeds the prompt budget gauge.
@@ -37,13 +37,23 @@ The plan outcomes below retain their original historical status and manual accep
 - `rustfmt.toml` sets `max_width = 120` and `use_small_heuristics = "Max"`. The workspace uses edition 2024, rust-version 1.88, and reqwest 0.13 with its default rustls TLS.
 
 **Deferred minor findings** (candidates for a later plan):
-- HTML 4xx bodies are shown raw in `ProviderError::Http` messages.
-- Dictation ids are reused because the table has no `AUTOINCREMENT`. A `{id}.wav` file whose delete failed could get attached to a new row.
+- Resolved by Opit Speech to Text's patient retries: HTTP errors expose only safe kinds/status codes, never provider bodies.
+- Resolved by Opit Speech to Text's failed-dictation history: schema v2 migrates existing rows and FTS triggers to `AUTOINCREMENT`, so deleting rows no longer reuses their audio ids.
 - `tr-core` has single-word hallucination patterns (`a`, `e`, `thank you`) that could drop a real one-word dictation.
 - Case-insensitive regex replacements don't fold Turkish `İ/ı`; literal rules do.
 - `opit-eval` `read_wav` panics on `bits_per_sample: 0`, and a `|` in a sample name breaks the report table.
 
 **Not done:** the real-provider baseline (Plan 1, Task 16, Step 15). It needs a personal dataset and API keys; see `docs/eval.md`.
+
+**Opit Speech to Text dictation recovery:** after the quick primary retry and optional fallback,
+retryable failures wait 10, 30, 60 and 120 seconds. Each rung calls the primary once and then the
+fallback once; a 429 `Retry-After` (seconds or HTTP date, capped at 120 seconds) can lengthen a wait.
+Escape during a wait saves a failed row and prepared WAV when History is enabled, even with Save
+audio off. Failed WAVs are exempt from audio retention until recovered or the row is deleted.
+History's Try again uses the current profile and rules, updates the same row without changing its
+recording date, and copies recovered text to the clipboard with a toast; it never auto-pastes or
+restores the previous clipboard. A successful retry deletes its WAV unless Save audio is enabled.
+History retries are refused while History is disabled; failures then have only the in-memory retry.
 
 **Personal data (outside the repo):** the author's personal rule pack is at `%APPDATA%\opit-speech-to-text\rules\user.yaml`. The prompt context sentence noted in its header comment goes into `config.json` as `rules.prompt_context`.
 
@@ -176,7 +186,7 @@ belong to the same pass.
   - The paste-failure text says "text is in History" when history is on, even if the history write
     itself failed.
   - `test_connection` reads the keyring on the async runtime without `spawn_blocking`.
-  - The `history_audio` containment test has no `..` path case.
+  - Resolved by Opit Speech to Text's failed-dictation history: playback and retry tests reject `audio/../` paths that escape the audio directory; deletion also stays inside that directory.
 - Hotkey and microphone test:
   - The capture expiry check-then-act gap and the `sync_pause` ordering race (nanosecond window).
   - No tests for stale-generation timers (capture restart, mic test replace).

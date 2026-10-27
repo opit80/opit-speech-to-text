@@ -47,6 +47,7 @@ export const api = {
   historyDelete: (id: number) => invoke<void>("history_delete", { id }),
   historyClear: () => invoke<void>("history_clear"),
   historyAudio: (id: number) => invoke<ArrayBuffer>("history_audio", { id }),
+  historyRetry: (id: number) => invoke<Dictation>("history_retry", { id }),
 
   getHotkeyState: () => invoke<HotkeyState>("get_hotkey_state"),
   setHotkeyPaused: (paused: boolean) => invoke<HotkeyState>("set_hotkey_paused", { paused }),

@@ -211,11 +211,13 @@
                       <span>{formatSeconds(item.latency_ms, app.lang)}</span>
                     </div>
                     <p class="transcript" class:muted={item.status !== "ok"}>
+                      {#if item.status === "failed"}{t("history.failed")} — {t(`error.kind.${item.error_code ?? "rejected"}`)}{:else}
                       {item.status === "empty" ? t("dictation.empty") : item.status === "hallucination" ? t("dictation.hallucination") : item.text}
+                      {/if}
                     </p>
                   </div>
                   <Button variant="ghost" aria-label={t("common.copy")} title={t("common.copy")}
-                    busy={copyingId === item.id} disabled={copyingId !== null} onclick={() => void copy(item)}>
+                    busy={copyingId === item.id} disabled={copyingId !== null || item.status === "failed"} onclick={() => void copy(item)}>
                     <Icon name="copy" />
                   </Button>
                 </li>

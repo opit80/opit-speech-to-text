@@ -5,7 +5,7 @@ export type Lang = "en" | "tr";
 
 export type ErrorKind =
   | "missing_key" | "invalid_key" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
-  | "bad_response" | "rejected" | "audio" | "microphone" | "credentials" | "paste";
+  | "bad_response" | "rejected" | "audio" | "microphone" | "credentials" | "paste" | "cancelled";
 
 export type DictationState = "idle" | "recording" | "transcribing" | "pasting" | "cancelled" | "error";
 
@@ -14,6 +14,7 @@ export interface DictationStatus {
   can_retry: boolean;
   waiting: number;
   paused: boolean;
+  retry_wait?: { kind: ErrorKind; seconds: number; attempt: number; total: number };
   /** Only when state === "error". */
   kind?: ErrorKind;
   /** Only when state === "error"; already localized by Rust. */
@@ -71,7 +72,7 @@ export interface AppInfo {
   debug_build: boolean;
 }
 
-export type TranscriptStatus = "ok" | "empty" | "hallucination";
+export type TranscriptStatus = "ok" | "empty" | "hallucination" | "failed";
 
 export interface Dictation {
   id: number;
@@ -83,6 +84,7 @@ export interface Dictation {
   audio_ms: number;
   latency_ms: number;
   audio_path: string | null;
+  error_code: ErrorKind | null;
 }
 
 export type RuleKind = "correction" | "replacement" | "casing" | "numbers";

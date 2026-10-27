@@ -126,6 +126,17 @@ impl HistorySink for FakeHistory {
         });
         Ok(saved.len() as i64)
     }
+
+    fn replace(&self, id: i64, entry: &NewDictation<'_>, keep_audio: bool) -> Result<(), String> {
+        let mut saved = self.saved.lock().unwrap();
+        let row = saved.get_mut((id - 1) as usize).ok_or("missing history row")?;
+        row.profile_id = entry.profile_id.into();
+        row.raw_text = entry.raw_text.into();
+        row.text = entry.text.into();
+        row.status = entry.status;
+        row.has_audio = keep_audio;
+        Ok(())
+    }
 }
 
 struct FakeEvents {
@@ -197,6 +208,17 @@ fn harness(config: AppConfig) -> Harness {
 }
 
 impl Harness {
+    async fn wait_for(&mut self, predicate: impl Fn(&DictationStatus) -> bool) -> DictationStatus {
+        loop {
+            let status = tokio::time::timeout(Duration::from_secs(5), self.states.recv())
+                .await
+                .expect("status timed out")
+                .expect("controller stopped");
+            if predicate(&status) {
+                return status;
+            }
+        }
+    }
     fn script(&self, profile: &str, replies: Vec<Result<&str, ProviderError>>) {
         let replies = replies.into_iter().map(|r| r.map(str::to_string)).collect();
         self.providers.scripts.lock().unwrap().insert(profile.into(), replies);
@@ -211,11 +233,22 @@ impl Harness {
     }
 
     async fn next(&mut self) -> DictationState {
-        let status = tokio::time::timeout(Duration::from_secs(5), self.states.recv())
-            .await
-            .expect("timed out waiting for a state change")
-            .expect("controller stopped");
-        status.state
+        let mut was_waiting = false;
+        loop {
+            let status = tokio::time::timeout(Duration::from_secs(5), self.states.recv())
+                .await
+                .expect("timed out waiting for a state change")
+                .expect("controller stopped");
+            if status.state == Transcribing && status.retry_wait.is_some() {
+                was_waiting = true;
+                continue;
+            }
+            if status.state == Transcribing && was_waiting {
+                was_waiting = false;
+                continue;
+            }
+            return status.state;
+        }
     }
 
     async fn expect(&mut self, expected: &[DictationState]) {
@@ -250,6 +283,111 @@ fn with_fallback() -> AppConfig {
 }
 
 // ---------- tests ----------
+
+#[tokio::test(start_paused = true)]
+async fn even_the_quick_retry_wait_publishes_safe_progress_and_wakes_on_cancel() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (cancel, cancelled) = watch::channel(false);
+    let progress = RetryWait { kind: "timeout", seconds: 0, attempt: 1, total: 5 };
+    let waiting = tokio::spawn(wait_for_retry(tx, 1, cancelled, progress, Duration::from_millis(500)));
+    let Some(Msg::RetryProgress { progress: Some(progress), .. }) = rx.recv().await else { panic!("missing progress") };
+    assert_eq!(progress.seconds, 1);
+    let now = tokio::time::Instant::now();
+    cancel.send(true).unwrap();
+    assert!(!waiting.await.unwrap());
+    assert_eq!(tokio::time::Instant::now(), now);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_patient_wait_keeps_audio_and_advances_the_fifo() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Err(ProviderError::RateLimited), Err(ProviderError::RateLimited), Ok("second")]);
+    h.send(Msg::Toggle);
+    h.send(Msg::Toggle);
+    let status = h.wait_for(|s| s.retry_wait.is_some()).await;
+    assert_eq!(status.retry_wait.unwrap(), RetryWait { kind: "rate_limited", seconds: 10, attempt: 2, total: 5 });
+    assert!(h.overlay.last().text.contains("retrying in 10 s (2/5)"));
+    h.send(Msg::Toggle);
+    h.wait_for(|s| s.state == Recording).await;
+    h.send(Msg::Stop);
+    h.wait_for(|s| s.waiting == 1).await;
+    assert_eq!(h.providers.calls(), 2);
+    h.hotkey(HotkeyEvent::Escape);
+    h.wait_for(|s| matches!(s.state, DictationState::Error { kind: ErrorKind::Cancelled, .. })).await;
+    h.wait_for(|s| s.state == Idle).await;
+    let saved = h.history.entries();
+    assert_eq!(saved.iter().map(|s| s.status).collect::<Vec<_>>(), [TranscriptStatus::Failed, TranscriptStatus::Ok]);
+    assert!(saved[0].has_audio);
+    assert!(saved[0].text.is_empty() && saved[0].raw_text.is_empty());
+    assert_eq!(h.paster.texts(), ["second "]);
+    assert_eq!(h.providers.calls(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_patient_wait_keeps_queued_pastes_in_order() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Err(ProviderError::Timeout), Err(ProviderError::Timeout), Ok("first"), Ok("second")]);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.wait_for(|s| s.retry_wait.is_some()).await;
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.wait_for(|s| s.state == Recording).await;
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.wait_for(|s| s.waiting == 1).await;
+    assert!(h.paster.texts().is_empty());
+    h.wait_for(|s| s.state == Idle).await;
+    assert_eq!(h.paster.texts(), ["first ", "second "]);
+    assert_eq!(*h.paster.policies.lock().unwrap(), [true, true]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_a_wait_with_history_disabled_keeps_only_memory() {
+    let mut config = AppConfig::default();
+    config.history.enabled = false;
+    let mut h = harness(config);
+    h.script("groq", vec![Err(ProviderError::Timeout), Err(ProviderError::Timeout)]);
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.wait_for(|s| s.retry_wait.is_some()).await;
+    h.send(Msg::Cancel);
+    h.wait_for(|s| s.state == Idle).await;
+    assert!(h.history.entries().is_empty());
+    assert!(h.handle.status().can_retry);
+    assert_eq!(h.providers.calls(), 2);
+}
+
+#[tokio::test]
+async fn history_retry_replaces_the_row_and_copies_once_without_pasting_or_restoring() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Err(ProviderError::Unauthorized(401))]);
+    h.script("openai", vec![Ok("12 items")]);
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.wait_for(|s| s.state == Idle).await;
+    let mut config = h.settings.current().config.clone();
+    config.paste.restore_clipboard = true;
+    config.active_profile_id = "openai".into();
+    config.profiles.iter_mut().find(|p| p.id == "openai").unwrap().language = "en".into();
+    config.rules.numbers_as_words = true;
+    h.settings.replace(settings(config));
+    let audio = PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 };
+    h.providers.gate.forget_permits(1_000);
+    let (reply, answer) = oneshot::channel();
+    h.send(Msg::RetryHistory { id: 1, audio: Arc::new(audio.clone()), reply });
+    h.wait_for(|s| s.state == Transcribing).await;
+    let (reply, duplicate) = oneshot::channel();
+    h.send(Msg::RetryHistory { id: 1, audio: Arc::new(audio), reply });
+    assert_eq!(duplicate.await.unwrap(), Err(ErrorKind::Rejected));
+    h.providers.gate.add_permits(1);
+    assert_eq!(answer.await.unwrap(), Ok(()));
+    h.wait_for(|s| s.state == Idle).await;
+    assert_eq!(h.history.entries().len(), 1);
+    assert_eq!(h.history.entries()[0].text, "Twelve items");
+    assert_eq!(h.history.entries()[0].profile_id, "openai");
+    assert!(!h.history.entries()[0].has_audio);
+    assert_eq!(*h.paster.pasted.lock().unwrap(), [("Twelve items ".into(), false)]);
+    assert_eq!(*h.paster.policies.lock().unwrap(), [false]);
+}
 
 #[tokio::test]
 async fn toggle_records_transcribes_pastes_and_saves() {
@@ -465,25 +603,28 @@ async fn silence_is_not_sent() {
     assert!(h.history.entries().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_provider_failure_keeps_the_audio_for_try_again() {
     let mut h = harness(AppConfig::default());
-    h.script("groq", vec![Err(ProviderError::Server(500)), Err(ProviderError::Server(500)), Ok("tekrar")]);
+    let mut script = vec![Err(ProviderError::Server(500)); 6];
+    script.push(Ok("tekrar"));
+    h.script("groq", script);
     h.send(Msg::Toggle);
     h.send(Msg::Toggle);
     h.expect(&[Recording, Transcribing]).await;
     h.expect_error(ErrorKind::Server).await;
     assert!(h.handle.status().can_retry);
     assert_eq!(h.overlay.last().button.map(|b| b.action), Some(OverlayAction::Retry));
-    assert!(h.history.entries().is_empty());
+    assert_eq!(h.history.entries()[0].status, TranscriptStatus::Failed);
+    assert!(h.history.entries()[0].has_audio);
 
     h.send(Msg::Overlay(OverlayAction::Retry));
     h.expect(&[Transcribing, Pasting, Idle]).await;
     assert_eq!(h.paster.texts(), ["tekrar "]);
     assert_eq!(h.mic.starts(), 1, "the kept audio is resent, nothing is re-recorded");
-    assert_eq!(h.providers.calls(), 3);
+    assert_eq!(h.providers.calls(), 7);
     assert!(!h.handle.status().can_retry);
-    assert_eq!(h.history.entries().len(), 1);
+    assert_eq!(h.history.entries().len(), 2);
 }
 
 #[tokio::test]
@@ -640,11 +781,11 @@ async fn history_follows_the_live_config() {
 #[tokio::test]
 async fn an_update_hold_refuses_new_dictations_until_every_hold_is_released() {
     let mut h = harness(AppConfig::default());
-    h.script("groq", vec![Err(ProviderError::Server(500)), Err(ProviderError::Server(500)), Ok("sonra")]);
+    h.script("groq", vec![Err(ProviderError::BadResponse("invalid response".into())), Ok("sonra")]);
     h.send(Msg::Toggle);
     h.send(Msg::Toggle);
     h.expect(&[Recording, Transcribing]).await;
-    h.expect_error(ErrorKind::Server).await;
+    h.expect_error(ErrorKind::BadResponse).await;
     assert!(h.handle.status().can_retry);
 
     let first = h.handle.hold_for_update().await.expect("idle: the update may install");
@@ -655,7 +796,7 @@ async fn an_update_hold_refuses_new_dictations_until_every_hold_is_released() {
     h.send(Msg::Overlay(OverlayAction::Retry));
     h.settle().await;
     assert_eq!(h.mic.starts(), 1, "no recording while an update installs");
-    assert_eq!(h.providers.calls(), 2, "no Try again while an update installs");
+    assert_eq!(h.providers.calls(), 1, "no Try again while an update installs");
     assert_eq!(h.handle.status().state, Idle);
     assert_eq!(h.overlay.last().text, "Installing an update…");
 
