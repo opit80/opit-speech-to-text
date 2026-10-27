@@ -114,14 +114,24 @@ impl Transcriber for ElevenLabs {
         }
         check_status(response.status().as_u16())?;
         let body = response.text().await.map_err(send_error)?;
-        #[derive(Deserialize)]
-        struct Transcript {
-            text: String,
-        }
-        let transcript: Transcript = serde_json::from_str(&body)
-            .map_err(|_| ProviderError::BadResponse("invalid ElevenLabs transcription response".into()))?;
-        Ok(RawTranscript { text: transcript.text.trim().to_string(), dropped_segments: 0 })
+        parse_body(&body)
     }
+}
+
+fn parse_body(body: &str) -> Result<RawTranscript, ProviderError> {
+    #[derive(Deserialize)]
+    struct Transcript {
+        text: String,
+        #[serde(default)]
+        language_code: Option<String>,
+    }
+    let transcript: Transcript = serde_json::from_str(body)
+        .map_err(|_| ProviderError::BadResponse("invalid ElevenLabs transcription response".into()))?;
+    Ok(RawTranscript {
+        text: transcript.text.trim().to_string(),
+        language: transcript.language_code.as_deref().and_then(super::language::normalize),
+        dropped_segments: 0,
+    })
 }
 
 fn send_error(error: reqwest::Error) -> ProviderError {
@@ -149,6 +159,14 @@ mod tests {
     use crate::audio::encode::{AudioFormat, encode};
     use crate::provider::{ProviderClient, presets};
 
+    #[test]
+    fn parses_language_code_in_both_iso_lengths() {
+        for (code, expected) in [("tr", Some("tr")), ("tur", Some("tr")), ("eng", Some("en")), ("xxx", None)] {
+            let body = serde_json::json!({"text":"ok", "language_code":code}).to_string();
+            assert_eq!(parse_body(&body).unwrap().language.as_deref(), expected);
+        }
+        assert_eq!(parse_body(r#"{"text":"ok"}"#).unwrap().language, None);
+    }
     fn profile(server: &MockServer) -> Profile {
         let mut profile = presets::elevenlabs();
         profile.base_url = format!("{}/v1/", server.uri());

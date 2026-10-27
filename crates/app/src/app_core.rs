@@ -1104,6 +1104,7 @@ mod tests {
             audio_ms: 1000,
             latency_ms: 500,
             error_code: None,
+            language: None,
         };
         // Row with an audio file inside paths.audio.
         let inside = history.store().insert(&entry("a")).unwrap();
@@ -1148,6 +1149,7 @@ mod tests {
             audio_ms: 1000,
             latency_ms: 100,
             error_code: Some("timeout"),
+            language: None,
         };
         let audio = opit_core::pipeline::PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 };
         let id = history.record(&entry, Some(&audio)).unwrap();
@@ -1221,6 +1223,7 @@ mod tests {
                 audio_ms: 1,
                 latency_ms: 1,
                 error_code: None,
+                language: None,
             };
             history.record(&entry, None).unwrap();
         }

@@ -5,6 +5,7 @@ import "./app.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
 import type { AppConfig, Dictation, DictationStatus } from "./lib/types";
+import { speechDetectionDefaults } from "./lib/speech-detection";
 
 if (!import.meta.env.DEV) throw new Error("Guide preview is only available in the development server");
 
@@ -20,7 +21,7 @@ const config: AppConfig = {
     send_prompt: true, send_keywords: false, apply_rules: true, fallback_profile_id: null,
   }],
   hotkey: { pause_keys: [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
-  recording: { microphone: null, max_seconds: 180 },
+  recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults },
   paste: { restore_clipboard: false, trailing_space: true },
   history: { enabled: true, save_audio: false, audio_retention_days: 7 },
   rules: { enabled_packs: ["tr-core", "tr-tech"], prompt_context: "", numbers_as_words: false },
@@ -32,7 +33,7 @@ let rows: Dictation[] = Array.from({ length: params.get("empty") === "true" ? 0 
   id: 9 - i, created_at_ms: now - i * 3_600_000, profile_id: "preview",
   raw_text: "Toplantıdan önce github değişikliklerini kontrol edelim.",
   text: "Toplantıdan önce GitHub değişikliklerini kontrol edelim.",
-  status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null, error_code: null,
+  status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null, error_code: null, language: "tr",
 }));
 if (params.get("failed") === "true" && rows[0]) {
   Object.assign(rows[0], { status: "failed", raw_text: "", text: "", error_code: "rate_limited", audio_path: "audio/9.wav" });

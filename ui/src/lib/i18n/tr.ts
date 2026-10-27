@@ -2,6 +2,17 @@ import type { MessageKey } from "./en";
 
 // Turkish UI strings; exactly the keys of en.ts.
 export const tr: Record<MessageKey, string> = {
+  "settings.speech_detection": "Gelişmiş: konuşma algılama",
+  "settings.speech_detection_hint": "Oda gürültüsünü konuşma seviyenizle karşılaştırmak için yukarıdaki mikrofon testini kullanın. Sessiz bir mikrofon için eşiği düşürün.",
+  "settings.speech_floor": "Mutlak konuşma eşiği (dBFS)",
+  "settings.speech_floor_hint": "Bu seviyenin altındaki sesler yok sayılır. Daha negatif değerler daha sessiz konuşmalara izin verir.",
+  "settings.noise_margin": "Arka plan gürültüsünün üzerindeki fark (dB)",
+  "settings.noise_margin_hint": "Kaydın arka plan gürültüsüne göre gereken fark. Yüksek sesli konuşma da geçebilir; sabit tıslama reddedilir.",
+  "settings.min_speech": "En az konuşma süresi (saniye)",
+  "settings.min_speech_hint": "Ses gönderilmeden önce gereken toplam konuşma. Kayıt yine en az 0,4 saniye sürmelidir.",
+  "settings.speech_reset": "Varsayılanlara sıfırla",
+  "mic.db": "Anlık seviye: {db} dBFS",
+  "history.language": "Dil: {language}",
   "app.name": "Opit Speech to Text",
   "app.loading": "Yükleniyor…",
   "app.load_failed": "Uygulama ayarlarını yükleyemedi: {message}",

@@ -170,6 +170,8 @@ fn status_error(status: u16, _body: &str) -> ProviderError {
 struct ApiResponse {
     text: String,
     #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
     segments: Option<Vec<Segment>>,
 }
 
@@ -197,11 +199,12 @@ fn describe(err: &serde_json::Error) -> String {
 
 fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
     let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(describe(&e)))?;
+    let language = if verbose { response.language.as_deref().and_then(super::language::normalize) } else { None };
     let segments = if verbose { response.segments.unwrap_or_default() } else { Vec::new() };
     let is_silence = |s: &Segment| s.no_speech_prob > NO_SPEECH_PROB_LIMIT && s.avg_logprob < AVG_LOGPROB_LIMIT;
     let dropped = segments.iter().filter(|s| is_silence(s)).count();
     if dropped == 0 {
-        return Ok(RawTranscript { text: response.text.trim().to_string(), dropped_segments: 0 });
+        return Ok(RawTranscript { text: response.text.trim().to_string(), language, dropped_segments: 0 });
     }
     let text = segments
         .iter()
@@ -210,12 +213,26 @@ fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError>
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(RawTranscript { text, dropped_segments: dropped })
+    Ok(RawTranscript { text, language, dropped_segments: dropped })
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    #[test]
+    fn verbose_language_survives_silence_segments_and_plain_json_has_none() {
+        for (value, expected) in [("turkish", Some("tr")), ("eng", Some("en")), ("unknown", None)] {
+            let body = serde_json::json!({"text":"ok", "language":value,
+                "segments":[{"text":"ok"},{"text":"discard","no_speech_prob":0.9,"avg_logprob":-2.0}]})
+            .to_string();
+            let raw = super::parse_body(&body, true).unwrap();
+            assert_eq!(raw.language.as_deref(), expected);
+            assert_eq!(raw.dropped_segments, 1);
+            assert_eq!(super::parse_body(&body, false).unwrap().language, None);
+        }
+        assert_eq!(super::parse_body(r#"{"text":"ok"}"#, true).unwrap().language, None);
+    }
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -283,7 +300,7 @@ mod tests {
         let mut profile = profile_for(&server);
         profile.send_keywords = true;
         let raw = send(profile, Some("sk-test"), Some("Bağlam."), &keywords).await.unwrap();
-        assert_eq!(raw, RawTranscript { text: "Merhaba dünya".into(), dropped_segments: 0 });
+        assert_eq!(raw, RawTranscript { text: "Merhaba dünya".into(), language: None, dropped_segments: 0 });
 
         let request = only_request(&server).await;
         assert_eq!(request.headers.get("authorization").unwrap(), "Bearer sk-test");
@@ -322,7 +339,7 @@ mod tests {
             {"text":" altyazı m.k","no_speech_prob":0.9,"avg_logprob":-1.5}]}"#;
         let server = server(200, body).await;
         let raw = send(profile_for(&server), None, None, &[]).await.unwrap();
-        assert_eq!(raw, RawTranscript { text: "Merhaba".into(), dropped_segments: 1 });
+        assert_eq!(raw, RawTranscript { text: "Merhaba".into(), language: None, dropped_segments: 1 });
     }
 
     #[tokio::test]

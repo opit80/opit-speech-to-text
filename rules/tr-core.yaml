@@ -11,7 +11,7 @@ corrections:
   burada: [burda]
   kaydet: [kayıt et]
 
-# Dropped only when they are the entire output (typical on silence).
+# Dropped only as the entire output of short audio, including complete repeats.
 hallucinations:
   - altyazı m.k
   - altyazı ekleyen
@@ -20,10 +20,6 @@ hallucinations:
   - abone olun
   - abone olmayı unutmayın
   - izlediğiniz için teşekkürler
-  - m.k
-  - mk
-  - a
-  - e
   - thank you
   - thanks for watching
   - please subscribe

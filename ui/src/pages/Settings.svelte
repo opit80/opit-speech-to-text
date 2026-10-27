@@ -17,6 +17,7 @@
   import UpdateInstallButton from "../lib/components/UpdateInstallButton.svelte";
   import UpdateProgress from "../lib/components/UpdateProgress.svelte";
   import { statusMessage } from "../lib/update";
+  import { speechDetectionDefaults } from "../lib/speech-detection";
 
   let errors = $state<Record<string, string | null>>({});
   // Bumped after a failed change: the controls re-read the live value and drop what the user picked.
@@ -29,6 +30,17 @@
   let pauseBusy = $state(false);
   let micRequest = 0;
   let disposed = false;
+  let resetBusy = $state(false);
+
+  async function resetSpeechDetection() {
+    resetBusy = true;
+    await save("speech_reset", (c) => { Object.assign(c.recording, speechDetectionDefaults); });
+    for (const field of Object.keys(speechDetectionDefaults)) {
+      drafts[field] = null;
+      errors[field] = null;
+    }
+    resetBusy = false;
+  }
 
   const config = $derived(app.config);
 
@@ -138,7 +150,7 @@
   // ---- Number inputs: keep the typed text while focused, save on change, then show what Rust stored.
   function numberText(field: string, value: number): string {
     void revision;
-    return drafts[field] ?? String(value);
+    return drafts[field] ?? String(Number(value.toFixed(2)));
   }
 
   async function commitNumber(
@@ -146,16 +158,18 @@
     input: HTMLInputElement,
     min: number,
     max: number,
+    step: number,
     read: (c: AppConfig) => number,
     write: (c: AppConfig, n: number) => void,
   ) {
     const n = Number(input.value);
     if (input.value.trim() !== "" && Number.isFinite(n)) {
-      const value = Math.min(max, Math.max(min, Math.round(n)));
+      const rounded = step < 1 ? Number(n.toFixed(2)) : Math.round(n);
+      const value = Math.min(max, Math.max(min, rounded));
       await save(field, (c) => write(c, value));
     }
     if (disposed || !app.config) return;
-    const stored = String(read(app.config));
+    const stored = String(Number(read(app.config).toFixed(2)));
     input.value = stored;
     if (drafts[field] != null) drafts[field] = stored;
   }
@@ -208,12 +222,12 @@
   {#if config}
     <Field {label} {hint} error={errors[field]}>
       {#snippet children(id)}
-        <input {id} class="number" type="number" {min} {max} {step} inputmode="numeric" {disabled}
+        <input {id} class="number" type="number" {min} {max} {step} inputmode="decimal" {disabled}
           value={numberText(field, read(config))}
           aria-describedby={hint || errors[field] ? `${id}-description` : undefined}
           onfocus={(e) => (drafts[field] = e.currentTarget.value)}
           onblur={() => (drafts[field] = null)}
-          onchange={(e) => void commitNumber(field, e.currentTarget, min, max, read, write)} />
+          onchange={(e) => void commitNumber(field, e.currentTarget, min, max, step, read, write)} />
       {/snippet}
     </Field>
   {/if}
@@ -283,6 +297,21 @@
         {@render numberInput("max_seconds", t("settings.max_seconds"), t("settings.max_seconds_hint"), 10, 600, 10, false,
           (c) => c.recording.max_seconds, (c, n) => { c.recording.max_seconds = n; })}
       </section>
+
+      <details class="card settings-group" open={["speech_floor_db", "noise_margin_db", "min_speech_seconds", "speech_reset"].some((field) => !!errors[field])}>
+        <summary>{t("settings.speech_detection")}</summary>
+        <div class="stack group-body">
+          <p class="muted">{t("settings.speech_detection_hint")}</p>
+          {@render numberInput("speech_floor_db", t("settings.speech_floor"), t("settings.speech_floor_hint"), -90, -6, 0.01, resetBusy,
+            (c) => c.recording.speech_floor_db, (c, n) => { c.recording.speech_floor_db = n; })}
+          {@render numberInput("noise_margin_db", t("settings.noise_margin"), t("settings.noise_margin_hint"), 0, 30, 0.01, resetBusy,
+            (c) => c.recording.noise_margin_db, (c, n) => { c.recording.noise_margin_db = n; })}
+          {@render numberInput("min_speech_seconds", t("settings.min_speech"), t("settings.min_speech_hint"), 0.03, 5, 0.01, resetBusy,
+            (c) => c.recording.min_speech_seconds, (c, n) => { c.recording.min_speech_seconds = n; })}
+          <div class="row"><Button variant="ghost" busy={resetBusy} onclick={() => void resetSpeechDetection()}>{t("settings.speech_reset")}</Button></div>
+          {@render fieldError("speech_reset")}
+        </div>
+      </details>
 
       <details class="card settings-group" open={["restore_clipboard", "trailing_space", "overlay"].some((field) => !!errors[field])}>
         <summary>{t("settings.pasting")}</summary>

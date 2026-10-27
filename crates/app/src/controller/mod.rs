@@ -547,13 +547,15 @@ impl<P: Providers> Controller<P> {
             let tx = worker_tx;
             let audio = match input {
                 Input::Prepared(audio) => audio,
-                Input::Raw(recording) => match prepare_off_thread(recording).await {
-                    Ok(audio) => Arc::new(audio),
-                    Err(err) => {
-                        let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
-                        return;
+                Input::Raw(recording) => {
+                    match prepare_off_thread(recording, task_settings.config.recording.clone()).await {
+                        Ok(audio) => Arc::new(audio),
+                        Err(err) => {
+                            let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
+                            return;
+                        }
                     }
-                },
+                }
             };
             let ctx = PipelineContext {
                 primary: &clients.primary,
@@ -706,9 +708,9 @@ impl<P: Providers> Controller<P> {
                 info!(session, "recording too short; not sent");
                 return self.finish_info(lang.too_short());
             }
-            Err(PipelineError::NoSpeech) => {
+            Err(PipelineError::NoSpeech { levels }) => {
                 info!(session, "no speech detected; not sent");
-                return self.finish_info(lang.no_speech());
+                return self.finish_info(&lang.no_speech(levels.speech_db));
             }
             Err(err) => {
                 warn!(session, kind = ?ErrorKind::from(&err), "transcription failed");
@@ -796,6 +798,7 @@ impl<P: Providers> Controller<P> {
         let entry = NewDictation {
             created_at_ms: now_ms(),
             profile_id: &transcript.profile_id,
+            language: transcript.language.as_deref(),
             raw_text: &transcript.raw_text,
             text: &transcript.text,
             status: transcript.status,
@@ -933,8 +936,9 @@ impl<P: Providers> Controller<P> {
                 let Input::Raw(recording) = p.input else { unreachable!() };
                 let session = p.session;
                 let tx = self.tx.clone();
+                let recording_config = p.job.settings.config.recording.clone();
                 let task = tokio::spawn(async move {
-                    let result = prepare_off_thread(recording).await;
+                    let result = prepare_off_thread(recording, recording_config).await;
                     let _ = tx.send(Msg::Salvaged { session, result });
                 })
                 .abort_handle();
@@ -1069,6 +1073,7 @@ async fn save_transcription(
             audio_ms: audio.audio_ms,
             latency_ms: elapsed.as_millis() as u64,
             error_code: failure_code,
+            language: transcript.as_ref().and_then(|t| t.language.as_deref()),
         };
         match history_id {
             Some(id) => {
@@ -1082,8 +1087,11 @@ async fn save_transcription(
 }
 
 /// Runs the CPU-heavy prepare step (resample + silence gate) on the blocking pool.
-async fn prepare_off_thread(recording: Recording) -> Result<PreparedAudio, PipelineError> {
-    tokio::task::spawn_blocking(move || pipeline::prepare(&recording))
+async fn prepare_off_thread(
+    recording: Recording,
+    config: opit_core::config::RecordingConfig,
+) -> Result<PreparedAudio, PipelineError> {
+    tokio::task::spawn_blocking(move || pipeline::prepare_with_config(&recording, &config))
         .await
         .unwrap_or_else(|join| Err(PipelineError::Encode(EncodeError(join.to_string()))))
 }

@@ -71,8 +71,11 @@ impl Transcriber for ScriptedClient {
                 None => None,
             };
             let next = state.scripts.lock().unwrap().get_mut(&id).and_then(VecDeque::pop_front);
-            next.unwrap_or_else(|| panic!("unexpected request to {id}"))
-                .map(|text| RawTranscript { text, dropped_segments: 0 })
+            next.unwrap_or_else(|| panic!("unexpected request to {id}")).map(|text| RawTranscript {
+                text,
+                language: None,
+                dropped_segments: 0,
+            })
         }
     }
 }
@@ -97,6 +100,7 @@ impl Providers for TestProviders {
 #[derive(Debug, Clone, PartialEq)]
 struct Saved {
     profile_id: String,
+    language: Option<String>,
     raw_text: String,
     text: String,
     status: TranscriptStatus,
@@ -119,6 +123,7 @@ impl HistorySink for FakeHistory {
         let mut saved = self.saved.lock().unwrap();
         saved.push(Saved {
             profile_id: entry.profile_id.into(),
+            language: entry.language.map(str::to_string),
             raw_text: entry.raw_text.into(),
             text: entry.text.into(),
             status: entry.status,
@@ -131,6 +136,7 @@ impl HistorySink for FakeHistory {
         let mut saved = self.saved.lock().unwrap();
         let row = saved.get_mut((id - 1) as usize).ok_or("missing history row")?;
         row.profile_id = entry.profile_id.into();
+        row.language = entry.language.map(str::to_string);
         row.raw_text = entry.raw_text.into();
         row.text = entry.text.into();
         row.status = entry.status;
@@ -599,8 +605,26 @@ async fn silence_is_not_sent() {
     h.send(Msg::Toggle);
     h.expect(&[Recording, Transcribing, Idle]).await;
     assert_eq!(h.providers.calls(), 0);
-    assert_eq!(h.overlay.last().text, "No speech detected");
+    assert_eq!(h.overlay.last().text, "No speech detected (-120 dB)");
     assert!(h.history.entries().is_empty());
+}
+
+#[tokio::test]
+async fn calibration_is_snapshotted_at_recording_start_and_language_reaches_history() {
+    let mut config = AppConfig::default();
+    config.recording.speech_floor_db = -65.0;
+    let mut h = harness(config);
+    h.script("groq", vec![Ok("quiet speech")]);
+    let mut quiet = speech_recording();
+    quiet.samples.iter_mut().for_each(|s| *s *= 0.01);
+    *h.mic.recording.lock().unwrap() = Some(quiet);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.settings.replace(settings(AppConfig::default()));
+    h.send(Msg::Stop);
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    assert_eq!(h.providers.calls(), 1);
+    assert_eq!(h.history.entries()[0].language.as_deref(), Some("tr"));
 }
 
 #[tokio::test(start_paused = true)]

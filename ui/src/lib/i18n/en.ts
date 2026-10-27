@@ -1,5 +1,16 @@
 // English UI strings. Keys are grouped by page; tr.ts must have exactly the same keys.
 export const en = {
+  "settings.speech_detection": "Advanced: speech detection",
+  "settings.speech_detection_hint": "Use the microphone test above to compare room noise with your speaking level. Lower the floor for a quiet microphone.",
+  "settings.speech_floor": "Absolute speech floor (dBFS)",
+  "settings.speech_floor_hint": "Frames below this level are ignored. More negative values allow quieter speech.",
+  "settings.noise_margin": "Margin above background noise (dB)",
+  "settings.noise_margin_hint": "Required difference from this recording's background noise. Loud speech can also pass; steady hiss is rejected.",
+  "settings.min_speech": "Minimum speech (seconds)",
+  "settings.min_speech_hint": "Total speech needed before sending audio. Recordings must still last at least 0.4 seconds.",
+  "settings.speech_reset": "Reset to defaults",
+  "mic.db": "Live level: {db} dBFS",
+  "history.language": "Language: {language}",
   "app.name": "Opit Speech to Text",
   "app.loading": "Loading…",
   "app.load_failed": "The app could not load its settings: {message}",

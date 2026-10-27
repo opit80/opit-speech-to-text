@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::audio::encode::{EncodeError, EncodedAudio, encode};
 use crate::audio::gate::{self, GateVerdict};
 use crate::audio::{self, Recording, TARGET_RATE};
+use crate::config::RecordingConfig;
 use crate::provider::retry::{PATIENT_DELAYS, RetryWait};
 use crate::provider::{ProviderError, RawTranscript, TranscribeRequest, Transcriber};
 use crate::rules::prompt::{build_prompt, keywords};
@@ -50,6 +51,8 @@ impl TranscriptStatus {
 pub struct Transcript {
     /// Provider output before rules.
     pub raw_text: String,
+    /// ISO 639-1 language, reported by the provider or fixed by the used profile.
+    pub language: Option<String>,
     /// Text to paste.
     pub text: String,
     pub status: TranscriptStatus,
@@ -70,14 +73,14 @@ pub struct PreparedAudio {
     pub speech_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum PipelineError {
     #[error("the recording is too short")]
     TooShort,
     #[error("retry cancelled; audio retained for another attempt")]
     RetryCancelled,
     #[error("no speech was detected")]
-    NoSpeech,
+    NoSpeech { levels: gate::GateLevels },
     #[error(transparent)]
     Encode(#[from] EncodeError),
     #[error(transparent)]
@@ -94,10 +97,15 @@ pub struct PipelineContext<'a, T> {
 }
 
 pub fn prepare(recording: &Recording) -> Result<PreparedAudio, PipelineError> {
+    prepare_with_config(recording, &RecordingConfig::default())
+}
+
+pub fn prepare_with_config(recording: &Recording, config: &RecordingConfig) -> Result<PreparedAudio, PipelineError> {
     let samples = audio::to_mono_16k(recording);
-    match gate::check(&samples) {
+    let result = gate::analyze(&samples, config);
+    match result.verdict {
         GateVerdict::TooShort => Err(PipelineError::TooShort),
-        GateVerdict::NoSpeech => Err(PipelineError::NoSpeech),
+        GateVerdict::NoSpeech => Err(PipelineError::NoSpeech { levels: result.levels }),
         GateVerdict::Speech { speech_ms } => {
             let audio_ms = samples.len() as u64 * 1000 / u64::from(TARGET_RATE);
             Ok(PreparedAudio { samples, audio_ms, speech_ms })
@@ -182,10 +190,22 @@ where
     let raw = result?;
 
     let profile = used.profile();
-    let (text, status, hits) =
-        postprocess_with_numbers(&raw.text, ctx.rules, profile.apply_rules, ctx.numbers_as_words, &profile.language);
+    let (text, status, hits) = postprocess_with_numbers(
+        &raw.text,
+        ctx.rules,
+        profile.apply_rules,
+        ctx.numbers_as_words,
+        &profile.language,
+        audio.audio_ms,
+    );
+    let language = if profile.language.trim() == "auto" {
+        raw.language
+    } else {
+        crate::provider::language::normalize(&profile.language)
+    };
     Ok(Transcript {
         raw_text: raw.text,
+        language,
         text,
         status,
         profile_id: profile.id.clone(),
@@ -196,8 +216,13 @@ where
     })
 }
 
-pub fn postprocess(raw: &str, rules: &RuleSet, apply_rules: bool) -> (String, TranscriptStatus, Vec<RuleHit>) {
-    postprocess_with_numbers(raw, rules, apply_rules, false, "tr")
+pub fn postprocess(
+    raw: &str,
+    rules: &RuleSet,
+    apply_rules: bool,
+    audio_ms: u64,
+) -> (String, TranscriptStatus, Vec<RuleHit>) {
+    postprocess_with_numbers(raw, rules, apply_rules, false, "tr", audio_ms)
 }
 
 pub fn postprocess_with_numbers(
@@ -206,6 +231,7 @@ pub fn postprocess_with_numbers(
     apply_rules: bool,
     numbers_as_words: bool,
     language: &str,
+    audio_ms: u64,
 ) -> (String, TranscriptStatus, Vec<RuleHit>) {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -214,7 +240,7 @@ pub fn postprocess_with_numbers(
     if !apply_rules {
         return (trimmed.to_string(), TranscriptStatus::Ok, Vec::new());
     }
-    if rules.is_hallucination(trimmed) {
+    if audio_ms <= 6000 && rules.is_hallucination(trimmed) {
         return (String::new(), TranscriptStatus::Hallucination, Vec::new());
     }
     let (mut text, mut hits) = rules.apply_traced(trimmed);
@@ -277,7 +303,7 @@ mod tests {
         fn new(id: &str, script: Vec<Result<&str, ProviderError>>) -> Self {
             let script = script
                 .into_iter()
-                .map(|r| r.map(|text| RawTranscript { text: text.into(), dropped_segments: 0 }))
+                .map(|r| r.map(|text| RawTranscript { text: text.into(), language: None, dropped_segments: 0 }))
                 .collect();
             Self {
                 profile: presets::custom(id, id, "http://unused.invalid/v1", "m"),
@@ -340,6 +366,47 @@ mod tests {
 
     fn tech_rules() -> RuleSet {
         RuleSet::compile(&assemble(None, &["tr-core".to_string(), "tr-tech".to_string()])).0
+    }
+
+    #[tokio::test]
+    async fn language_uses_the_successful_profile_and_provider_detection_only_in_auto() {
+        let rules = RuleSet::empty();
+        for (configured, detected, expected) in
+            [("auto", Some("tr"), Some("tr")), ("auto", None, None), ("en", Some("tr"), Some("en"))]
+        {
+            let mut primary = Scripted::new("primary", vec![Ok("ok")]);
+            primary.profile.language = configured.into();
+            primary.script.lock().unwrap().front_mut().unwrap().as_mut().unwrap().language =
+                detected.map(str::to_string);
+            let result = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
+            assert_eq!(result.language.as_deref(), expected);
+        }
+        let primary = Scripted::new("primary", vec![Err(ProviderError::Timeout); 2]);
+        let mut fallback = Scripted::new("fallback", vec![Ok("ok")]);
+        fallback.profile.language = "de".into();
+        let result = transcribe(&speech(), &ctx(&primary, Some(&fallback), &rules)).await.unwrap();
+        assert_eq!(result.language.as_deref(), Some("de"));
+    }
+
+    #[tokio::test]
+    async fn stock_phrases_only_filter_short_audio_and_preserve_single_words() {
+        let rules = tech_rules();
+        for (text, duration, enabled, expected) in [
+            ("THANKS, for watching! Thanks for watching.", 6000, true, TranscriptStatus::Hallucination),
+            ("Thanks for watching", 6001, true, TranscriptStatus::Ok),
+            ("Thanks for watching", 1000, false, TranscriptStatus::Ok),
+            ("a", 1000, true, TranscriptStatus::Ok),
+            ("e", 1000, true, TranscriptStatus::Ok),
+            ("mk", 1000, true, TranscriptStatus::Ok),
+            ("m.k", 1000, true, TranscriptStatus::Ok),
+        ] {
+            let mut primary = Scripted::new("a", vec![Ok(text)]);
+            primary.profile.apply_rules = enabled;
+            let mut audio = speech();
+            audio.audio_ms = duration;
+            let result = transcribe(&audio, &ctx(&primary, None, &rules)).await.unwrap();
+            assert_eq!(result.status, expected);
+        }
     }
 
     #[tokio::test]
@@ -420,7 +487,7 @@ mod tests {
     fn prepare_rejects_short_and_silent_recordings() {
         assert_eq!(prepare(&tone_recording(0.2)).unwrap_err(), PipelineError::TooShort);
         let silent = Recording { samples: vec![0.0; 96_000], sample_rate: 48_000, channels: 2 };
-        assert_eq!(prepare(&silent).unwrap_err(), PipelineError::NoSpeech);
+        assert!(matches!(prepare(&silent).unwrap_err(), PipelineError::NoSpeech { .. }));
         let ok = speech();
         assert_eq!((ok.audio_ms, ok.samples.len()), (1_000, 16_000));
     }
@@ -438,10 +505,10 @@ mod tests {
     #[test]
     fn number_setting_preserves_raw_output_when_off_or_rules_disabled() {
         let rules = RuleSet::empty();
-        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, true, "tr").0, "On iki kişi");
-        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, false, "tr").0, "12 kişi");
-        assert_eq!(postprocess_with_numbers("12 kişi", &rules, false, true, "tr").0, "12 kişi");
-        assert_eq!(postprocess_with_numbers(" ", &rules, true, true, "tr").1, TranscriptStatus::Empty);
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, true, "tr", 1000).0, "On iki kişi");
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, false, "tr", 1000).0, "12 kişi");
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, false, true, "tr", 1000).0, "12 kişi");
+        assert_eq!(postprocess_with_numbers(" ", &rules, true, true, "tr", 1000).1, TranscriptStatus::Empty);
     }
 
     #[tokio::test]

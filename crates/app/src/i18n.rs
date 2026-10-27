@@ -109,8 +109,9 @@ impl Lang {
         }
     }
 
-    pub fn no_speech(self) -> &'static str {
-        self.pick("No speech detected", "Konuşma algılanmadı")
+    pub fn no_speech(self, db: f32) -> String {
+        let label = self.pick("No speech detected", "Konuşma algılanmadı");
+        format!("{label} ({db:.0} dB)")
     }
 
     pub fn too_short(self) -> &'static str {

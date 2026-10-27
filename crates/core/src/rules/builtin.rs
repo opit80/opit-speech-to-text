@@ -114,6 +114,10 @@ mod tests {
         assert!(rules.is_hallucination("Altyazı M.K."));
         assert!(rules.is_hallucination("İzlediğiniz için teşekkürler."));
         assert!(!rules.is_hallucination("Teşekkürler, görüşürüz."));
+        for word in ["a", "e", "mk", "m.k"] {
+            assert!(!rules.is_hallucination(word));
+        }
+        assert!(rules.is_hallucination("Izlediginiz icin tesekkurler! İzlediğiniz için teşekkürler."));
     }
 
     #[test]

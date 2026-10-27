@@ -146,6 +146,7 @@ mod tests {
             audio_ms: 1_000,
             latency_ms: 900,
             error_code: None,
+            language: None,
         }
     }
 

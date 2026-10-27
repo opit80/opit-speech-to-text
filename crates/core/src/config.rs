@@ -13,7 +13,7 @@ pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MIN_RECORDING_SECONDS: u32 = 10;
 pub const MAX_RECORDING_SECONDS: u32 = 600;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     pub schema_version: u32,
@@ -75,17 +75,28 @@ impl Default for HotkeyConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecordingConfig {
     /// Device name; `None` = system default.
     pub microphone: Option<String>,
     pub max_seconds: u32,
+    /// Absolute speech floor in dBFS (20 log10 of the former 0.008 RMS floor).
+    pub speech_floor_db: f64,
+    /// Required margin above this recording's noise floor (formerly 2x RMS).
+    pub noise_margin_db: f64,
+    pub min_speech_seconds: f64,
 }
 
 impl Default for RecordingConfig {
     fn default() -> Self {
-        Self { microphone: None, max_seconds: 180 }
+        Self {
+            microphone: None,
+            max_seconds: 180,
+            speech_floor_db: -41.938200260161125,
+            noise_margin_db: 6.020599913279624,
+            min_speech_seconds: 0.3,
+        }
     }
 }
 
@@ -220,6 +231,14 @@ impl AppConfig {
     pub fn normalize(&mut self) {
         self.schema_version = CONFIG_SCHEMA_VERSION;
         self.recording.max_seconds = self.recording.max_seconds.clamp(MIN_RECORDING_SECONDS, MAX_RECORDING_SECONDS);
+        let defaults = RecordingConfig::default();
+        for (value, default, min, max) in [
+            (&mut self.recording.speech_floor_db, defaults.speech_floor_db, -90.0, -6.0),
+            (&mut self.recording.noise_margin_db, defaults.noise_margin_db, 0.0, 30.0),
+            (&mut self.recording.min_speech_seconds, defaults.min_speech_seconds, 0.03, 5.0),
+        ] {
+            *value = if value.is_finite() { value.clamp(min, max) } else { default };
+        }
 
         let mut seen = HashSet::new();
         self.profiles.retain(|p| seen.insert(p.id.clone()));
@@ -266,6 +285,30 @@ mod tests {
     use super::*;
     use crate::provider::presets;
 
+    #[test]
+    fn speech_detection_defaults_load_legacy_configs_and_validate_ranges() {
+        let c = AppConfig::from_json(r#"{"recording":{"max_seconds":60}}"#).unwrap();
+        assert_eq!(c.recording.speech_floor_db, RecordingConfig::default().speech_floor_db);
+        assert_eq!(c.recording.noise_margin_db, RecordingConfig::default().noise_margin_db);
+        assert_eq!(c.recording.min_speech_seconds, 0.3);
+        let mut c = c;
+        c.recording.speech_floor_db = -200.0;
+        c.recording.noise_margin_db = -1.0;
+        c.recording.min_speech_seconds = 50.0;
+        c.normalize();
+        assert_eq!(
+            (c.recording.speech_floor_db, c.recording.noise_margin_db, c.recording.min_speech_seconds),
+            (-90.0, 0.0, 5.0)
+        );
+        c.recording.speech_floor_db = f64::NAN;
+        c.recording.noise_margin_db = f64::INFINITY;
+        c.recording.min_speech_seconds = f64::NEG_INFINITY;
+        c.normalize();
+        assert_eq!(c.recording.speech_floor_db, RecordingConfig::default().speech_floor_db);
+        assert_eq!(c.recording.noise_margin_db, RecordingConfig::default().noise_margin_db);
+        assert_eq!(c.recording.min_speech_seconds, 0.3);
+        assert_eq!(AppConfig::from_json(&c.to_json()).unwrap(), c);
+    }
     #[test]
     fn optional_pause_shortcut_is_compatible_with_existing_configs() {
         let old = r#"{"hotkey":{"keys":["F13"],"mode":"push_to_talk","enabled":true}}"#;

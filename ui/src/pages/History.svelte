@@ -277,6 +277,7 @@
             <div class="metadata muted">
               <time datetime={new Date(row.created_at_ms).toISOString()}>{formatDateTime(row.created_at_ms, app.lang)}</time>
               <span>{row.profile_id}</span>
+              {#if row.language}<span>{t("history.language", { language: row.language.toUpperCase() })}</span>{/if}
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
               <span>{t("history.audio_length", { duration: formatClock(row.audio_ms) })}</span>
             </div>

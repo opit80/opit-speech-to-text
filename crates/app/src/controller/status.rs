@@ -67,7 +67,7 @@ impl From<&PipelineError> for ErrorKind {
         match err {
             PipelineError::Provider(e) => e.into(),
             PipelineError::RetryCancelled => ErrorKind::Cancelled,
-            PipelineError::Encode(_) | PipelineError::TooShort | PipelineError::NoSpeech => ErrorKind::Audio,
+            PipelineError::Encode(_) | PipelineError::TooShort | PipelineError::NoSpeech { .. } => ErrorKind::Audio,
         }
     }
 }

@@ -3,6 +3,7 @@
 use crate::audio::encode::EncodedAudio;
 
 pub mod elevenlabs;
+pub mod language;
 pub mod openai;
 pub mod profile;
 pub mod retry;
@@ -65,6 +66,7 @@ pub struct TranscribeRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawTranscript {
     pub text: String,
+    pub language: Option<String>,
     /// verbose_json segments dropped as probable silence.
     pub dropped_segments: usize,
 }

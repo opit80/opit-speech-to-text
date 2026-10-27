@@ -50,7 +50,13 @@ export interface AppConfig {
   active_profile_id: string;
   profiles: Profile[];
   hotkey: { keys: string[]; pause_keys: string[]; mode: HotkeyMode; enabled: boolean };
-  recording: { microphone: string | null; max_seconds: number };
+  recording: {
+    microphone: string | null;
+    max_seconds: number;
+    speech_floor_db: number;
+    noise_margin_db: number;
+    min_speech_seconds: number;
+  };
   paste: { restore_clipboard: boolean; trailing_space: boolean };
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number };
   rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
@@ -85,6 +91,7 @@ export interface Dictation {
   latency_ms: number;
   audio_path: string | null;
   error_code: ErrorKind | null;
+  language: string | null;
 }
 
 export type RuleKind = "correction" | "replacement" | "casing" | "numbers";

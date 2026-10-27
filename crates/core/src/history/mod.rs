@@ -12,7 +12,7 @@ pub use audio_store::AudioStore;
 use crate::pipeline::TranscriptStatus;
 use crate::text::{fold, is_word_char};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS dictations (
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS dictations (
     latency_ms    INTEGER NOT NULL,
     audio_path    TEXT,
     error_code    TEXT,
+    language      TEXT,
     -- Turkish-folded copies (see text::fold) that the FTS index is built from.
     search_text   TEXT    NOT NULL,
     search_raw    TEXT    NOT NULL
@@ -51,7 +52,7 @@ END;
 ";
 
 const COLUMNS: &str =
-    "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code";
+    "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code, language";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
@@ -73,6 +74,7 @@ pub struct Dictation {
     pub latency_ms: u64,
     pub audio_path: Option<String>,
     pub error_code: Option<String>,
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +87,7 @@ pub struct NewDictation<'a> {
     pub audio_ms: u64,
     pub latency_ms: u64,
     pub error_code: Option<&'a str>,
+    pub language: Option<&'a str>,
 }
 
 pub struct HistoryStore {
@@ -125,20 +128,24 @@ impl HistoryStore {
                 [],
                 |r| r.get(0),
             )?;
-            if existing {
-                tx.execute_batch(
-                    "DROP TRIGGER IF EXISTS dictations_ai;
+            if existing && version >= 2 {
+                tx.execute_batch("ALTER TABLE dictations ADD COLUMN language TEXT;")?;
+            } else {
+                if existing {
+                    tx.execute_batch(
+                        "DROP TRIGGER IF EXISTS dictations_ai;
                     DROP TRIGGER IF EXISTS dictations_ad; DROP TRIGGER IF EXISTS dictations_au;
                     DROP TABLE IF EXISTS dictations_fts; DROP INDEX IF EXISTS dictations_created;
                     ALTER TABLE dictations RENAME TO dictations_v1;",
-                )?;
-            }
-            tx.execute_batch(SCHEMA)?;
-            if existing {
-                tx.execute_batch("INSERT INTO dictations
+                    )?;
+                }
+                tx.execute_batch(SCHEMA)?;
+                if existing {
+                    tx.execute_batch("INSERT INTO dictations
                     (id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, search_text, search_raw)
                     SELECT id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, search_text, search_raw FROM dictations_v1;
                     DROP TABLE dictations_v1;")?;
+                }
             }
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
@@ -150,8 +157,8 @@ impl HistoryStore {
         let (raw_text, text) = if d.status == TranscriptStatus::Failed { ("", "") } else { (d.raw_text, d.text) };
         self.conn.execute(
             "INSERT INTO dictations
-               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code, language)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 d.created_at_ms,
                 d.profile_id,
@@ -162,7 +169,8 @@ impl HistoryStore {
                 d.latency_ms as i64,
                 fold(text),
                 fold(raw_text),
-                safe_error_code(d.error_code)
+                safe_error_code(d.error_code),
+                d.language
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -180,7 +188,7 @@ impl HistoryStore {
         Ok(self.conn.execute(
             "UPDATE dictations SET profile_id=?2, raw_text=?3, text=?4, status=?5, audio_ms=?6,
              latency_ms=?7, search_text=?8, search_raw=?9, error_code=?10,
-             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END WHERE id=?1",
+             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END, language=?12 WHERE id=?1",
             params![
                 id,
                 d.profile_id,
@@ -192,7 +200,8 @@ impl HistoryStore {
                 fold(text),
                 fold(raw_text),
                 safe_error_code(d.error_code),
-                keep_audio
+                keep_audio,
+                d.language
             ],
         )? != 0)
     }
@@ -297,6 +306,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Dictation> {
         latency_ms: row.get::<_, i64>(7)? as u64,
         audio_path: row.get(8)?,
         error_code: row.get(9)?,
+        language: row.get(10)?,
     })
 }
 
@@ -321,12 +331,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn version_two_migration_keeps_failures_search_audio_and_id_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&SCHEMA.replace("    language      TEXT,", "")).unwrap();
+        conn.execute_batch("PRAGMA user_version=2;
+            INSERT INTO dictations VALUES (42, 123, 'old', '', '', 'failed', 1000, 10, 'audio/42.wav', 'timeout', '', '');
+            INSERT INTO dictations VALUES (99, 124, 'old', 'original', 'retained', 'ok', 1000, 10, NULL, NULL, 'retained', 'original');
+            DELETE FROM dictations WHERE id=99;").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(42).unwrap().unwrap();
+        assert_eq!(row.language, None);
+        assert_eq!(row.error_code.as_deref(), Some("timeout"));
+        assert_eq!(row.audio_path.as_deref(), Some("audio/42.wav"));
+        let mut replacement = entry("retained", "original", 999);
+        replacement.language = Some("tr");
+        store.replace(42, &replacement, true).unwrap();
+        assert_eq!(store.get(42).unwrap().unwrap().language.as_deref(), Some("tr"));
+        assert_eq!(store.get(42).unwrap().unwrap().created_at_ms, 123);
+        assert_eq!(ids(&store.search("retained", 10).unwrap()), [42]);
+        assert!(store.insert(&replacement).unwrap() > 99);
+        drop(store);
+        let store = HistoryStore::open(&path).unwrap();
+        assert_eq!(store.get(42).unwrap().unwrap().language.as_deref(), Some("tr"));
+        assert_eq!(store.recent(10, None).unwrap()[0].language.as_deref(), Some("tr"));
+    }
+
+    #[test]
     fn version_one_migration_preserves_rows_fts_and_never_reuses_ids() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.db");
         let legacy = SCHEMA
             .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "INTEGER PRIMARY KEY")
             .replace("    error_code    TEXT,", "");
+        let legacy = legacy.replace("    language      TEXT,", "");
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(&legacy).unwrap();
         conn.execute_batch("PRAGMA user_version=1;
@@ -409,6 +449,7 @@ mod tests {
             audio_ms: 1_000,
             latency_ms: 800,
             error_code: None,
+            language: None,
         }
     }
 

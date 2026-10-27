@@ -4,6 +4,7 @@
   import { errorText, t } from "../app.svelte";
   import { onMicTest, type UnlistenFn } from "../events";
   import type { MicTestEvent } from "../types";
+  import { rmsToDb } from "../speech-detection";
   import Banner from "./Banner.svelte";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
@@ -17,6 +18,7 @@
   let starting = $state(false);
   let running = $state(false);
   let shown = $state(0);
+  let db = $state(-120);
   let using = $state<string | null>(null);
   let fellBack = $state(false);
   let verdict = $state<Verdict | null>(null);
@@ -32,6 +34,7 @@
   function handle(event: MicTestEvent) {
     if (disposed || !(starting || running)) return;
     if (event.kind === "level") {
+      db = rmsToDb(event.value);
       shown = Math.max(event.value, shown * 0.85);
       peak = Math.max(peak, event.value);
     } else {
@@ -62,6 +65,7 @@
     fellBack = false;
     shown = 0;
     peak = 0;
+    db = -120;
     starting = true;
     try {
       await subscription;
@@ -131,6 +135,7 @@
     {#if running}<span class="muted" role="status">{t("mic.speak")}</span>{/if}
   </div>
   {#if running || starting}<LevelMeter level={shown} />{/if}
+  {#if running}<span class="muted using">{t("mic.db", { db: db.toFixed(0) })}</span>{/if}
   {#if using}<p class="muted using">{t("mic.using", { device: using })}</p>{/if}
   {#if fellBack}<Banner tone="warning">{t("mic.fell_back")}</Banner>{/if}
   {#if verdict}

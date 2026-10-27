@@ -39,7 +39,7 @@ The plan outcomes below retain their original historical status and manual accep
 **Deferred minor findings** (candidates for a later plan):
 - Resolved by Opit Speech to Text's patient retries: HTTP errors expose only safe kinds/status codes, never provider bodies.
 - Resolved by Opit Speech to Text's failed-dictation history: schema v2 migrates existing rows and FTS triggers to `AUTOINCREMENT`, so deleting rows no longer reuses their audio ids.
-- `tr-core` has single-word hallucination patterns (`a`, `e`, `thank you`) that could drop a real one-word dictation.
+- Resolved by Opit Speech to Text's safer hallucination filter: single-word built-in patterns removed; whole-output stock phrases and their repeats apply only to audio of at most 6 seconds, with accent, punctuation and Turkish case folding. `apply_rules: false` still disables filtering.
 - Case-insensitive regex replacements don't fold Turkish `İ/ı`; literal rules do.
 - `opit-eval` `read_wav` panics on `bits_per_sample: 0`, and a `|` in a sample name breaks the report table.
 
