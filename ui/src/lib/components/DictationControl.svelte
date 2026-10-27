@@ -28,27 +28,27 @@
     pasting: "status.pasting", cancelled: "status.cancelled", error: "status.error",
   };
   const bodyKey = $derived(recording ? "home.control.recording_body" : working ? "home.control.processing_body" : "home.control.ready_body");
-  const actionKey = $derived(working || busy ? "home.working" : recording ? "home.stop" : "home.start");
+  const actionKey = $derived(busy ? "home.working" : recording ? "home.stop" : "home.start");
   const wave = [10, 16, 24, 12, 30, 20, 34, 18, 26, 14, 22, 10];
 </script>
 
 <section class="recorder" class:recording aria-labelledby="record-title">
   <div class="recorder-top">
     <span class="section-label"><Icon name="mic" size={14} />{t("home.control.section")}</span>
-    <div class="state" role="status"><StatusBadge {status} /></div>
+    <div class="state" role="status"><StatusBadge {status} />{#if status.waiting > 0}<span>{t("home.waiting", { count: status.waiting })}</span>{/if}</div>
   </div>
   <div class="controls">
     <div class="mic-control">
-      <Button variant="ghost" disabled={working || busy || disabled} aria-busy={working || busy} aria-label={t(actionKey)} onclick={ontoggle}>
+      <Button variant="ghost" disabled={busy || disabled || (!recording && status.waiting >= 3)} aria-busy={busy} aria-label={t(actionKey)} onclick={ontoggle}>
         <span class="mic-orb"><Icon name={recording ? "stop" : working ? "wand" : "mic"} size={30} /></span>
         <span class="control-label">{t(actionKey)}</span>
       </Button>
     </div>
     <div class="copy">
-      <h2 id="record-title">{t(titles[status.state])}</h2>
+      <h2 id="record-title">{t(status.paused ? "status.paused" : titles[status.state])}</h2>
       <p>{t(bodyKey)}</p>
       {#if recording}
-        <div class="wave" aria-hidden="true">{#each wave as height, i}<span style:height={`${height}px`} style:animation-delay={`${i * -0.11}s`}></span>{/each}</div>
+        <div class="wave" class:paused={status.paused} aria-hidden="true">{#each wave as height, i}<span style:height={`${height}px`} style:animation-delay={`${i * -0.11}s`}></span>{/each}</div>
       {:else if profileName}<span class="provider"><Icon name="profiles" size={12} />{t("home.control.provider", { name: profileName })}</span>{/if}
     </div>
     {#if recording || working}<div class="cancel"><Button variant="ghost" disabled={busy || disabled} aria-label={t("home.cancel")} onclick={oncancel}><Icon name="x" /></Button></div>{/if}
@@ -81,6 +81,7 @@
   .provider { display: inline-flex; align-items: center; gap: var(--space-1); margin-top: var(--space-3); color: var(--text-muted); font-size: var(--text-sm); }
   .wave { display: flex; align-items: center; gap: var(--space-1); height: 34px; margin-top: var(--space-2); }
   .wave span { width: 3px; background: var(--danger); border-radius: var(--radius-sm); animation: level 700ms ease-in-out infinite alternate; }
+  .wave.paused span { animation-play-state: paused; }
   .recorder-bottom { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-5); background: var(--surface-2); border-top: 1px solid var(--border); }
   .shortcut { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); color: var(--text-muted); text-decoration: none; font-size: var(--text-sm); }
   .shortcut:hover { color: var(--accent); }

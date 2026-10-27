@@ -76,9 +76,9 @@ pub enum DictationState {
     Recording,
     Transcribing,
     Pasting,
-    /// Transient: emitted once, followed by `Idle`.
+    /// Transient: emitted once, followed by the current active state or `Idle`.
     Cancelled,
-    /// Transient: emitted once, followed by `Idle`.
+    /// Transient: emitted once, followed by the current active state or `Idle`.
     Error {
         kind: ErrorKind,
         message: String,
@@ -91,11 +91,14 @@ pub struct DictationStatus {
     pub state: DictationState,
     /// Audio of the last failed dictation is kept; "Try again" resends it.
     pub can_retry: bool,
+    /// Finished recordings waiting behind the current processing item.
+    pub waiting: usize,
+    pub paused: bool,
 }
 
 impl Default for DictationStatus {
     fn default() -> Self {
-        Self { state: DictationState::Idle, can_retry: false }
+        Self { state: DictationState::Idle, can_retry: false, waiting: 0, paused: false }
     }
 }
 
@@ -117,10 +120,15 @@ mod tests {
         let status = DictationStatus {
             state: DictationState::Error { kind: ErrorKind::Network, message: "Ağ hatası".into() },
             can_retry: true,
+            waiting: 2,
+            paused: false,
         };
         let json = serde_json::to_value(&status).unwrap();
-        assert_eq!(json, serde_json::json!({"state":"error","kind":"network","message":"Ağ hatası","can_retry":true}));
+        assert_eq!(
+            json,
+            serde_json::json!({"state":"error","kind":"network","message":"Ağ hatası","can_retry":true,"waiting":2,"paused":false})
+        );
         let idle = serde_json::to_value(DictationStatus::default()).unwrap();
-        assert_eq!(idle, serde_json::json!({"state":"idle","can_retry":false}));
+        assert_eq!(idle, serde_json::json!({"state":"idle","can_retry":false,"waiting":0,"paused":false}));
     }
 }

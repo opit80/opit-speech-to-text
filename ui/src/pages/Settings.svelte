@@ -250,6 +250,9 @@
         <HotkeyInput keys={config.hotkey.keys}
           onchange={(keys) => save("hotkey_keys", (c) => { c.hotkey.keys = keys; })} />
         {@render fieldError("hotkey_keys")}
+        <HotkeyInput keys={config.hotkey.pause_keys} optional label={t("settings.pause_shortcut")} hint={t("settings.pause_shortcut_note")}
+          onchange={(keys) => save("pause_keys", (c) => { c.hotkey.pause_keys = keys; })} />
+        {@render fieldError("pause_keys")}
         <Select label={t("settings.mode")} options={modeOptions} value={view.mode}
           hint={t(config.hotkey.keys.includes("Escape") ? "guide.cancel_from_home" : config.hotkey.mode === "toggle" ? "settings.mode_toggle_hint" : "settings.mode_ptt_hint")}
           onchange={(v) => void save("mode", (c) => { c.hotkey.mode = v as HotkeyMode; })} />

@@ -9,8 +9,8 @@
   };
 </script>
 
-<span class="badge {status.state}" title={status.state === "error" ? status.message : undefined}>
-  <span class="dot" aria-hidden="true"></span>{t(keys[status.state])}
+<span class="badge {status.state}" class:paused={status.paused} title={status.state === "error" ? status.message : undefined}>
+  <span class="dot" aria-hidden="true"></span>{t(status.paused ? "status.paused" : keys[status.state])}
 </span>
 
 <style>
@@ -18,6 +18,7 @@
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); }
   .idle .dot { background: var(--success); }
   .recording .dot { background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
+  .paused .dot { animation: none; }
   .transcribing .dot, .pasting .dot { background: var(--accent); }
   .error .dot { background: var(--danger); }
   @keyframes pulse { 50% { opacity: 0.4; } }

@@ -27,7 +27,7 @@ interface AppState {
 export const app = $state<AppState>({
   info: null,
   config: null,
-  status: { state: "idle", can_retry: false },
+  status: { state: "idle", can_retry: false, waiting: 0, paused: false },
   hotkey: { paused: false, error: null },
   lang: resolveLang(null, navigator.language),
   notices: [],

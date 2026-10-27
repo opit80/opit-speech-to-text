@@ -10,9 +10,12 @@
 
   interface Props {
     keys: string[];
+    label?: string;
+    hint?: string;
+    optional?: boolean;
     onchange: (keys: string[]) => void | Promise<void>;
   }
-  let { keys, onchange }: Props = $props();
+  let { keys, onchange, label, hint, optional = false }: Props = $props();
 
   const DEFAULT_KEYS = ["RightCtrl", "RightShift"];
   const PROBLEM_KEYS: Record<ComboProblem, MessageKey> = {
@@ -126,7 +129,7 @@
   function reset() {
     stopCapture();
     error = null;
-    void apply([...DEFAULT_KEYS]);
+    void apply(optional ? [] : [...DEFAULT_KEYS]);
   }
 
   async function useSelectedKey() {
@@ -151,7 +154,7 @@
   });
 </script>
 
-<Field label={t("settings.shortcut")} hint={t("settings.shortcut_note")} {error}>
+<Field label={label ?? t("settings.shortcut")} hint={hint ?? t("settings.shortcut_note")} {error}>
   {#snippet children(id)}
     <div class="row">
       <input {id} bind:this={box} class="combo" class:capturing readonly
@@ -161,7 +164,7 @@
       <Button busy={starting || checking || saving} onclick={() => void startCapture()}>
         {t("settings.change")}
       </Button>
-      <Button variant="ghost" disabled={saving} onclick={reset}>{t("settings.reset_default")}</Button>
+      <Button variant="ghost" disabled={saving} onclick={reset}>{t(optional ? "settings.pause_clear" : "settings.reset_default")}</Button>
       {#if capturing}<Button variant="ghost" onclick={stopCapture}>{t("settings.capture_cancel")}</Button>{/if}
     </div>
   {/snippet}

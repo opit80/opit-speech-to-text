@@ -12,6 +12,8 @@ export type DictationState = "idle" | "recording" | "transcribing" | "pasting" |
 export interface DictationStatus {
   state: DictationState;
   can_retry: boolean;
+  waiting: number;
+  paused: boolean;
   /** Only when state === "error". */
   kind?: ErrorKind;
   /** Only when state === "error"; already localized by Rust. */
@@ -46,7 +48,7 @@ export interface AppConfig {
   ui_language: string | null;
   active_profile_id: string;
   profiles: Profile[];
-  hotkey: { keys: string[]; mode: HotkeyMode; enabled: boolean };
+  hotkey: { keys: string[]; pause_keys: string[]; mode: HotkeyMode; enabled: boolean };
   recording: { microphone: string | null; max_seconds: number };
   paste: { restore_clipboard: boolean; trailing_space: boolean };
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number };

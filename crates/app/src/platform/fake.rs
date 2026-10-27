@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use opit_core::audio::Recording;
 use opit_core::config::OverlayPosition;
@@ -33,11 +33,19 @@ pub struct FakeMic {
     pub sink: Mutex<Option<CaptureSink>>,
     pub finished: Arc<AtomicUsize>,
     pub dropped: Arc<AtomicUsize>,
+    pub paused: Arc<Mutex<bool>>,
+    pub samples: Arc<Mutex<Vec<f32>>>,
+    pub captured: Arc<Mutex<Vec<Recording>>>,
     /// One-shot callback after opening a capture, before returning it to the caller.
     pub before_start_returns: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl FakeMic {
+    pub fn append_samples(&self, samples: &[f32]) {
+        if !*self.paused.lock().unwrap() {
+            self.samples.lock().unwrap().extend_from_slice(samples);
+        }
+    }
     pub fn starts(&self) -> usize {
         self.requested.lock().unwrap().len()
     }
@@ -61,11 +69,16 @@ impl Microphone for FakeMic {
         }
         *self.sink.lock().unwrap() = Some(sink);
         let recording = self.recording.lock().unwrap().clone().unwrap_or_else(speech_recording);
+        *self.paused.lock().unwrap() = false;
+        self.samples.lock().unwrap().clear();
         let started = Started {
             capture: Box::new(FakeCapture {
                 recording: Some(recording),
                 finished: self.finished.clone(),
                 dropped: self.dropped.clone(),
+                paused: self.paused.clone(),
+                samples: self.samples.clone(),
+                captured: self.captured.clone(),
             }),
             device: "Fake Mic".into(),
             fell_back: *self.fell_back.lock().unwrap(),
@@ -82,12 +95,21 @@ struct FakeCapture {
     recording: Option<Recording>,
     finished: Arc<AtomicUsize>,
     dropped: Arc<AtomicUsize>,
+    paused: Arc<Mutex<bool>>,
+    samples: Arc<Mutex<Vec<f32>>>,
+    captured: Arc<Mutex<Vec<Recording>>>,
 }
 
 impl Capture for FakeCapture {
+    fn set_paused(&self, paused: bool) {
+        *self.paused.lock().unwrap() = paused;
+    }
     fn finish(mut self: Box<Self>) -> Recording {
         self.finished.fetch_add(1, Ordering::SeqCst);
-        self.recording.take().unwrap()
+        let mut recording = self.recording.take().unwrap();
+        recording.samples.extend(self.samples.lock().unwrap().iter());
+        self.captured.lock().unwrap().push(recording.clone());
+        recording
     }
 }
 
@@ -102,6 +124,7 @@ impl Drop for FakeCapture {
 #[derive(Default)]
 pub struct FakeHotkey {
     pub registered: Mutex<Vec<Vec<String>>>,
+    pub pause_registered: Mutex<Vec<Vec<String>>>,
     pub sink: Mutex<Option<HotkeySink>>,
     pub fail_register: Mutex<Option<HotkeyError>>,
     pub paused: Mutex<bool>,
@@ -115,6 +138,10 @@ impl FakeHotkey {
 }
 
 impl Hotkey for FakeHotkey {
+    fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError> {
+        self.pause_registered.lock().unwrap().push(keys.to_vec());
+        Ok(())
+    }
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError> {
         if let Some(err) = self.fail_register.lock().unwrap().take() {
             return Err(err);
@@ -133,14 +160,25 @@ impl Hotkey for FakeHotkey {
     }
 }
 
+pub type PasteGate = (Mutex<bool>, Condvar);
+
 pub struct FakePaster {
     pub outcome: Mutex<PasteOutcome>,
     pub pasted: Mutex<Vec<(String, bool)>>,
+    pub policies: Mutex<Vec<bool>>,
+    pub allow_auto: Mutex<Option<bool>>,
+    pub gate: Mutex<Option<Arc<PasteGate>>>,
 }
 
 impl Default for FakePaster {
     fn default() -> Self {
-        Self { outcome: Mutex::new(PasteOutcome::Pasted), pasted: Mutex::default() }
+        Self {
+            outcome: Mutex::new(PasteOutcome::Pasted),
+            pasted: Mutex::default(),
+            policies: Mutex::default(),
+            allow_auto: Mutex::default(),
+            gate: Mutex::default(),
+        }
     }
 }
 
@@ -151,8 +189,16 @@ impl FakePaster {
 }
 
 impl Paster for FakePaster {
-    fn paste(&self, text: &str, restore: bool) -> PasteOutcome {
+    fn can_auto_paste(&self) -> bool {
+        self.allow_auto.lock().unwrap().unwrap_or(true)
+    }
+    fn paste(&self, text: &str, restore: bool, auto_paste: bool) -> PasteOutcome {
+        self.policies.lock().unwrap().push(auto_paste);
         self.pasted.lock().unwrap().push((text.to_string(), restore));
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            let _ = gate.1.wait_timeout_while(gate.0.lock().unwrap(), Duration::from_secs(5), |open| !*open).unwrap();
+        }
         self.outcome.lock().unwrap().clone()
     }
 }

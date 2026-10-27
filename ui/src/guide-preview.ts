@@ -19,7 +19,7 @@ const config: AppConfig = {
     api_key_ref: null, language: "tr", audio_format: "flac", response_format: "verbose_json",
     send_prompt: true, send_keywords: false, apply_rules: true, fallback_profile_id: null,
   }],
-  hotkey: { keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
+  hotkey: { pause_keys: [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
   recording: { microphone: null, max_seconds: 180 },
   paste: { restore_clipboard: false, trailing_space: true },
   history: { enabled: true, save_audio: false, audio_retention_days: 7 },
@@ -35,10 +35,10 @@ let rows: Dictation[] = Array.from({ length: params.get("empty") === "true" ? 0 
   status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null,
 }));
 let paused = params.get("paused") === "true";
-let status: DictationStatus = { state: params.get("recording") === "true" ? "recording" : "idle", can_retry: false };
+let status: DictationStatus = { state: params.get("recording") === "true" ? "recording" : "idle", can_retry: false, waiting: 0, paused: false };
 let completion: ReturnType<typeof setTimeout> | undefined;
 async function changeStatus(state: DictationStatus["state"]) {
-  status = { state, can_retry: false };
+  status = { state, can_retry: false, waiting: 0, paused: false };
   await emit("dictation-status", status);
 }
 mockIPC(async (command, payload) => {

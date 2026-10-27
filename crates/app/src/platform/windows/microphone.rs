@@ -20,6 +20,26 @@ pub const START_TIMEOUT: Duration = Duration::from_secs(3);
 /// Minimum gap between two `CaptureEvent::Level` events.
 pub const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
 
+#[derive(Default)]
+struct SampleBuffer {
+    samples: Vec<f32>,
+    paused: bool,
+}
+
+impl SampleBuffer {
+    fn append<T>(&mut self, data: &[T], channels: usize) -> &[f32]
+    where
+        T: SizedSample,
+        f32: FromSample<T>,
+    {
+        let start = self.samples.len();
+        if !self.paused {
+            append_mono(&mut self.samples, data, channels);
+        }
+        &self.samples[start..]
+    }
+}
+
 /// cpal-backed [`Microphone`].
 #[derive(Debug, Clone)]
 pub struct CpalMicrophone {
@@ -54,7 +74,7 @@ impl Microphone for CpalMicrophone {
 
     fn start(&self, device: Option<&str>, sink: CaptureSink) -> Result<Started, MicError> {
         let requested = device.map(str::to_owned);
-        let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let buffer = Arc::new(Mutex::new(SampleBuffer::default()));
         let (ready_tx, ready_rx) = mpsc::channel::<Result<Opened, MicError>>();
         let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
@@ -105,7 +125,7 @@ impl Microphone for CpalMicrophone {
 struct CpalCapture {
     stop: Option<Sender<()>>,
     thread: Option<JoinHandle<()>>,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    buffer: Arc<Mutex<SampleBuffer>>,
     sample_rate: u32,
     channels: u16,
 }
@@ -121,9 +141,13 @@ impl CpalCapture {
 }
 
 impl Capture for CpalCapture {
+    fn set_paused(&self, paused: bool) {
+        self.buffer.lock().unwrap_or_else(PoisonError::into_inner).paused = paused;
+    }
+
     fn finish(mut self: Box<Self>) -> Recording {
         self.stop_and_join();
-        let samples = std::mem::take(&mut *self.buffer.lock().unwrap_or_else(PoisonError::into_inner));
+        let samples = std::mem::take(&mut self.buffer.lock().unwrap_or_else(PoisonError::into_inner).samples);
         Recording { samples, sample_rate: self.sample_rate, channels: self.channels }
     }
 }
@@ -145,7 +169,7 @@ struct Opened {
 fn capture_thread(
     requested: Option<String>,
     sink: CaptureSink,
-    buffer: Arc<Mutex<Vec<f32>>>,
+    buffer: Arc<Mutex<SampleBuffer>>,
     ready: Sender<Result<Opened, MicError>>,
     stop: Receiver<()>,
 ) {
@@ -188,7 +212,7 @@ fn open(
     host: &Host,
     requested: Option<&str>,
     sink: &CaptureSink,
-    buffer: &Arc<Mutex<Vec<f32>>>,
+    buffer: &Arc<Mutex<SampleBuffer>>,
 ) -> Result<(Stream, Opened), MicError> {
     let inputs: Vec<(String, Device)> = match (requested, host.input_devices()) {
         (Some(_), Ok(devices)) => devices.filter_map(|d| device_name(&d).map(|n| (n, d))).collect(),
@@ -249,7 +273,7 @@ fn order_device_names(default: Option<String>, all: Vec<String>) -> Vec<String> 
 fn build_stream(
     device: &Device,
     sink: &CaptureSink,
-    buffer: &Arc<Mutex<Vec<f32>>>,
+    buffer: &Arc<Mutex<SampleBuffer>>,
 ) -> Result<(Stream, StreamConfig), String> {
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
     let config = supported.config();
@@ -274,7 +298,7 @@ fn build_typed<T>(
     device: &Device,
     config: StreamConfig,
     sink: &CaptureSink,
-    buffer: &Arc<Mutex<Vec<f32>>>,
+    buffer: &Arc<Mutex<SampleBuffer>>,
 ) -> Result<Stream, cpal::Error>
 where
     T: SizedSample,
@@ -292,9 +316,10 @@ where
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             let level = {
                 let mut buf = buffer.lock().unwrap_or_else(PoisonError::into_inner);
-                let start = buf.len();
-                append_mono(&mut buf, data, channels);
-                meter.push(&buf[start..], Instant::now())
+                if buf.paused {
+                    return;
+                }
+                meter.push(buf.append(data, channels), Instant::now())
             };
             if let Some(level) = level {
                 data_sink(CaptureEvent::Level(level));
@@ -367,6 +392,17 @@ impl LevelMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_sample_buffer_discards_frames_and_resumes_without_a_gap() {
+        let mut buffer = SampleBuffer::default();
+        assert_eq!(buffer.append(&[0.2_f32, 0.4], 2), &[0.3]);
+        buffer.paused = true;
+        assert!(buffer.append(&[0.9_f32; 400], 2).is_empty());
+        buffer.paused = false;
+        assert_eq!(buffer.append(&[0.5_f32], 1), &[0.5]);
+        assert_eq!(buffer.samples, [0.3, 0.5]);
+    }
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_owned()).collect()

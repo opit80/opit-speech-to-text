@@ -22,6 +22,7 @@ struct ProviderState {
     scripts: Mutex<HashMap<String, VecDeque<Result<String, ProviderError>>>>,
     missing_keys: Mutex<HashSet<String>>,
     gate: Arc<Semaphore>,
+    profile_gates: Mutex<HashMap<String, Arc<Semaphore>>>,
     calls: AtomicUsize,
     warmups: AtomicUsize,
 }
@@ -32,6 +33,7 @@ impl ProviderState {
             scripts: Mutex::default(),
             missing_keys: Mutex::default(),
             gate: Arc::new(Semaphore::new(1_000)),
+            profile_gates: Mutex::default(),
             calls: AtomicUsize::new(0),
             warmups: AtomicUsize::new(0),
         }
@@ -63,6 +65,11 @@ impl Transcriber for ScriptedClient {
         async move {
             let _permit = state.gate.acquire().await.unwrap();
             state.calls.fetch_add(1, SeqCst);
+            let gate = state.profile_gates.lock().unwrap().get(&id).cloned();
+            let _profile_permit = match &gate {
+                Some(gate) => Some(gate.acquire().await.unwrap()),
+                None => None,
+            };
             let next = state.scripts.lock().unwrap().get_mut(&id).and_then(VecDeque::pop_front);
             next.unwrap_or_else(|| panic!("unexpected request to {id}"))
                 .map(|text| RawTranscript { text, dropped_segments: 0 })
@@ -322,7 +329,7 @@ async fn push_to_talk_records_while_the_combo_is_held() {
 }
 
 #[tokio::test]
-async fn triggers_while_busy_are_ignored() {
+async fn triggers_while_busy_start_a_second_recording() {
     let mut h = harness(AppConfig::default());
     h.script("groq", vec![Ok("tek")]);
     h.providers.gate.forget_permits(1_000);
@@ -331,11 +338,11 @@ async fn triggers_while_busy_are_ignored() {
     h.send(Msg::Toggle);
     h.expect(&[Recording, Transcribing]).await;
     h.send(Msg::Toggle);
-    h.hotkey(HotkeyEvent::ComboDown);
     h.send(Msg::Retry);
-    h.settle().await;
-    assert_eq!(h.mic.starts(), 1, "no second recording while transcribing");
-    assert_eq!(h.handle.status().state, Transcribing);
+    h.expect(&[Recording]).await;
+    assert_eq!(h.mic.starts(), 2);
+    h.hotkey(HotkeyEvent::Escape);
+    h.expect(&[Transcribing]).await;
 
     h.providers.gate.add_permits(1_000);
     h.expect(&[Pasting, Idle]).await;
@@ -385,6 +392,7 @@ async fn microphone_failure_during_recording_is_an_error() {
     h.expect(&[Recording]).await;
     h.mic.emit(CaptureEvent::Level(0.2));
     h.mic.emit(CaptureEvent::Failed("device unplugged".into()));
+    h.expect(&[Transcribing]).await;
     h.expect_error(ErrorKind::Microphone).await;
 
     assert_eq!(h.providers.calls(), 0);
@@ -403,6 +411,7 @@ async fn a_lost_microphone_keeps_the_speech_for_try_again() {
     h.send(Msg::Toggle);
     h.expect(&[Recording]).await;
     h.mic.emit(CaptureEvent::Failed("device unplugged".into()));
+    h.expect(&[Transcribing]).await;
     h.expect_error(ErrorKind::Microphone).await;
 
     assert!(h.handle.status().can_retry);
@@ -745,4 +754,208 @@ fn the_level_meter_uses_a_decibel_scale() {
     assert_eq!(meter(1.0), 1.0);
     assert!((meter(0.1) - 2.0 / 3.0).abs() < 1e-4);
     assert_eq!(meter(0.000_1), 0.0);
+}
+
+async fn wait_for(h: &mut Harness, state: DictationState, waiting: usize) {
+    loop {
+        let status = tokio::time::timeout(Duration::from_secs(5), h.states.recv()).await.unwrap().unwrap();
+        if status.state == state && status.waiting == waiting {
+            return;
+        }
+    }
+}
+
+#[tokio::test]
+async fn bounded_fifo_preserves_profiles_paste_policy_and_history_order() {
+    let mut config = AppConfig::default();
+    let mut h = harness(config.clone());
+    h.script("groq", vec![Ok("first")]);
+    h.script("openai", vec![Ok("second"), Ok("third"), Ok("fourth")]);
+    let first_gate = Arc::new(Semaphore::new(0));
+    h.providers.profile_gates.lock().unwrap().insert("groq".into(), first_gate.clone());
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.hotkey(HotkeyEvent::LoneCtrl);
+    h.expect(&[Recording, Transcribing]).await;
+    config.active_profile_id = "openai".into();
+    h.settings.replace(settings(config.clone()));
+    for waiting in 1..=3 {
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        h.send(Msg::Stop);
+        wait_for(&mut h, Transcribing, waiting).await;
+    }
+    assert!(h.handle.hold_for_update().await.is_none(), "waiting recordings block updates");
+    h.send(Msg::Toggle);
+    h.send(Msg::Retry);
+    h.settle().await;
+    assert_eq!(h.mic.starts(), 4, "one processing plus at most three waiting");
+    assert!(h.overlay.last().text.contains("Queue full"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while h.providers.calls() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(h.providers.calls(), 1, "a ready later request cannot overtake a blocked first request");
+    config.active_profile_id = "groq".into();
+    config.paste.trailing_space = false;
+    config.history.enabled = false;
+    h.settings.replace(settings(config));
+    first_gate.add_permits(1);
+    wait_for(&mut h, Idle, 0).await;
+    assert_eq!(h.paster.texts(), ["first ", "second ", "third ", "fourth "]);
+    assert_eq!(*h.paster.policies.lock().unwrap(), [true, false, false, false]);
+    assert_eq!(
+        h.history.entries().iter().map(|r| r.profile_id.clone()).collect::<Vec<_>>(),
+        ["groq", "openai", "openai", "openai"]
+    );
+    assert_eq!(*h.events.history.lock().unwrap(), [1, 2, 3, 4]);
+    assert!(h.handle.hold_for_update().await.is_some());
+}
+
+#[tokio::test]
+async fn escape_prefers_recording_then_cancels_inflight_and_keeps_waiting_items() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("waiting")]);
+    h.providers.gate.forget_permits(1_000);
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.expect(&[Recording, Transcribing]).await;
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.hotkey(HotkeyEvent::Escape);
+    h.expect(&[Transcribing]).await;
+    assert_eq!(h.mic.dropped.load(SeqCst), 1);
+    assert!(h.hotkey.escape_captured());
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::Stop);
+    wait_for(&mut h, Transcribing, 1).await;
+    h.hotkey(HotkeyEvent::Escape);
+    wait_for(&mut h, Transcribing, 0).await;
+    h.providers.gate.add_permits(1_000);
+    wait_for(&mut h, Idle, 0).await;
+    assert_eq!(h.paster.texts(), ["waiting "]);
+    assert_eq!(h.history.entries().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn pause_discards_samples_freezes_meter_and_excludes_paused_time_from_limit() {
+    let mut config = AppConfig::default();
+    config.recording.max_seconds = 10;
+    let mut h = harness(config);
+    h.script("groq", vec![Ok("resumed")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.mic.append_samples(&[0.1, 0.2]);
+    tokio::time::advance(Duration::from_secs(4)).await;
+    h.send(Msg::PauseResume);
+    h.expect(&[Recording]).await;
+    assert!(h.handle.status().paused);
+    let frozen = h.overlay.last();
+    h.mic.append_samples(&[0.9; 100]);
+    h.mic.emit(CaptureEvent::Level(0.9));
+    h.settle().await;
+    assert_eq!(h.overlay.last(), frozen);
+    tokio::time::advance(Duration::from_secs(30)).await;
+    h.settle().await;
+    assert_eq!(h.mic.finished.load(SeqCst), 0);
+    h.hotkey(HotkeyEvent::Pause);
+    h.expect(&[Recording]).await;
+    h.mic.append_samples(&[0.3]);
+    tokio::time::advance(Duration::from_secs(5)).await;
+    h.settle().await;
+    assert_eq!(h.mic.finished.load(SeqCst), 0);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    let captured = h.mic.captured.lock().unwrap();
+    let samples = &captured[0].samples;
+    assert_eq!(samples.len(), speech_recording().samples.len() + 3);
+    assert_eq!(&samples[samples.len() - 3..], [0.1, 0.2, 0.3]);
+}
+
+#[tokio::test]
+async fn paused_recordings_can_be_stopped_or_cancelled() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("stopped while paused")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::PauseResume);
+    h.expect(&[Recording]).await;
+    h.send(Msg::Stop);
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::PauseResume);
+    h.expect(&[Recording]).await;
+    h.hotkey(HotkeyEvent::Escape);
+    h.expect(&[Cancelled, Idle]).await;
+    assert_eq!(h.mic.finished.load(SeqCst), 1);
+    assert_eq!(h.mic.dropped.load(SeqCst), 1);
+}
+
+#[tokio::test]
+async fn provider_worker_panic_does_not_wedge_the_controller() {
+    let mut h = harness(AppConfig::default());
+    // An unscripted provider panics. The actor must still accept the next recording.
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.expect(&[Recording, Transcribing]).await;
+    h.expect_error(ErrorKind::Audio).await;
+    h.script("groq", vec![Ok("recovered")]);
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.expect(&[Recording, Transcribing, Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["recovered "]);
+}
+
+#[tokio::test]
+async fn push_to_talk_starts_while_transcribing_and_snapshots_stop_focus() {
+    let mut config = AppConfig::default();
+    config.hotkey.mode = HotkeyMode::PushToTalk;
+    let mut h = harness(config);
+    h.script("groq", vec![Ok("first"), Ok("second")]);
+    h.providers.gate.forget_permits(1_000);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.hotkey(HotkeyEvent::ComboUp);
+    h.expect(&[Recording, Transcribing]).await;
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.expect(&[Recording]).await;
+    *h.paster.allow_auto.lock().unwrap() = Some(false);
+    h.hotkey(HotkeyEvent::ComboUp);
+    wait_for(&mut h, Transcribing, 1).await;
+    *h.paster.allow_auto.lock().unwrap() = Some(true);
+    h.providers.gate.add_permits(1_000);
+    wait_for(&mut h, Idle, 0).await;
+    assert_eq!(*h.paster.policies.lock().unwrap(), [true, false]);
+    assert_eq!(h.paster.texts(), ["first ", "second "]);
+}
+
+#[tokio::test]
+async fn recording_continues_while_paste_and_restore_are_blocked() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("first"), Ok("second")]);
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    *h.paster.gate.lock().unwrap() = Some(gate.clone());
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.expect(&[Recording, Transcribing, Pasting]).await;
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.mic.emit(CaptureEvent::Level(0.3));
+    h.settle().await;
+    assert!(h.overlay.last().level.is_some());
+    h.send(Msg::Stop);
+    wait_for(&mut h, Pasting, 1).await;
+    assert_eq!(h.providers.calls(), 1, "the next job waits for paste and restore to return");
+    assert!(h.handle.hold_for_update().await.is_none());
+    h.hotkey(HotkeyEvent::Escape);
+    h.settle().await;
+    assert_eq!(h.handle.status().waiting, 1, "Escape cannot interrupt a paste in progress");
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    wait_for(&mut h, Idle, 0).await;
+    assert_eq!(h.paster.texts(), ["first ", "second "]);
+    assert_eq!(h.history.entries().len(), 2);
 }

@@ -246,6 +246,15 @@ impl AppCore {
     /// Caller holds `config_lock`.
     fn save_locked(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
         config.normalize();
+        crate::platform::keys::validate_shortcuts(&config.hotkey.keys, &config.hotkey.pause_keys).map_err(|err| {
+            let lang = self.settings.current().lang;
+            let message = match err {
+                HotkeyError::Collision => lang.shortcut_collision().into(),
+                HotkeyError::PauseEscape => lang.pause_escape_reserved().into(),
+                other => other.to_string(),
+            };
+            CommandError::new("invalid_input", message)
+        })?;
         if self.bad_config_kept.load(Ordering::SeqCst) {
             self.move_bad_config_aside()?;
         }
@@ -300,7 +309,9 @@ impl AppCore {
 
     /// (Re-)installs the global hook for the configured keys.
     pub fn apply_hotkey(&self, config: &AppConfig) {
-        let result = self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink());
+        let result = crate::platform::keys::validate_shortcuts(&config.hotkey.keys, &config.hotkey.pause_keys)
+            .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
+            .and_then(|()| self.platform.hotkey.register_pause(&config.hotkey.pause_keys));
         let error = result.err().map(|err: HotkeyError| {
             warn!(error = %err, "global shortcut unavailable");
             err.to_string()
@@ -931,6 +942,21 @@ mod tests {
         assert!(AppCore::validate_hotkey(&["RightCtrl".into(), "F13".into()]).is_ok());
         assert_eq!(AppCore::validate_hotkey(&[]).unwrap_err().code, "invalid_input");
         assert_eq!(AppCore::validate_hotkey(&["Banana".into()]).unwrap_err().code, "invalid_input");
+    }
+
+    #[test]
+    fn pause_shortcut_is_applied_and_collisions_cannot_change_saved_config() {
+        let f = fixture();
+        let mut config = f.core.config();
+        config.hotkey.pause_keys = vec!["F14".into()];
+        let saved = f.core.save_config(config).unwrap();
+        assert_eq!(f.hotkey.pause_registered.lock().unwrap().last().unwrap(), &["F14"]);
+        let before = std::fs::read(&f.core.paths.config).unwrap();
+        let mut invalid = saved.clone();
+        invalid.hotkey.pause_keys = invalid.hotkey.keys.clone();
+        assert_eq!(f.core.save_config(invalid).unwrap_err().code, "invalid_input");
+        assert_eq!(f.core.config(), saved);
+        assert_eq!(std::fs::read(&f.core.paths.config).unwrap(), before);
     }
 
     #[test]

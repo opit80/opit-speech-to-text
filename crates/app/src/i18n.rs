@@ -22,6 +22,39 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn shortcut_collision(self) -> &'static str {
+        self.pick("The recording and pause shortcuts overlap", "Kayıt ve duraklatma kısayolları çakışıyor")
+    }
+
+    pub fn pause_escape_reserved(self) -> &'static str {
+        self.pick("Escape is reserved for cancelling dictation", "Escape, dikteyi iptal etmek için ayrılmıştır")
+    }
+    pub fn queue_full(self) -> &'static str {
+        self.pick("Queue full: wait for a dictation to finish", "Kuyruk dolu: bir diktenin tamamlanmasını bekleyin")
+    }
+
+    pub fn recording_paused(self) -> &'static str {
+        self.pick("Recording paused", "Kayıt duraklatıldı")
+    }
+
+    pub fn tray_recording_pause(self, paused: bool) -> &'static str {
+        if paused {
+            self.pick("Resume recording", "Kaydı sürdür")
+        } else {
+            self.pick("Pause recording", "Kaydı duraklat")
+        }
+    }
+
+    pub fn with_waiting(self, label: &str, waiting: usize) -> String {
+        if waiting == 0 {
+            return label.into();
+        }
+        match self {
+            // The overlay truncates long labels; keep the count visible even with a fallback mic label.
+            Self::En => format!("{waiting} waiting · {label}"),
+            Self::Tr => format!("{waiting} bekliyor · {label}"),
+        }
+    }
     fn pick(self, en: &'static str, tr: &'static str) -> &'static str {
         match self {
             Lang::En => en,
@@ -149,6 +182,13 @@ impl Lang {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn queue_count_precedes_labels_that_the_overlay_may_truncate() {
+        assert_eq!(Lang::En.with_waiting("Listening", 0), "Listening");
+        assert!(Lang::En.with_waiting(Lang::En.listening_default_mic(), 2).starts_with("2 waiting"));
+        assert!(Lang::Tr.with_waiting(Lang::Tr.recording_paused(), 3).starts_with("3 bekliyor"));
+    }
 
     #[test]
     fn config_language_wins_over_the_system() {

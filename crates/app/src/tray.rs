@@ -64,7 +64,7 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let items = match core(app) {
         Some(core) => {
             let settings = core.settings.current();
-            tray_menu::build(&settings.config, settings.lang, core.hotkey_state().paused, core.status().can_retry)
+            tray_menu::build(&settings.config, settings.lang, core.hotkey_state().paused, &core.status())
         }
         None => Vec::new(),
     };
@@ -113,6 +113,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             refresh(app);
         }
         Some(TrayCommand::Retry) => core.controller.send(Msg::Retry),
+        Some(TrayCommand::PauseRecording) => core.controller.send(Msg::PauseResume),
         Some(TrayCommand::Quit) => {
             core.controller.send(Msg::Shutdown);
             app.exit(0);

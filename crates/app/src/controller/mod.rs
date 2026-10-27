@@ -1,12 +1,11 @@
-//! Dictation state machine: Idle → Recording → Transcribing → Pasting → Idle, plus the
-//! transient Cancelled and Error states. One actor task owns every piece of dictation
-//! state; the hotkey hook, tray, overlay and UI only send it messages, so two dictations
-//! can never overlap.
+//! Opit dictation: capture independently of a bounded FIFO. Transcription and paste
+//! run serially, including clipboard restore. Waiting items continue after Escape.
 
 mod status;
 #[cfg(test)]
 mod tests;
 
+use std::collections::VecDeque;
 use std::mem;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -36,6 +35,7 @@ const CANCEL_HIDE: Duration = Duration::from_millis(1_000);
 const WARNING_HIDE: Duration = Duration::from_secs(5);
 const ERROR_HIDE: Duration = Duration::from_secs(5);
 const ERROR_WITH_BUTTON_HIDE: Duration = Duration::from_secs(8);
+const MAX_WAITING: usize = 3;
 
 /// Builds provider clients for profiles. The real implementation caches one HTTP client
 /// per profile so dictations reuse pooled connections.
@@ -97,9 +97,10 @@ pub struct Env<P: Providers> {
 /// Controller input. Deliberately not `Debug`: `Transcribed` carries transcript text,
 /// which must never reach a log line.
 pub enum Msg {
-    /// Tray left click, UI button, or the toggle-mode hotkey: start or stop.
+    /// Tray left click or UI button: start or stop, keeping stopped items clipboard-only.
     Toggle,
     Stop,
+    PauseResume,
     Cancel,
     Retry,
     Hotkey(HotkeyEvent),
@@ -169,6 +170,8 @@ pub fn run<P: Providers>(
         tx: handle.tx.clone(),
         status: handle.status.clone(),
         phase: Phase::Idle,
+        recording: None,
+        waiting: VecDeque::new(),
         session: 0,
         retry: None,
         update_holds: 0,
@@ -187,7 +190,7 @@ impl ControllerHandle {
     }
 
     /// Stops new dictations so an update can install. `None` while a dictation is recording,
-    /// transcribing or pasting (or after shutdown). The controller answers in order with its
+    /// waiting, transcribing or pasting (or after shutdown). The controller answers in order with its
     /// other messages, so no dictation can slip in between the answer and the hold.
     pub async fn hold_for_update(&self) -> Option<UpdateHold> {
         let (reply, answer) = oneshot::channel();
@@ -219,6 +222,7 @@ struct Job {
     settings: Arc<Settings>,
     /// When the user stopped recording (or pressed "Try again"); latency is measured from here.
     started: Instant,
+    auto_paste: bool,
 }
 
 enum Input {
@@ -226,18 +230,31 @@ enum Input {
     Prepared(Arc<PreparedAudio>),
 }
 
-enum Phase<C> {
+struct ActiveRecording<C> {
+    session: u64,
+    capture: Box<dyn Capture>,
+    settings: Arc<Settings>,
+    clients: Clients<C>,
+    limit: AbortHandle,
+    remaining: Duration,
+    resumed_at: tokio::time::Instant,
+    paused: bool,
+    level: f32,
+    label: &'static str,
+}
+
+struct Pending<C> {
+    session: u64,
+    job: Job,
+    clients: Clients<C>,
+    input: Input,
+    salvage: bool,
+}
+
+enum Phase {
     Idle,
-    Recording {
-        session: u64,
-        capture: Box<dyn Capture>,
-        settings: Arc<Settings>,
-        clients: Clients<C>,
-        limit: AbortHandle,
-        label: &'static str,
-    },
     /// The microphone was lost; the audio captured so far is being prepared so it can be kept
-    /// for "Try again". Brief, so the published state stays Recording until the error.
+    /// for "Try again". Published as Transcribing unless another recording is active.
     Salvaging {
         session: u64,
         settings: Arc<Settings>,
@@ -260,7 +277,9 @@ struct Controller<P: Providers> {
     env: Env<P>,
     tx: mpsc::UnboundedSender<Msg>,
     status: Arc<Mutex<DictationStatus>>,
-    phase: Phase<P::Client>,
+    phase: Phase,
+    recording: Option<ActiveRecording<P::Client>>,
+    waiting: VecDeque<Pending<P::Client>>,
     session: u64,
     /// Prepared audio of the last failed dictation, for "Try again".
     retry: Option<Arc<PreparedAudio>>,
@@ -272,33 +291,46 @@ impl<P: Providers> Controller<P> {
     async fn serve(mut self, mut inbox: Inbox) {
         while let Some(msg) = inbox.0.recv().await {
             if let Msg::Shutdown = msg {
+                if let Some(r) = self.recording.take() {
+                    r.limit.abort();
+                }
+                self.waiting.clear();
                 self.cancel(false);
+                self.env.overlay.hide();
+                self.env.hotkey.set_capture_escape(false);
+                self.set_state(DictationState::Idle);
                 break;
             }
             self.handle(msg);
+            self.pump();
         }
     }
 
     fn handle(&mut self, msg: Msg) {
         match msg {
-            Msg::Toggle => self.toggle(),
-            Msg::Stop => self.stop(),
+            Msg::Toggle => self.toggle(false),
+            Msg::Stop => self.stop(false),
+            Msg::PauseResume => self.pause_resume(),
             Msg::Cancel => self.cancel(true),
             Msg::Retry | Msg::Overlay(OverlayAction::Retry) => self.retry(),
             Msg::Overlay(OverlayAction::OpenSettings) => self.env.events.open_settings(),
             Msg::Hotkey(event) => self.on_hotkey(event),
             Msg::Capture { session, event } => self.on_capture(session, event),
             Msg::LimitReached { session } => {
-                if self.recording_session() == Some(session) {
+                if self
+                    .recording
+                    .as_ref()
+                    .is_some_and(|r| r.session == session && !r.paused && r.resumed_at.elapsed() >= r.remaining)
+                {
                     info!(session, "recording limit reached; sending");
-                    self.stop();
+                    self.stop(true);
                 }
             }
             Msg::Salvaged { session, result } => self.on_salvaged(session, result),
             Msg::Transcribed { session, audio, result } => self.on_transcribed(session, audio, result),
             Msg::Pasted { session, outcome } => self.on_pasted(session, outcome),
             Msg::HoldForUpdate(reply) => {
-                let idle = matches!(self.phase, Phase::Idle);
+                let idle = self.is_idle();
                 // A hold whose caller is already gone would never be released.
                 if reply.send(idle).is_ok() && idle {
                     self.update_holds += 1;
@@ -309,34 +341,31 @@ impl<P: Providers> Controller<P> {
         }
     }
 
-    fn recording_session(&self) -> Option<u64> {
-        match self.phase {
-            Phase::Recording { session, .. } => Some(session),
-            _ => None,
-        }
+    fn is_idle(&self) -> bool {
+        self.recording.is_none() && self.waiting.is_empty() && matches!(self.phase, Phase::Idle)
     }
 
-    fn toggle(&mut self) {
-        match self.phase {
-            Phase::Idle => self.start(),
-            Phase::Recording { .. } => self.stop(),
-            // One dictation at a time: triggers while busy are ignored.
-            Phase::Salvaging { .. } | Phase::Transcribing { .. } | Phase::Pasting { .. } => {
-                info!("busy; trigger ignored")
-            }
+    fn toggle(&mut self, auto_paste: bool) {
+        if self.recording.is_some() {
+            self.stop(auto_paste);
+        } else {
+            self.start();
         }
     }
 
     fn on_hotkey(&mut self, event: HotkeyEvent) {
-        let mode = self.env.settings.current().config.hotkey.mode;
-        let idle = matches!(self.phase, Phase::Idle);
-        let recording = matches!(self.phase, Phase::Recording { .. });
+        let mode = self
+            .recording
+            .as_ref()
+            .map_or_else(|| self.env.settings.current().config.hotkey.mode, |r| r.settings.config.hotkey.mode);
+        let recording = self.recording.is_some();
         match (event, mode) {
             (HotkeyEvent::Escape, _) => self.cancel(true),
-            (HotkeyEvent::ComboDown, HotkeyMode::Toggle) => self.toggle(),
-            (HotkeyEvent::LoneCtrl, HotkeyMode::Toggle) if recording => self.stop(),
-            (HotkeyEvent::ComboDown, HotkeyMode::PushToTalk) if idle => self.start(),
-            (HotkeyEvent::ComboUp, HotkeyMode::PushToTalk) if recording => self.stop(),
+            (HotkeyEvent::Pause, _) => self.pause_resume(),
+            (HotkeyEvent::ComboDown, HotkeyMode::Toggle) => self.toggle(true),
+            (HotkeyEvent::LoneCtrl, HotkeyMode::Toggle) if recording => self.stop(true),
+            (HotkeyEvent::ComboDown, HotkeyMode::PushToTalk) if !recording => self.start(),
+            (HotkeyEvent::ComboUp, HotkeyMode::PushToTalk) if recording => self.stop(true),
             _ => {}
         }
     }
@@ -362,12 +391,17 @@ impl<P: Providers> Controller<P> {
         }
         info!("an update is installing; dictation not started");
         let lang = self.env.settings.current().lang;
-        self.env.overlay.show(view(Tone::Neutral, lang.update_installing(), Some(INFO_HIDE)));
+        self.show(view(Tone::Neutral, lang.update_installing(), Some(INFO_HIDE)));
         true
     }
 
     fn start(&mut self) {
         if self.held_for_update() {
+            return;
+        }
+        if self.waiting.len() >= MAX_WAITING {
+            let lang = self.env.settings.current().lang;
+            self.env.overlay.show(view(Tone::Warning, lang.queue_full(), Some(INFO_HIDE)));
             return;
         }
         let settings = self.env.settings.current();
@@ -398,39 +432,44 @@ impl<P: Providers> Controller<P> {
         self.env.providers.warm_up(&clients.primary);
 
         let max = Duration::from_secs(u64::from(settings.config.recording.max_seconds));
-        let tx = self.tx.clone();
-        let limit = tokio::spawn(async move {
-            tokio::time::sleep(max).await;
-            let _ = tx.send(Msg::LimitReached { session });
-        })
-        .abort_handle();
+        let limit = self.arm_limit(session, max);
 
         let label = if started.fell_back { settings.lang.listening_default_mic() } else { settings.lang.listening() };
         self.env.hotkey.set_capture_escape(true);
         self.play(Sound::Start);
-        self.env.overlay.show(listening(label, 0.0));
         info!(session, device = %started.device, profile = %settings.config.active_profile_id, "recording started");
-        self.phase = Phase::Recording { session, capture: started.capture, settings, clients, limit, label };
+        self.recording = Some(ActiveRecording {
+            session,
+            capture: started.capture,
+            settings,
+            clients,
+            limit,
+            label,
+            remaining: max,
+            resumed_at: tokio::time::Instant::now(),
+            paused: false,
+            level: 0.0,
+        });
+        self.show_recording();
         self.set_state(DictationState::Recording);
     }
 
-    fn stop(&mut self) {
-        if self.recording_session().is_none() {
-            return;
-        }
-        let Phase::Recording { session, capture, settings, clients, limit, .. } =
-            mem::replace(&mut self.phase, Phase::Idle)
-        else {
-            unreachable!("checked above")
-        };
-        limit.abort();
-        let recording = capture.finish();
-        info!(session, audio_ms = recording.duration_ms(), "recording stopped");
-        self.begin_transcription(session, settings, clients, Input::Raw(recording));
+    fn stop(&mut self, auto_paste: bool) {
+        let Some(r) = self.recording.take() else { return };
+        r.limit.abort();
+        let auto_paste = auto_paste && self.env.paster.can_auto_paste();
+        let recording = r.capture.finish();
+        self.waiting.push_back(Pending {
+            session: r.session,
+            job: Job { settings: r.settings, started: Instant::now(), auto_paste },
+            clients: r.clients,
+            input: Input::Raw(recording),
+            salvage: false,
+        });
     }
 
     fn retry(&mut self) {
-        if !matches!(self.phase, Phase::Idle) {
+        if !self.is_idle() {
             return;
         }
         let Some(audio) = self.retry.clone() else {
@@ -450,21 +489,19 @@ impl<P: Providers> Controller<P> {
         self.session += 1;
         info!(session = self.session, "retrying the last dictation");
         self.env.hotkey.set_capture_escape(true);
-        self.begin_transcription(self.session, settings, clients, Input::Prepared(audio));
+        let job = Job { settings, started: Instant::now(), auto_paste: self.env.paster.can_auto_paste() };
+        self.begin_transcription(self.session, job, clients, Input::Prepared(audio));
     }
 
-    fn begin_transcription(
-        &mut self,
-        session: u64,
-        settings: Arc<Settings>,
-        clients: Clients<P::Client>,
-        input: Input,
-    ) {
-        self.env.overlay.show(view(Tone::Busy, settings.lang.transcribing(), None));
+    fn begin_transcription(&mut self, session: u64, job: Job, clients: Clients<P::Client>, input: Input) {
+        let settings = job.settings.clone();
+        self.show(view(Tone::Busy, settings.lang.transcribing(), None));
         let tx = self.tx.clone();
         let retry_delay = self.env.retry_delay;
         let task_settings = settings.clone();
-        let task = tokio::spawn(async move {
+        let worker_tx = tx.clone();
+        let worker = tokio::spawn(async move {
+            let tx = worker_tx;
             let audio = match input {
                 Input::Prepared(audio) => audio,
                 Input::Raw(recording) => match prepare_off_thread(recording).await {
@@ -485,37 +522,40 @@ impl<P: Providers> Controller<P> {
             };
             let result = pipeline::transcribe(&audio, &ctx).await;
             let _ = tx.send(Msg::Transcribed { session, audio: Some(audio), result });
-        })
-        .abort_handle();
-        self.phase = Phase::Transcribing { session, job: Job { settings, started: Instant::now() }, task };
+        });
+        let task = worker.abort_handle();
+        tokio::spawn(async move {
+            if worker.await.is_err() {
+                let result = Err(PipelineError::Encode(EncodeError("transcription worker stopped".into())));
+                let _ = tx.send(Msg::Transcribed { session, audio: None, result });
+            }
+        });
+        self.phase = Phase::Transcribing { session, job, task };
         self.set_state(DictationState::Transcribing);
     }
 
     fn on_capture(&mut self, session: u64, event: CaptureEvent) {
-        let Phase::Recording { session: current, label, .. } = self.phase else {
-            return;
-        };
-        if current != session {
-            return;
-        }
+        let Some(r) = self.recording.as_mut().filter(|r| r.session == session) else { return };
         match event {
-            CaptureEvent::Level(level) => self.env.overlay.show(listening(label, level)),
+            CaptureEvent::Level(level) => {
+                if !r.paused {
+                    r.level = level;
+                    self.show_recording();
+                }
+            }
             CaptureEvent::Failed(reason) => {
                 warn!(session, %reason, "microphone stopped during recording");
-                let Phase::Recording { capture, limit, settings, .. } = mem::replace(&mut self.phase, Phase::Idle)
-                else {
-                    unreachable!("checked above")
-                };
-                limit.abort();
+                let r = self.recording.take().unwrap();
+                r.limit.abort();
                 // Keep what was said so far (spec §8): prepare it, but send nothing on our own.
-                let recording = capture.finish();
-                let tx = self.tx.clone();
-                let task = tokio::spawn(async move {
-                    let result = prepare_off_thread(recording).await;
-                    let _ = tx.send(Msg::Salvaged { session, result });
-                })
-                .abort_handle();
-                self.phase = Phase::Salvaging { session, settings, task };
+                let recording = r.capture.finish();
+                self.waiting.push_back(Pending {
+                    session,
+                    job: Job { settings: r.settings, started: Instant::now(), auto_paste: false },
+                    clients: r.clients,
+                    input: Input::Raw(recording),
+                    salvage: true,
+                });
             }
         }
     }
@@ -549,7 +589,6 @@ impl<P: Providers> Controller<P> {
         let Phase::Transcribing { job, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
             unreachable!("checked above")
         };
-        self.env.hotkey.set_capture_escape(false);
         let lang = job.settings.lang;
         let transcript = match result {
             Ok(transcript) => transcript,
@@ -586,10 +625,11 @@ impl<P: Providers> Controller<P> {
         let paste = &job.settings.config.paste;
         let text = if paste.trailing_space { format!("{} ", transcript.text) } else { transcript.text.clone() };
         let restore = paste.restore_clipboard;
+        let auto_paste = job.auto_paste;
         let paster = self.env.paster.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let outcome = paster.paste(&text, restore);
+            let outcome = paster.paste(&text, restore, auto_paste);
             let _ = tx.send(Msg::Pasted { session, outcome });
         });
         self.phase = Phase::Pasting { session, job, transcript, audio };
@@ -610,12 +650,12 @@ impl<P: Providers> Controller<P> {
             PasteOutcome::Pasted => {
                 info!(session, total_ms = elapsed.as_millis() as u64, "pasted");
                 self.play(Sound::Done);
-                self.env.overlay.show(view(Tone::Success, lang.pasted(elapsed.as_secs_f32()), Some(PASTED_HIDE)));
+                self.show(view(Tone::Success, lang.pasted(elapsed.as_secs_f32()), Some(PASTED_HIDE)));
             }
             PasteOutcome::ClipboardOnly => {
-                info!(session, "target window refused input; text left on the clipboard");
+                info!(session, "text left on the clipboard");
                 self.play(Sound::Done);
-                self.env.overlay.show(view(Tone::Warning, lang.clipboard_only(), Some(WARNING_HIDE)));
+                self.show(view(Tone::Warning, lang.clipboard_only(), Some(WARNING_HIDE)));
             }
             PasteOutcome::Failed(reason) => {
                 warn!(session, %reason, "paste failed");
@@ -652,17 +692,28 @@ impl<P: Providers> Controller<P> {
 
     /// `announce: false` is the quiet variant used on shutdown.
     fn cancel(&mut self, announce: bool) {
+        if let Some(r) = self.recording.take() {
+            r.limit.abort();
+            drop(r.capture);
+            if announce {
+                self.play(Sound::Cancel);
+            }
+            if matches!(self.phase, Phase::Idle) && self.waiting.is_empty() {
+                if announce {
+                    self.show(view(Tone::Neutral, r.settings.lang.cancelled(), Some(CANCEL_HIDE)));
+                    self.set_state(DictationState::Cancelled);
+                    self.set_state(DictationState::Idle);
+                }
+            } else {
+                self.show(view(Tone::Busy, r.settings.lang.transcribing(), None));
+            }
+            return;
+        }
         let lang = match mem::replace(&mut self.phase, Phase::Idle) {
             Phase::Idle => return,
             pasting @ Phase::Pasting { .. } => {
                 self.phase = pasting; // Ctrl+V is already on its way
                 return;
-            }
-            Phase::Recording { session, capture, limit, settings, .. } => {
-                limit.abort();
-                drop(capture);
-                info!(session, "recording cancelled");
-                settings.lang
             }
             Phase::Salvaging { session, settings, task } => {
                 task.abort();
@@ -675,10 +726,9 @@ impl<P: Providers> Controller<P> {
                 job.settings.lang
             }
         };
-        self.env.hotkey.set_capture_escape(false);
         if announce {
             self.play(Sound::Cancel);
-            self.env.overlay.show(view(Tone::Neutral, lang.cancelled(), Some(CANCEL_HIDE)));
+            self.show(view(Tone::Neutral, lang.cancelled(), Some(CANCEL_HIDE)));
             self.set_state(DictationState::Cancelled);
         } else {
             self.env.overlay.hide();
@@ -691,7 +741,6 @@ impl<P: Providers> Controller<P> {
     }
 
     fn fail_with_message(&mut self, kind: ErrorKind, lang: Lang, message: String) {
-        self.env.hotkey.set_capture_escape(false);
         let button = if kind.needs_settings() {
             Some(OverlayButton { action: OverlayAction::OpenSettings, label: lang.open_settings().into() })
         } else if self.retry.is_some() {
@@ -700,7 +749,7 @@ impl<P: Providers> Controller<P> {
             None
         };
         let hide_after = if button.is_some() { ERROR_WITH_BUTTON_HIDE } else { ERROR_HIDE };
-        self.env.overlay.show(OverlayView {
+        self.show(OverlayView {
             tone: Tone::Error,
             text: message.clone(),
             level: None,
@@ -713,7 +762,7 @@ impl<P: Providers> Controller<P> {
     }
 
     fn finish_info(&mut self, text: &str) {
-        self.env.overlay.show(view(Tone::Neutral, text, Some(INFO_HIDE)));
+        self.show(view(Tone::Neutral, text, Some(INFO_HIDE)));
         self.set_state(DictationState::Idle);
     }
 
@@ -723,8 +772,109 @@ impl<P: Providers> Controller<P> {
         }
     }
 
+    fn arm_limit(&self, session: u64, remaining: Duration) -> AbortHandle {
+        let tx = self.tx.clone();
+        let deadline = tokio::time::Instant::now() + remaining;
+        tokio::spawn(async move {
+            tokio::time::sleep_until(deadline).await;
+            let _ = tx.send(Msg::LimitReached { session });
+        })
+        .abort_handle()
+    }
+
+    fn pause_resume(&mut self) {
+        let Some(r) = self.recording.as_mut() else { return };
+        r.limit.abort();
+        if !r.paused {
+            r.remaining = r.remaining.saturating_sub(r.resumed_at.elapsed());
+        }
+        r.paused = !r.paused;
+        r.capture.set_paused(r.paused);
+        r.resumed_at = tokio::time::Instant::now();
+        if !r.paused {
+            let (session, remaining) = (r.session, r.remaining);
+            let limit = self.arm_limit(session, remaining);
+            self.recording.as_mut().unwrap().limit = limit;
+        }
+        self.show_recording();
+        self.set_state(DictationState::Recording);
+    }
+
+    fn pump(&mut self) {
+        if matches!(self.phase, Phase::Idle)
+            && let Some(p) = self.waiting.pop_front()
+        {
+            if p.salvage {
+                let Input::Raw(recording) = p.input else { unreachable!() };
+                let session = p.session;
+                let tx = self.tx.clone();
+                let task = tokio::spawn(async move {
+                    let result = prepare_off_thread(recording).await;
+                    let _ = tx.send(Msg::Salvaged { session, result });
+                })
+                .abort_handle();
+                self.phase = Phase::Salvaging { session, settings: p.job.settings, task };
+            } else {
+                self.begin_transcription(p.session, p.job, p.clients, p.input);
+            }
+        }
+        let state = if self.recording.is_some() {
+            DictationState::Recording
+        } else {
+            match self.phase {
+                Phase::Idle => DictationState::Idle,
+                Phase::Salvaging { .. } => DictationState::Transcribing,
+                Phase::Transcribing { .. } => DictationState::Transcribing,
+                Phase::Pasting { .. } => DictationState::Pasting,
+            }
+        };
+        let status = self.status.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        if status.state != state
+            || status.waiting != self.waiting.len()
+            || status.can_retry != (self.is_idle() && self.retry.is_some())
+        {
+            if self.recording.is_some() {
+                self.show_recording();
+            } else if !matches!(self.phase, Phase::Idle) {
+                self.show(view(Tone::Busy, self.env.settings.current().lang.transcribing(), None));
+            }
+            self.set_state(state);
+        }
+        self.env.hotkey.set_capture_escape(
+            self.recording.is_some() || matches!(self.phase, Phase::Salvaging { .. } | Phase::Transcribing { .. }),
+        );
+    }
+
+    fn show_recording(&self) {
+        if let Some(r) = &self.recording {
+            let label = if r.paused { r.settings.lang.recording_paused() } else { r.label };
+            self.env.overlay.show(listening(&r.settings.lang.with_waiting(label, self.waiting.len()), r.level));
+        }
+    }
+
+    fn show(&self, mut view: OverlayView) {
+        if self.recording.is_some() {
+            self.show_recording();
+        } else {
+            view.text = self.env.settings.current().lang.with_waiting(&view.text, self.waiting.len());
+            self.env.overlay.show(view);
+        }
+    }
+
     fn set_state(&mut self, state: DictationState) {
-        let status = DictationStatus { state, can_retry: self.retry.is_some() };
+        let state = if self.recording.is_some() { DictationState::Recording } else { state };
+        if state == DictationState::Idle && !self.waiting.is_empty() {
+            return;
+        }
+        let status = DictationStatus {
+            state,
+            can_retry: self.is_idle() && self.retry.is_some(),
+            waiting: self.waiting.len(),
+            paused: self.recording.as_ref().is_some_and(|r| r.paused),
+        };
+        if *self.status.lock().unwrap_or_else(PoisonError::into_inner) == status {
+            return;
+        }
         *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
         self.env.events.status_changed(&status);
     }

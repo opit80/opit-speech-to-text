@@ -73,7 +73,7 @@ Plan 3 Task 2 fixed five of the original items: the blocking commands are now `a
 when history is on, `set_active_profile` reads the config under `config_lock`, and
 `list_microphones` no longer passes a worker panic message to the UI. These remain:
 
-- Nothing recovers the state if the transcription task panics or the paste thread hangs (`controller/mod.rs`). Pasting cannot be escaped.
+- Transcription task panic recovery resolved by Opit Speech to Text's dictation queue: a monitored worker reports a sanitized error and the queue advances. A hanging paste thread still cannot be escaped.
 - A clipboard holding only uncopyable formats snapshots as empty, and the restore then clears it (`clipboard.rs`).
 - `mic.start` and `history.record` block a Tokio worker inside the controller actor.
 - The overlay's action fires on a mouse-up without a matching mouse-down, so a stray Retry could paste.
@@ -81,10 +81,10 @@ when history is on, `set_active_profile` reads the config under `config_lock`, a
 - Small robustness issues:
   - Two quick tray "Open" clicks race two window builds.
   - The second instance logs `starting` before it exits.
-- `controller/mod.rs` logs "target window refused input" for every `ClipboardOnly`, including the shell and own-window case.
+- Resolved with the dictation queue: `ClipboardOnly` logs only that text remains on the clipboard, without guessing why auto-paste was skipped.
 - A valid but locked `config.json` at start-up is moved aside as damaged. Its contents survive in `config.json.bad-*`.
 - Minor clipboard items:
-  - back-to-back pastes within 400 ms;
+  - back-to-back clipboard restoration resolved by the dictation queue: each paste waits for its own restore before the next paste starts;
   - Ctrl+V sent with `wScan` 0;
   - the snapshot forces rendering of every delayed format.
 

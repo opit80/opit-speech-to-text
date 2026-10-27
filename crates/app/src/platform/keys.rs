@@ -123,6 +123,22 @@ fn is_ctrl(vk: u32) -> bool {
     matches!(vk, VK_CONTROL | VK_LCONTROL | VK_RCONTROL)
 }
 
+/// Reject equal shortcuts and subsets, which would trigger both actions on one press.
+pub fn validate_shortcuts(main: &[String], pause: &[String]) -> Result<(), HotkeyError> {
+    let main = parse_combo(main)?;
+    if pause.is_empty() {
+        return Ok(());
+    }
+    let pause = parse_combo(pause)?;
+    if pause.contains(&VK_ESCAPE) {
+        return Err(HotkeyError::PauseEscape);
+    }
+    if main.iter().all(|key| pause.contains(key)) || pause.iter().all(|key| main.contains(key)) {
+        return Err(HotkeyError::Collision);
+    }
+    Ok(())
+}
+
 /// Turns a stream of physical key transitions into [`HotkeyEvent`]s.
 #[derive(Debug, Clone)]
 pub struct KeyTracker {
@@ -246,6 +262,18 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn optional_pause_shortcut_rejects_collisions_and_reserved_escape() {
+        assert!(validate_shortcuts(&names(&["F13"]), &[]).is_ok());
+        assert!(validate_shortcuts(&names(&["F13"]), &names(&["F14"])).is_ok());
+        for pause in [&["f13"][..], &["LeftCtrl", "F13"][..]] {
+            assert_eq!(validate_shortcuts(&names(&["F13"]), &names(pause)), Err(HotkeyError::Collision));
+        }
+        assert_eq!(validate_shortcuts(&names(&["LeftCtrl", "F13"]), &names(&["F13"])), Err(HotkeyError::Collision));
+        assert_eq!(validate_shortcuts(&names(&["F13"]), &names(&["Escape"])), Err(HotkeyError::PauseEscape));
+        assert!(validate_shortcuts(&names(&["F13"]), &names(&["invalid"])).is_err());
     }
 
     /// Feeds `(vk, down)` pairs and collects every emitted event.

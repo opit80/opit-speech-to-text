@@ -37,11 +37,18 @@ impl WinPaster {
 }
 
 impl Paster for WinPaster {
-    fn paste(&self, text: &str, restore: bool) -> PasteOutcome {
+    fn can_auto_paste(&self) -> bool {
+        !foreground_is_not_a_paste_target()
+    }
+
+    fn paste(&self, text: &str, restore: bool, auto_paste: bool) -> PasteOutcome {
         let (backup, seq) = match put_text(text, restore) {
             Ok(v) => v,
             Err(e) => return PasteOutcome::Failed(e),
         };
+        if !auto_paste {
+            return PasteOutcome::ClipboardOnly;
+        }
         wait_for_modifiers_released(MODIFIER_WAIT);
         if foreground_is_not_a_paste_target() {
             return PasteOutcome::ClipboardOnly;
@@ -55,11 +62,8 @@ impl Paster for WinPaster {
         }
         // Restore only after a real paste: on ClipboardOnly the user still needs our text.
         if let Some(backup) = backup {
-            let spawned = thread::Builder::new().name("opit-clipboard-restore".into()).spawn(move || {
-                thread::sleep(CLIPBOARD_RESTORE_DELAY);
-                let _ = restore_if_unchanged(&backup, seq);
-            });
-            drop(spawned); // Best effort: if the thread cannot start, our text simply stays.
+            thread::sleep(CLIPBOARD_RESTORE_DELAY);
+            let _ = restore_if_unchanged(&backup, seq);
         }
         PasteOutcome::Pasted
     }

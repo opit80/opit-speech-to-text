@@ -49,6 +49,8 @@ pub trait Microphone: Send + Sync {
 }
 
 pub trait Capture: Send {
+    /// The stream remains open; samples captured while paused are discarded.
+    fn set_paused(&self, paused: bool);
     /// Stops the stream and returns everything captured. Dropping without calling this cancels.
     fn finish(self: Box<Self>) -> Recording;
 }
@@ -56,6 +58,7 @@ pub trait Capture: Send {
 // ---------- Hotkey ----------
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
+    Pause,
     /// All combo keys are now held (fires once per press, not on auto-repeat).
     ComboDown,
     /// A combo key was released after ComboDown.
@@ -75,11 +78,16 @@ pub enum HotkeyError {
     UnknownKey(String),
     #[error("the shortcut has no keys")]
     Empty,
+    #[error("the recording and pause shortcuts overlap")]
+    Collision,
+    #[error("Escape is reserved for cancelling dictation")]
+    PauseEscape,
     #[error("the keyboard hook could not be installed: {0}")]
     Install(String),
 }
 
 pub trait Hotkey: Send + Sync {
+    fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError>;
     /// Installs (or re-targets) the global hook for `keys` (names like "RightCtrl").
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError>;
     /// Paused: no events are delivered.
@@ -104,10 +112,14 @@ pub enum PasteOutcome {
 pub const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(400);
 
 pub trait Paster: Send + Sync {
+    /// Snapshot at recording stop; later focus changes must not enable auto-paste.
+    fn can_auto_paste(&self) -> bool {
+        true
+    }
     /// Backs up the clipboard, puts `text` on it, sends Ctrl+V, and (when `restore`)
-    /// restores the old clipboard CLIPBOARD_RESTORE_DELAY later on a background thread.
+    /// restores the old clipboard after CLIPBOARD_RESTORE_DELAY before returning.
     /// Blocking; call from a blocking thread.
-    fn paste(&self, text: &str, restore: bool) -> PasteOutcome;
+    fn paste(&self, text: &str, restore: bool, auto_paste: bool) -> PasteOutcome;
 }
 
 // ---------- Overlay ----------

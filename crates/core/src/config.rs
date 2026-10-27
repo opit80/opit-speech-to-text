@@ -58,13 +58,20 @@ pub enum HotkeyMode {
 pub struct HotkeyConfig {
     /// Key names understood by the app's hotkey hook, e.g. `RightCtrl`.
     pub keys: Vec<String>,
+    /// Empty disables the optional recording pause shortcut.
+    pub pause_keys: Vec<String>,
     pub mode: HotkeyMode,
     pub enabled: bool,
 }
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        Self { keys: vec!["RightCtrl".into(), "RightShift".into()], mode: HotkeyMode::Toggle, enabled: true }
+        Self {
+            keys: vec!["RightCtrl".into(), "RightShift".into()],
+            pause_keys: Vec::new(),
+            mode: HotkeyMode::Toggle,
+            enabled: true,
+        }
     }
 }
 
@@ -260,6 +267,16 @@ mod tests {
     use crate::provider::presets;
 
     #[test]
+    fn optional_pause_shortcut_is_compatible_with_existing_configs() {
+        let old = r#"{"hotkey":{"keys":["F13"],"mode":"push_to_talk","enabled":true}}"#;
+        let mut config = AppConfig::from_json(old).unwrap();
+        assert!(config.hotkey.pause_keys.is_empty());
+        assert_eq!(config.hotkey.keys, ["F13"]);
+        config.hotkey.pause_keys = vec!["F14".into()];
+        assert_eq!(AppConfig::from_json(&config.to_json()).unwrap(), config);
+    }
+
+    #[test]
     fn defaults_match_the_brief() {
         let c = AppConfig::default();
         assert_eq!(c.schema_version, CONFIG_SCHEMA_VERSION);
@@ -267,6 +284,7 @@ mod tests {
         assert_eq!(c.profiles, vec![presets::groq(), presets::openai()]);
         assert_eq!(c.hotkey.keys, ["RightCtrl", "RightShift"]);
         assert_eq!(c.hotkey.mode, HotkeyMode::Toggle);
+        assert!(c.hotkey.pause_keys.is_empty());
         assert_eq!(c.recording.max_seconds, 180);
         assert!(!c.paste.restore_clipboard && c.paste.trailing_space);
         assert!(c.history.enabled && !c.history.save_audio);
