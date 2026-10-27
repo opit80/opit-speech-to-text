@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use opit_core::config::{AppConfig, ConfigError};
 use opit_core::history::{Dictation, HistoryError, UsageStats};
-use opit_core::provider::{OpenAiCompatible, Profile, ProviderError};
+use opit_core::provider::{Profile, ProviderClient, ProviderError};
 use opit_core::rules::pack::{CorrectionOutcome, header_comments};
 use opit_core::rules::prompt::{BuiltPrompt, build_prompt};
 use opit_core::rules::{PackError, RuleHit, RulePack, RuleSet, RuleWarning};
@@ -467,7 +467,7 @@ impl AppCore {
                 None => None,
             },
         };
-        let client = OpenAiCompatible::new(profile, key)?;
+        let client = ProviderClient::new(profile, key)?;
         Ok(client.test_connection().await?)
     }
 

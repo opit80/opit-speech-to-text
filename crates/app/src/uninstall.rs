@@ -18,8 +18,10 @@ pub const DELETE_CREDENTIALS_FLAG: &str = "--delete-credentials";
 /// `config.json`. The file is read as plain JSON (no schema, no migration), so a damaged or newer
 /// config still gives up its refs.
 pub fn credential_refs(config_json: Option<&str>) -> Vec<String> {
-    let mut refs: BTreeSet<String> =
-        [presets::groq(), presets::openai()].into_iter().filter_map(|profile| profile.api_key_ref).collect();
+    let mut refs: BTreeSet<String> = [presets::groq(), presets::openai(), presets::elevenlabs()]
+        .into_iter()
+        .filter_map(|profile| profile.api_key_ref)
+        .collect();
     let config = config_json.and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
     let profiles = config.as_ref().and_then(|c| c.get("profiles")).and_then(|p| p.as_array());
     for profile in profiles.into_iter().flatten() {
@@ -60,17 +62,17 @@ mod tests {
             {"id":"local","api_key_ref":null},
             {"id":"blank","api_key_ref":""}
         ]}"#;
-        assert_eq!(credential_refs(Some(json)), ["groq", "home-gpu", "openai"]);
+        assert_eq!(credential_refs(Some(json)), ["elevenlabs", "groq", "home-gpu", "openai"]);
     }
 
     #[test]
     fn a_missing_or_damaged_config_still_gives_the_preset_refs() {
-        assert_eq!(credential_refs(None), ["groq", "openai"]);
-        assert_eq!(credential_refs(Some("{damaged")), ["groq", "openai"]);
-        assert_eq!(credential_refs(Some(r#"{"profiles":"nope"}"#)), ["groq", "openai"]);
+        assert_eq!(credential_refs(None), ["elevenlabs", "groq", "openai"]);
+        assert_eq!(credential_refs(Some("{damaged")), ["elevenlabs", "groq", "openai"]);
+        assert_eq!(credential_refs(Some(r#"{"profiles":"nope"}"#)), ["elevenlabs", "groq", "openai"]);
         assert_eq!(
             credential_refs(Some(r#"{"schema_version":99,"profiles":[{"api_key_ref":"new"}]}"#)),
-            ["groq", "new", "openai"]
+            ["elevenlabs", "groq", "new", "openai"]
         );
     }
 

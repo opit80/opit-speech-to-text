@@ -1,13 +1,58 @@
-//! Speech-to-text providers. v1 has one adapter: OpenAI-compatible HTTP.
+//! Speech-to-text providers, selected explicitly by the saved profile.
 
 use crate::audio::encode::EncodedAudio;
 
+pub mod elevenlabs;
 pub mod openai;
 pub mod profile;
 pub mod retry;
 
 pub use openai::OpenAiCompatible;
-pub use profile::{Profile, ResponseFormat, presets};
+pub use profile::{Profile, ProviderKind, ResponseFormat, presets};
+
+pub enum ProviderClient {
+    OpenaiCompatible(OpenAiCompatible),
+    Elevenlabs(elevenlabs::ElevenLabs),
+}
+
+impl ProviderClient {
+    pub fn new(profile: Profile, api_key: Option<String>) -> Result<Self, ProviderError> {
+        match profile.provider {
+            ProviderKind::OpenaiCompatible => OpenAiCompatible::new(profile, api_key).map(Self::OpenaiCompatible),
+            ProviderKind::Elevenlabs => elevenlabs::ElevenLabs::new(profile, api_key).map(Self::Elevenlabs),
+        }
+    }
+
+    pub async fn test_connection(&self) -> Result<(), ProviderError> {
+        match self {
+            Self::OpenaiCompatible(client) => client.test_connection().await,
+            Self::Elevenlabs(client) => client.test_connection().await,
+        }
+    }
+
+    pub async fn warm_up(&self) {
+        match self {
+            Self::OpenaiCompatible(client) => client.warm_up().await,
+            Self::Elevenlabs(client) => client.warm_up().await,
+        }
+    }
+}
+
+impl Transcriber for ProviderClient {
+    fn profile(&self) -> &Profile {
+        match self {
+            Self::OpenaiCompatible(client) => client.profile(),
+            Self::Elevenlabs(client) => client.profile(),
+        }
+    }
+
+    async fn transcribe(&self, request: &TranscribeRequest<'_>) -> Result<RawTranscript, ProviderError> {
+        match self {
+            Self::OpenaiCompatible(client) => client.transcribe(request).await,
+            Self::Elevenlabs(client) => client.transcribe(request).await,
+        }
+    }
+}
 
 pub struct TranscribeRequest<'a> {
     pub audio: &'a EncodedAudio,

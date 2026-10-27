@@ -19,17 +19,19 @@
   }
   let { onnext, canNext = $bindable(false), form }: Props = $props();
 
-  type Choice = "groq" | "openai" | "custom";
+  type Choice = "groq" | "openai" | "elevenlabs" | "custom";
   type FieldProblem = "name" | "base_url" | "model";
 
-  const PRESET_IDS: string[] = ["groq", "openai"];
-  const KEY_URLS: Record<"groq" | "openai", string> = {
+  const PRESET_IDS: string[] = ["groq", "openai", "elevenlabs"];
+  const KEY_URLS: Record<"groq" | "openai" | "elevenlabs", string> = {
     groq: "https://console.groq.com/keys",
     openai: "https://platform.openai.com/api-keys",
+    elevenlabs: "https://elevenlabs.io/app/settings/api-keys",
   };
   const CHOICES: { value: Choice; title: MessageKey; hint: MessageKey }[] = [
     { value: "groq", title: "profiles.preset.groq", hint: "setup.provider.groq_hint" },
     { value: "openai", title: "profiles.preset.openai", hint: "setup.provider.openai_hint" },
+    { value: "elevenlabs", title: "profiles.preset.elevenlabs", hint: "setup.provider.elevenlabs_hint" },
     { value: "custom", title: "profiles.preset.custom", hint: "setup.provider.custom_hint" },
   ];
   const PROBLEM_KEYS: Record<FieldProblem, MessageKey> = {
@@ -47,7 +49,14 @@
   });
   const editingCustom = startProfile && !PRESET_IDS.includes(startProfile.id) ? startProfile : null;
 
-  let choice = $state<Choice>(editingCustom ? "custom" : startProfile?.id === "openai" ? "openai" : "groq");
+  function initialChoice(): Choice {
+    if (editingCustom) return "custom";
+    if (startProfile?.id === "elevenlabs") return "elevenlabs";
+    if (startProfile?.id === "openai") return "openai";
+    return "groq";
+  }
+
+  let choice = $state<Choice>(initialChoice());
   let presets = $state<Profile[]>([]);
   let presetsBusy = $state(true);
   let presetsError = $state<string | null>(null);

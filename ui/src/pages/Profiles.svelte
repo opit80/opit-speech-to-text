@@ -19,7 +19,7 @@
     session: number;
   }
 
-  const presetKeys: Record<string, MessageKey> = { groq: "profiles.preset.groq", openai: "profiles.preset.openai" };
+  const presetKeys: Record<string, MessageKey> = { groq: "profiles.preset.groq", openai: "profiles.preset.openai", elevenlabs: "profiles.preset.elevenlabs" };
   let presets = $state<Profile[]>([]);
   let presetsBusy = $state(true);
   let presetsError = $state<string | null>(null);

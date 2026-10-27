@@ -139,11 +139,11 @@ async fn set_active_profile(app: AppHandle, core: Core<'_>, id: String) -> Resul
     Ok(saved)
 }
 
-/// Groq, OpenAI, and a blank custom template (the UI fills in id, name, URL and model).
+/// Groq, OpenAI, ElevenLabs, and a blank custom template (the UI fills in id, name, URL and model).
 #[tauri::command]
 fn profile_presets() -> Vec<Profile> {
     use opit_core::provider::presets;
-    vec![presets::groq(), presets::openai(), presets::custom("custom", "", "", "")]
+    vec![presets::groq(), presets::openai(), presets::elevenlabs(), presets::custom("custom", "", "", "")]
 }
 
 /// Device enumeration can take a moment, so it runs off the main thread.

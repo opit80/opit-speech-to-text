@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use opit_core::provider::{OpenAiCompatible, Profile};
+use opit_core::provider::{Profile, ProviderClient};
 
 use crate::controller::{Providers, SetupError};
 use crate::platform::SecretStore;
@@ -18,7 +18,7 @@ pub struct HttpProviders {
 struct Cached {
     profile: Profile,
     key: Option<String>,
-    client: Arc<OpenAiCompatible>,
+    client: Arc<ProviderClient>,
 }
 
 impl HttpProviders {
@@ -38,7 +38,7 @@ impl HttpProviders {
 }
 
 impl Providers for HttpProviders {
-    type Client = Arc<OpenAiCompatible>;
+    type Client = Arc<ProviderClient>;
 
     fn client(&self, profile: &Profile) -> Result<Self::Client, SetupError> {
         let key = self.key_for(profile)?;
@@ -49,9 +49,8 @@ impl Providers for HttpProviders {
         {
             return Ok(cached.client.clone());
         }
-        let client = Arc::new(
-            OpenAiCompatible::new(profile.clone(), key.clone()).map_err(|e| SetupError::Client(e.to_string()))?,
-        );
+        let client =
+            Arc::new(ProviderClient::new(profile.clone(), key.clone()).map_err(|e| SetupError::Client(e.to_string()))?);
         cache.insert(profile.id.clone(), Cached { profile: profile.clone(), key, client: client.clone() });
         Ok(client)
     }

@@ -20,8 +20,10 @@ export interface DictationStatus {
 
 export type AudioFormat = "flac" | "wav";
 export type ResponseFormat = "verbose_json" | "json";
+export type ProviderKind = "openai_compatible" | "elevenlabs";
 
 export interface Profile {
+  provider: ProviderKind;
   id: string;
   name: string;
   base_url: string;

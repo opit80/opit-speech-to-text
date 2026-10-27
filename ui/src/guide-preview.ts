@@ -14,6 +14,7 @@ const config: AppConfig = {
   ui_language: params.get("lang") === "en" ? "en" : "tr",
   active_profile_id: "preview",
   profiles: [{
+    provider: "openai_compatible",
     id: "preview", name: "Groq", base_url: "https://api.groq.com/openai/v1", model: "whisper-large-v3",
     api_key_ref: null, language: "tr", audio_format: "flac", response_format: "verbose_json",
     send_prompt: true, send_keywords: false, apply_rules: true, fallback_profile_id: null,

@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::audio::encode::AudioFormat;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderKind {
+    #[default]
+    OpenaiCompatible,
+    Elevenlabs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResponseFormat {
@@ -22,6 +30,9 @@ impl ResponseFormat {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Profile {
+    /// Missing in older configs, which all used the OpenAI-compatible adapter.
+    #[serde(default)]
+    pub provider: ProviderKind,
     pub id: String,
     pub name: String,
     pub base_url: String,
@@ -53,13 +64,15 @@ fn default_language() -> String {
 }
 
 pub mod presets {
-    use super::{AudioFormat, Profile, ResponseFormat};
+    use super::{AudioFormat, Profile, ProviderKind, ResponseFormat};
 
     pub const GROQ_ID: &str = "groq";
     pub const OPENAI_ID: &str = "openai";
+    pub const ELEVENLABS_ID: &str = "elevenlabs";
 
     pub fn groq() -> Profile {
         Profile {
+            provider: ProviderKind::OpenaiCompatible,
             id: GROQ_ID.into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
@@ -77,6 +90,7 @@ pub mod presets {
 
     pub fn openai() -> Profile {
         Profile {
+            provider: ProviderKind::OpenaiCompatible,
             id: OPENAI_ID.into(),
             name: "OpenAI".into(),
             base_url: "https://api.openai.com/v1".into(),
@@ -92,10 +106,29 @@ pub mod presets {
         }
     }
 
+    pub fn elevenlabs() -> Profile {
+        Profile {
+            provider: ProviderKind::Elevenlabs,
+            id: ELEVENLABS_ID.into(),
+            name: "ElevenLabs Scribe v2".into(),
+            base_url: "https://api.elevenlabs.io/v1".into(),
+            model: "scribe_v2".into(),
+            api_key_ref: Some(ELEVENLABS_ID.into()),
+            language: "tr".into(),
+            audio_format: AudioFormat::Wav,
+            response_format: ResponseFormat::Json,
+            send_prompt: false,
+            send_keywords: false,
+            apply_rules: true,
+            fallback_profile_id: None,
+        }
+    }
+
     /// A user-defined OpenAI-compatible server. Plain JSON is the safe default;
     /// the user can switch to verbose_json if the server supports it.
     pub fn custom(id: &str, name: &str, base_url: &str, model: &str) -> Profile {
         Profile {
+            provider: ProviderKind::OpenaiCompatible,
             id: id.into(),
             name: name.into(),
             base_url: base_url.into(),
@@ -115,6 +148,25 @@ pub mod presets {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_profiles_keep_the_openai_adapter() {
+        let mut value = serde_json::to_value(presets::groq()).unwrap();
+        value.as_object_mut().unwrap().remove("provider");
+        let old: Profile = serde_json::from_value(value).unwrap();
+        assert_eq!(old, presets::groq());
+    }
+
+    #[test]
+    fn scribe_preset_disables_paid_addons_and_uses_a_separate_key() {
+        let profile = presets::elevenlabs();
+        assert_eq!(profile.provider, ProviderKind::Elevenlabs);
+        assert_eq!(profile.model, "scribe_v2");
+        assert_eq!(profile.api_key_ref.as_deref(), Some("elevenlabs"));
+        assert_eq!(profile.audio_format, AudioFormat::Wav);
+        assert_eq!(profile.response_format, ResponseFormat::Json);
+        assert!(!profile.send_prompt && !profile.send_keywords && profile.apply_rules);
+    }
 
     #[test]
     fn groq_preset_matches_the_brief() {

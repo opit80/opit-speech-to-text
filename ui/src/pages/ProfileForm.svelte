@@ -64,6 +64,7 @@
   const derivesId = untrack(() => isNew && !profile.id);
   const problems = $derived(profileProblems(draft, all));
   const needsKey = $derived(draft.api_key_ref !== null);
+  const scribe = $derived(draft.provider === "elevenlabs");
   const insecure = $derived(draft.base_url.trim().toLowerCase().startsWith("http://"));
   const live = $derived(app.config?.profiles.find((p) => p.id === original.id) ?? null);
   const changedElsewhere = $derived(!isNew && !saveBusy && live !== null && canonical(live) !== canonical(original));
@@ -260,16 +261,22 @@
   <div class="grid">
     <Select label={t("profiles.language")} options={languageOptions}
       bind:value={() => draft.language, (value) => { draft.language = value; }} />
-    <Select label={t("profiles.audio_format")}
+    <Select label={t("profiles.audio_format")} disabled={scribe}
       options={[{ value: "flac", label: "FLAC" }, { value: "wav", label: "WAV" }]}
       bind:value={() => draft.audio_format, (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
   </div>
-  <Select label={t("profiles.response_format")} hint={t("profiles.response_format_hint")}
+  <Field label={t("profiles.provider")}>
+    {#snippet children(id)}
+      <input {id} type="text" readonly value={t(scribe ? "profiles.provider.elevenlabs" : "profiles.provider.openai")} />
+    {/snippet}
+  </Field>
+  {#if scribe}<Banner tone="info">{t("profiles.scribe_hint")}</Banner>{/if}
+  <Select label={t("profiles.response_format")} hint={t("profiles.response_format_hint")} disabled={scribe}
     options={[{ value: "verbose_json", label: "verbose_json" }, { value: "json", label: "json" }]}
     bind:value={() => draft.response_format, (value) => { draft.response_format = value === "verbose_json" ? "verbose_json" : "json"; }} />
 
-  <Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />
-  <Switch label={t("profiles.send_keywords")} hint={t("profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />
+  {#if !scribe}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
+  <Switch label={t("profiles.send_keywords")} hint={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />
   <Switch label={t("profiles.apply_rules")} hint={t("profiles.apply_rules_hint")} bind:checked={draft.apply_rules} />
 
   <Field label={t("profiles.fallback")} hint={t("profiles.fallback_hint")} error={problemFor("fallback_self", "fallback_missing")}>
