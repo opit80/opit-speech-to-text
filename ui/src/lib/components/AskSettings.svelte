@@ -68,12 +68,10 @@
   }
 </script>
 
-<p class="muted">{t("ask.description")}</p>
-<p class="muted">{t("ask.privacy")}</p>
 <form class="stack" onsubmit={(event) => { event.preventDefault(); void save(); }}>
   <fieldset class="stack" disabled={busy}>
-    <HotkeyInput {keys} optional label={t("ask.shortcut")} hint={t("ask.shortcut_hint")} onchange={(value) => { keys = value; }} />
-    <Select label={t("ask.agent")} value={draft.agent} options={agents} onchange={(value) => { draft.agent = value as AskAgent; result = null; }} />
+    <HotkeyInput {keys} optional label={t("ask.shortcut")} info={t("ask.shortcut_hint")} onchange={(value) => { keys = value; }} />
+    <Select label={t("ask.agent")} info={t("ask.privacy")} value={draft.agent} options={agents} onchange={(value) => { draft.agent = value as AskAgent; result = null; }} />
     <p class="muted" role="status">{!loaded ? t("common.loading") : installed ? t("ask.available") : t("ask.missing")}</p>
     {#if draft.agent === "chat"}
       <Field label={t("profiles.base_url")}>
@@ -84,8 +82,8 @@
       </Field>
       <Switch label={t("profiles.needs_key")} checked={draft.api_key_ref !== null} onchange={(on) => { draft.api_key_ref = on ? "ask" : null; keyInput = ""; }} />
       {#if draft.api_key_ref}
-        <Field label={t("profiles.key")} hint={t("ask.key_hint")}>
-          {#snippet children(id)}<input {id} type="password" bind:value={keyInput} autocomplete="new-password" />{/snippet}
+        <Field label={t("profiles.key")} info={t("ask.key_hint")}>
+          {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} type="password" bind:value={keyInput} autocomplete="new-password" />{/snippet}
         </Field>
       {/if}
     {:else if draft.agent === "claude"}
@@ -93,30 +91,28 @@
         {#snippet children(id)}<input {id} bind:value={draft.claude_model} required autocomplete="off" spellcheck="false" />{/snippet}
       </Field>
     {:else}
-      <Field label={t("ask.codex_model")} hint={t("ask.codex_model_hint")}>
-        {#snippet children(id)}<input {id} bind:value={draft.codex_model} autocomplete="off" spellcheck="false" />{/snippet}
+      <Field label={t("ask.codex_model")} info={t("ask.codex_model_hint")}>
+        {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} bind:value={draft.codex_model} autocomplete="off" spellcheck="false" />{/snippet}
       </Field>
     {/if}
     {#if draft.agent !== "chat"}
-      <Select label={t("ask.permission")} value={draft.permission} options={permissions} onchange={(value) => draft.permission = value as AskConfig["permission"]} />
-      {#if draft.permission === "workspace"}<Banner tone="warning">{t("ask.permission_warning")}</Banner>
-      {:else}<p class="muted">{t("ask.restricted_hint")}</p>{/if}
+      <Select label={t("ask.permission")} info={t("ask.restricted_hint")} value={draft.permission} options={permissions} onchange={(value) => draft.permission = value as AskConfig["permission"]} />
+      {#if draft.permission === "workspace"}<Banner tone="warning">{t("ask.permission_warning")}</Banner>{/if}
     {/if}
-    <Field label={t("ask.directory")} hint={t("ask.directory_hint")}>
-      {#snippet children(id)}<input {id} bind:value={draft.working_dir} autocomplete="off" spellcheck="false" />{/snippet}
+    <Field label={t("ask.directory")} info={t("ask.directory_hint")}>
+      {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} bind:value={draft.working_dir} autocomplete="off" spellcheck="false" />{/snippet}
     </Field>
     <Field label={t("ask.timeout")}>
       {#snippet children(id)}<input {id} type="number" min="1" max="3600" step="1" bind:value={draft.timeout_seconds} required />{/snippet}
     </Field>
-    <Field label={t("ask.continue")} hint={t("ask.continue_hint")}>
-      {#snippet children(id)}<input {id} type="number" min="0" max="1440" step="1" bind:value={draft.continue_minutes} required />{/snippet}
+    <Field label={t("ask.continue")} info={t("ask.continue_hint")}>
+      {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} type="number" min="0" max="1440" step="1" bind:value={draft.continue_minutes} required />{/snippet}
     </Field>
     <Select label={t("ask.output")} value={draft.output} options={outputs} onchange={(value) => draft.output = value as AskConfig["output"]} />
-    <Switch label={t("ask.cleanup")} hint={t("ask.cleanup_hint")} bind:checked={draft.cleanup_request} />
+    <Switch label={t("ask.cleanup")} info={t("ask.cleanup_hint")} bind:checked={draft.cleanup_request} />
   </fieldset>
   {#if error}<Banner tone="error">{error}</Banner>{/if}
   {#if result}<p class="answer" role="status">{result}</p>{/if}
-  <p class="muted">{t("ask.test_hint")}</p>
   <div class="row">
     <Button busy={busy} disabled={!loaded || !installed} onclick={() => void test()}>{t("ask.test")}</Button>
     <Button type="submit" variant="primary" disabled={busy}>{t("common.save")}</Button>

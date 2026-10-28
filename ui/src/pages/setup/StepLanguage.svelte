@@ -66,7 +66,6 @@
   }
 </script>
 
-<p class="muted">{t("setup.language.body")}</p>
 <fieldset class="choices">
   <legend class="visually-hidden">{t("setup.language.title")}</legend>
   {#each options as option (option.value)}

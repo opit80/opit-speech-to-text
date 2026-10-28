@@ -65,7 +65,6 @@
   }
 </script>
 
-<p class="muted">{t("setup.shortcut.body")}</p>
 {#if app.hotkey.error}
   <Banner tone="warning">
     <p>{app.hotkey.error}</p>
@@ -75,7 +74,7 @@
 {#if app.config}
   <HotkeyInput keys={app.config.hotkey.keys} onchange={setKeys} />
   <Select label={t("settings.mode")} options={modeOptions} disabled={modeBusy}
-    hint={t(app.config.hotkey.mode === "toggle" ? "settings.mode_toggle_hint" : "settings.mode_ptt_hint")}
+    info={app.config.hotkey.mode === "toggle" ? t("settings.mode_toggle_hint") : undefined}
     bind:value={selectedMode, (value) => void setMode(value)} />
   {#if modeError}<Banner tone="error">{modeError}</Banner>{/if}
 {/if}

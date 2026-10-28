@@ -4,6 +4,7 @@
   import type { MessageKey } from "../i18n";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
+  import InfoTip from "./InfoTip.svelte";
 
   let step = $state<DemoStep>("cursor");
   const labels: Record<DemoStep, MessageKey> = {
@@ -23,8 +24,8 @@
 
 <section class="demo" aria-labelledby="guide-demo-title">
   <div class="demo-heading">
-    <div><p class="eyebrow">{t("guide.demo.eyebrow")}</p><h2 id="guide-demo-title">{t("guide.demo.title")}</h2></div>
-    <span class="sample-label"><Icon name="play" size={12} />{t("guide.demo.sample")}</span>
+    <h2 id="guide-demo-title">{t("guide.demo.title")}</h2>
+    <span class="sample-label"><Icon name="play" size={12} /><InfoTip text={t("guide.demo.safe")}>{t("guide.demo.sample")}</InfoTip></span>
   </div>
   <ol class="steps" aria-label={t("guide.demo.steps")}>
     {#each DEMO_STEPS as item, index (item)}
@@ -45,7 +46,6 @@
         <p class="spoken">{t("guide.demo.sentence")}</p>
       {:else if step === "process"}
         <div class="conversion"><span class="muted">{t("guide.demo.before")}</span><s>{t("guide.demo.raw_term")}</s><Icon name="wand" size={20} /><strong>{t("guide.demo.correct_term")}</strong></div>
-        <p class="muted">{t("guide.demo.rule_note")}</p>
       {:else}
         <div class="editor">
           <div class="editor-bar"><Icon name="rules" size={14} /><span>{t("guide.demo.editor")}</span></div>
@@ -56,7 +56,6 @@
     <p class="instruction" role="status" aria-live="polite">{t(bodies[step])}</p>
   </div>
   <div class="demo-footer">
-    <p class="muted">{t("guide.demo.safe")}</p>
     <Button variant="primary" onclick={() => (step = nextDemoStep(step))}><Icon name={step === "result" ? "retry" : step === "speak" ? "stop" : "play"} />{t(actions[step])}</Button>
   </div>
 </section>
@@ -64,7 +63,6 @@
 <style>
   .demo { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
   .demo-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); padding: var(--space-5); flex-wrap: wrap; }
-  .eyebrow { font-size: var(--text-sm); font-weight: 600; color: var(--accent); margin-bottom: var(--space-1); }
   h2 { font-size: var(--text-xl); }
   .sample-label { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: var(--text-sm); }
   .steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); list-style: none; padding: 0 var(--space-5) var(--space-4); margin: 0; gap: var(--space-2); }
@@ -88,8 +86,7 @@
   .conversion > span { font-size: var(--text-sm); }
   .conversion strong { color: var(--success); }
   .conversion :global(svg) { color: var(--accent); }
-  .demo-footer { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); }
-  .demo-footer p { font-size: var(--text-sm); max-width: 40ch; }
+  .demo-footer { display: flex; justify-content: flex-end; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-5); }
   .demo-footer :global(button) { flex-shrink: 0; }
   @keyframes pulse { from { transform: scaleY(0.45); } to { transform: scaleY(1); } }
   @media (max-width: 680px) { .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } .demo-footer { align-items: flex-start; flex-direction: column; } .stage, .demo-heading, .demo-footer { padding: var(--space-4); } .steps { padding-left: var(--space-4); padding-right: var(--space-4); } }

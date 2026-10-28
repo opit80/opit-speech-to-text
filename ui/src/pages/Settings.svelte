@@ -12,6 +12,7 @@
   import Field from "../lib/components/Field.svelte";
   import HotkeyInput from "../lib/components/HotkeyInput.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import InfoTip from "../lib/components/InfoTip.svelte";
   import MicLevelTest from "../lib/components/MicLevelTest.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import Select from "../lib/components/Select.svelte";
@@ -226,13 +227,13 @@
   {#if errors[field]}<p class="error" role="alert">{errors[field]}</p>{/if}
 {/snippet}
 
-{#snippet numberInput(field: string, label: string, hint: string | undefined, min: number, max: number, step: number, disabled: boolean, read: (c: AppConfig) => number, write: (c: AppConfig, n: number) => void)}
+{#snippet numberInput(field: string, label: string, info: string | undefined, min: number, max: number, step: number, disabled: boolean, read: (c: AppConfig) => number, write: (c: AppConfig, n: number) => void)}
   {#if config}
-    <Field {label} {hint} error={errors[field]}>
-      {#snippet children(id)}
+    <Field {label} {info} error={errors[field]}>
+      {#snippet children(id, describedBy)}
         <input {id} class="number" type="number" {min} {max} {step} inputmode="decimal" {disabled}
           value={numberText(field, read(config))}
-          aria-describedby={hint || errors[field] ? `${id}-description` : undefined}
+          aria-describedby={describedBy}
           onfocus={(e) => (drafts[field] = e.currentTarget.value)}
           onblur={() => (drafts[field] = null)}
           onchange={(e) => void commitNumber(field, e.currentTarget, min, max, step, read, write)} />
@@ -242,7 +243,7 @@
 {/snippet}
 
 <div>
-  <PageHeader title={t("settings.title")} description={t("settings.description")} />
+  <PageHeader title={t("settings.title")} />
   {#if config && view}
     <div class="sections">
       <details class="card settings-group" open={["language", "theme", "autostart", "start_in_tray", "sound"].some((field) => !!errors[field])}>
@@ -251,19 +252,19 @@
         <Select label={t("settings.language")} options={languageOptions} value={view.language}
           onchange={(v) => void save("language", (c) => { c.ui_language = v === "system" ? null : v; })} />
         {@render fieldError("language")}
-        <Select label={t("settings.theme")} hint={t("settings.theme_hint")} options={themeOptions} value={view.theme}
+        <Select label={t("settings.theme")} options={themeOptions} value={view.theme}
           onchange={(v) => void save("theme", (c) => { c.ui.theme = v as Theme; })} />
         {@render fieldError("theme")}
         <Switch label={t("settings.autostart")} checked={view.autostart}
           disabled={app.info?.debug_build ?? false}
-          hint={app.info?.debug_build ? t("settings.autostart_debug") : undefined}
+          info={app.info?.debug_build ? t("settings.autostart_debug") : undefined}
           onchange={(v) => void save("autostart", (c) => { c.ui.autostart = v; })} />
         {@render fieldError("autostart")}
-        <Switch label={t("settings.start_in_tray")} hint={t("settings.start_in_tray_hint")}
+        <Switch label={t("settings.start_in_tray")}
           checked={view.startInTray}
           onchange={(v) => void save("start_in_tray", (c) => { c.ui.start_in_tray = v; })} />
         {@render fieldError("start_in_tray")}
-        <Switch label={t("settings.sound")} hint={t("settings.sound_hint")} checked={view.sound}
+        <Switch label={t("settings.sound")} info={t("settings.sound_hint")} checked={view.sound}
           onchange={(v) => void save("sound", (c) => { c.ui.sound_feedback = v; })} />
         {@render fieldError("sound")}
       </div>
@@ -275,11 +276,11 @@
         <HotkeyInput keys={config.hotkey.keys}
           onchange={(keys) => save("hotkey_keys", (c) => { c.hotkey.keys = keys; })} />
         {@render fieldError("hotkey_keys")}
-        <HotkeyInput keys={config.hotkey.pause_keys} optional label={t("settings.pause_shortcut")} hint={t("settings.pause_shortcut_note")}
+        <HotkeyInput keys={config.hotkey.pause_keys} optional label={t("settings.pause_shortcut")} info={t("settings.pause_shortcut_note")}
           onchange={(keys) => save("pause_keys", (c) => { c.hotkey.pause_keys = keys; })} />
         {@render fieldError("pause_keys")}
         <Select label={t("settings.mode")} options={modeOptions} value={view.mode}
-          hint={t(config.hotkey.keys.includes("Escape") ? "guide.cancel_from_home" : config.hotkey.mode === "toggle" ? "settings.mode_toggle_hint" : "settings.mode_ptt_hint")}
+          info={config.hotkey.keys.includes("Escape") ? t("guide.cancel_from_home") : config.hotkey.mode === "toggle" ? t("settings.mode_toggle_hint") : undefined}
           onchange={(v) => void save("mode", (c) => { c.hotkey.mode = v as HotkeyMode; })} />
         {@render fieldError("mode")}
         <Switch label={t("settings.shortcut_enabled")} checked={view.hotkeyEnabled}
@@ -312,7 +313,6 @@
       <details class="card settings-group" open={["speech_floor_db", "noise_margin_db", "min_speech_seconds", "speech_reset"].some((field) => !!errors[field])}>
         <summary>{t("settings.speech_detection")}</summary>
         <div class="stack group-body">
-          <p class="muted">{t("settings.speech_detection_hint")}</p>
           {@render numberInput("speech_floor_db", t("settings.speech_floor"), t("settings.speech_floor_hint"), -90, -6, 0.01, resetBusy,
             (c) => c.recording.speech_floor_db, (c, n) => { c.recording.speech_floor_db = n; })}
           {@render numberInput("noise_margin_db", t("settings.noise_margin"), t("settings.noise_margin_hint"), 0, 30, 0.01, resetBusy,
@@ -327,7 +327,7 @@
       <details class="card settings-group" open={["restore_clipboard", "trailing_space", "overlay"].some((field) => !!errors[field])}>
         <summary>{t("settings.pasting")}</summary>
         <div class="stack group-body">
-        <Switch label={t("settings.restore_clipboard")} hint={t("settings.restore_clipboard_hint")}
+        <Switch label={t("settings.restore_clipboard")} info={t("settings.restore_clipboard_hint")}
           checked={view.restoreClipboard}
           onchange={(v) => void save("restore_clipboard", (c) => { c.paste.restore_clipboard = v; })} />
         {@render fieldError("restore_clipboard")}
@@ -349,7 +349,7 @@
         {@render numberInput("max_entries", t("settings.max_entries"), t("settings.max_entries_hint"), 0, 100000, 1,
           !config.history.enabled,
           (c) => c.history.max_entries, (c, n) => { c.history.max_entries = n; })}
-        <Switch label={t("settings.save_audio")} hint={t("settings.save_audio_hint")}
+        <Switch label={t("settings.save_audio")} info={t("settings.save_audio_hint")}
           checked={view.saveAudio} disabled={!config.history.enabled}
           onchange={(v) => void save("save_audio", (c) => { c.history.save_audio = v; })} />
         {@render fieldError("save_audio")}
@@ -360,7 +360,7 @@
       </details>
 
       <details class="card settings-group">
-        <summary>{t("ask.title")}</summary>
+        <summary><InfoTip text={t("ask.description")}>{t("ask.title")}</InfoTip></summary>
         <div class="stack group-body"><AskSettings /></div>
       </details>
 
@@ -373,7 +373,7 @@
         <summary>{t("settings.updates")}</summary>
         <div class="stack group-body">
         <Switch label={t("settings.check_updates")} checked={view.checkUpdates} disabled={debugBuild}
-          hint={debugBuild ? t("update.debug") : t("settings.check_updates_hint")}
+          info={debugBuild ? t("update.debug") : t("settings.check_updates_hint")}
           onchange={(v) => void save("check_updates", (c) => { c.ui.check_updates = v; })} />
         {@render fieldError("check_updates")}
         <p role="status">{t(updateStatus.key, updateStatus.params)}</p>
@@ -394,12 +394,12 @@
           <p>{t("settings.version", { version: app.info.version })}</p>
           <dl class="paths">
             {#each [
-              { field: "copy_data", label: t("settings.data_dir"), path: app.info.data_dir },
-              { field: "copy_log", label: t("settings.log_dir"), path: app.info.log_dir },
-              { field: "copy_cli", label: t("settings.cli_path"), path: app.info.cli_path },
+              { field: "copy_data", label: t("settings.data_dir"), info: t("settings.keys_note"), path: app.info.data_dir },
+              { field: "copy_log", label: t("settings.log_dir"), info: t("settings.logs_note"), path: app.info.log_dir },
+              { field: "copy_cli", label: t("settings.cli_path"), info: undefined, path: app.info.cli_path },
             ] as item (item.field)}
               <div>
-                <dt id={`settings-${item.field}`}>{item.label}</dt>
+                <dt><InfoTip text={item.info}><span id={`settings-${item.field}`}>{item.label}</span></InfoTip></dt>
                 <dd>
                   <code>{item.path}</code>
                   <Button variant="ghost" aria-label={t("common.copy")} title={t("common.copy")}
@@ -413,8 +413,6 @@
             {/each}
           </dl>
         {/if}
-        <p class="muted">{t("settings.keys_note")}</p>
-        <p class="muted">{t("settings.logs_note")}</p>
       </div>
       </details>
     </div>

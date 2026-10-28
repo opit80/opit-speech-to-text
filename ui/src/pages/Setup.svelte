@@ -5,6 +5,7 @@
   import { navigate } from "../lib/router.svelte";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
+  import InfoTip from "../lib/components/InfoTip.svelte";
   import StepLanguage from "./setup/StepLanguage.svelte";
   import StepCleanup from "./setup/StepCleanup.svelte";
   import StepProvider from "./setup/StepProvider.svelte";
@@ -24,14 +25,15 @@
     form: string;
   }
 
-  const STEPS: { title: MessageKey; component: Component<StepProps, object, "canNext"> }[] = [
-    { title: "setup.language.title", component: StepLanguage },
-    { title: "setup.provider.title", component: StepProvider },
+  /** `info` is shown in a tooltip on the step heading. */
+  const STEPS: { title: MessageKey; info?: MessageKey; component: Component<StepProps, object, "canNext"> }[] = [
+    { title: "setup.language.title", info: "setup.language.body", component: StepLanguage },
+    { title: "setup.provider.title", info: "setup.provider.body", component: StepProvider },
     { title: "cleanup.title", component: StepCleanup },
     { title: "setup.mic.title", component: StepMicrophone },
     { title: "setup.shortcut.title", component: StepShortcut },
-    { title: "setup.rules.title", component: StepRules },
-    { title: "setup.try.title", component: StepTry },
+    { title: "setup.rules.title", info: "setup.rules.body", component: StepRules },
+    { title: "setup.try.title", info: "setup.try.here_note", component: StepTry },
   ];
   const LAST = STEPS.length - 1;
   const FORM = "setup-step-form";
@@ -44,6 +46,7 @@
   let disposed = false;
 
   const Current = $derived(STEPS[step].component);
+  const stepInfo = $derived(STEPS[step].info);
 
   $effect(() => () => {
     disposed = true;
@@ -99,7 +102,7 @@
   </div>
 
   <section class="card stack step" aria-labelledby="setup-step-title">
-    <h2 id="setup-step-title" tabindex="-1" bind:this={heading}>{t(STEPS[step].title)}</h2>
+    <h2 tabindex="-1" bind:this={heading}><InfoTip text={stepInfo ? t(stepInfo) : undefined}><span id="setup-step-title">{t(STEPS[step].title)}</span></InfoTip></h2>
     <Current onnext={advanceFrom(step)} bind:canNext form={FORM} />
   </section>
 
@@ -136,6 +139,5 @@
   .setup :global(.choice input) { min-height: 0; margin: 3px 0 0; accent-color: var(--accent); }
   .setup :global(.choice-text) { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
   .setup :global(.choice-title) { font-size: var(--text-lg); font-weight: 600; }
-  .setup :global(.choice-hint) { color: var(--text-muted); font-size: var(--text-sm); }
   .setup :global(fieldset:disabled .choice) { opacity: 0.6; cursor: default; }
 </style>

@@ -194,7 +194,7 @@
 <svelte:window onclick={windowClick} onkeydown={windowKey} />
 
 <div>
-  <PageHeader title={t("profiles.title")} description={t("profiles.description")}>
+  <PageHeader title={t("profiles.title")}>
     {#snippet actions()}
       {#if !editing}
         <div class="add" bind:this={menu}>

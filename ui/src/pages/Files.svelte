@@ -126,8 +126,7 @@
 </script>
 
 <div class="files">
-  <PageHeader title={t("files.title")} description={t("files.description")} />
-  <p class="muted">{t("files.privacy")}</p>
+  <PageHeader title={t("files.title")} info={t("files.privacy")} />
   {#if error}<Banner tone="error">{error}</Banner>{/if}
   {#if job.error}<Banner tone="error">{errorText(job.error)}</Banner>{/if}
   {#if notice}<Banner tone="info">{notice}</Banner>{/if}
@@ -140,11 +139,11 @@
     <p class="muted">{t("files.profile", { name: activeProfile?.name ?? t("files.profile_default") })}</p>
     <fieldset disabled={running || busy}>
       <legend>{t("files.options")}</legend>
-      <Field label={t("files.language")} hint={t("files.language_hint")}>
-        {#snippet children(id)}<input {id} aria-describedby={`${id}-description`} bind:value={language} placeholder={t("files.profile_default")} maxlength="12" />{/snippet}
+      <Field label={t("files.language")} info={t("files.language_hint")}>
+        {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} bind:value={language} placeholder={t("files.profile_default")} maxlength="12" />{/snippet}
       </Field>
-      <Switch checked={cleanup} label={t("files.cleanup")} hint={t("files.cleanup_hint")} onchange={(value) => cleanup = value} />
-      {#if canSpeakers}<Switch checked={speakers} label={t("files.speakers")} hint={t("files.speakers_hint")} onchange={(value) => speakers = value} />{/if}
+      <Switch checked={cleanup} label={t("files.cleanup")} info={t("files.cleanup_hint")} onchange={(value) => cleanup = value} />
+      {#if canSpeakers}<Switch checked={speakers} label={t("files.speakers")} info={t("files.speakers_hint")} onchange={(value) => speakers = value} />{/if}
     </fieldset>
     {#if running}
       <section class="job" aria-label={t("files.progress")} aria-busy="true">

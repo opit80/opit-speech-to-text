@@ -234,18 +234,18 @@
   {/if}
 
   <Field label={t("profiles.name")} error={problemFor("name")}>
-    {#snippet children(id)}
+    {#snippet children(id, describedBy)}
       <input {id} type="text" bind:this={nameInput} bind:value={draft.name} onblur={() => touch("name")}
         autocomplete="off" aria-invalid={!!problemFor("name")}
-        aria-describedby={problemFor("name") ? `${id}-description` : undefined} />
+        aria-describedby={describedBy} />
     {/snippet}
   </Field>
 
   {#if !local}<Field label={t("profiles.base_url")} error={problemFor("base_url")}>
-    {#snippet children(id)}
+    {#snippet children(id, describedBy)}
       <input {id} type="url" class="mono" bind:value={draft.base_url} onblur={() => touch("base_url")}
         autocomplete="off" spellcheck="false" aria-invalid={!!problemFor("base_url")}
-        aria-describedby={[insecure ? `${id}-warning` : "", problemFor("base_url") ? `${id}-description` : ""].filter(Boolean).join(" ") || undefined} />
+        aria-describedby={[insecure ? `${id}-warning` : "", describedBy ?? ""].filter(Boolean).join(" ") || undefined} />
       {#if insecure}
         <p id={`${id}-warning`} class="warning"><Icon name="warning" />{t("profiles.insecure_warning")}</p>
       {/if}
@@ -253,10 +253,10 @@
   </Field>{/if}
 
   {#if local}<LocalSettings bind:model={draft.model} />{:else}<Field label={t("profiles.model")} error={problemFor("model")}>
-    {#snippet children(id)}
+    {#snippet children(id, describedBy)}
       <input {id} type="text" class="mono" bind:value={draft.model} onblur={() => touch("model")}
         autocomplete="off" spellcheck="false" aria-invalid={!!problemFor("model")}
-        aria-describedby={problemFor("model") ? `${id}-description` : undefined} />
+        aria-describedby={describedBy} />
     {/snippet}
   </Field>{/if}
 
@@ -267,24 +267,23 @@
       options={[{ value: "flac", label: "FLAC" }, { value: "wav", label: "WAV" }]}
       bind:value={() => draft.audio_format, (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
   </div>
-  <Field label={t("profiles.provider")}>
-    {#snippet children(id)}
-      <input {id} type="text" readonly value={t(local ? "profiles.preset.local" : scribe ? "profiles.provider.elevenlabs" : "profiles.provider.openai")} />
+  <Field label={t("profiles.provider")} info={scribe ? t("profiles.scribe_hint") : undefined}>
+    {#snippet children(id, describedBy)}
+      <input {id} type="text" readonly aria-describedby={describedBy} value={t(local ? "profiles.preset.local" : scribe ? "profiles.provider.elevenlabs" : "profiles.provider.openai")} />
     {/snippet}
   </Field>
-  {#if scribe}<Banner tone="info">{t("profiles.scribe_hint")}</Banner>{/if}
-  <Select label={t("profiles.response_format")} hint={t("profiles.response_format_hint")} disabled={scribe}
+  <Select label={t("profiles.response_format")} info={t("profiles.response_format_hint")} disabled={scribe}
     options={[{ value: "verbose_json", label: "verbose_json" }, { value: "json", label: "json" }]}
     bind:value={() => draft.response_format, (value) => { draft.response_format = value === "verbose_json" ? "verbose_json" : "json"; }} />
 
   {#if !scribe}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
-  {#if !local}<Switch label={t("profiles.send_keywords")} hint={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
-  <Switch label={t("cleanup.profile")} hint={t("cleanup.profile_hint")} bind:checked={draft.apply_cleanup} />
-  <Switch label={t("profiles.apply_rules")} hint={t("profiles.apply_rules_hint")} bind:checked={draft.apply_rules} />
+  {#if !local}<Switch label={t("profiles.send_keywords")} info={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
+  <Switch label={t("cleanup.profile")} bind:checked={draft.apply_cleanup} />
+  <Switch label={t("profiles.apply_rules")} bind:checked={draft.apply_rules} />
 
-  <Field label={t("profiles.fallback")} hint={t("profiles.fallback_hint")} error={problemFor("fallback_self", "fallback_missing")}>
-    {#snippet children(id)}
-      <select {id} aria-describedby={`${id}-description`} aria-invalid={!!problemFor("fallback_self", "fallback_missing")}
+  <Field label={t("profiles.fallback")} info={t("profiles.fallback_hint")} error={problemFor("fallback_self", "fallback_missing")}>
+    {#snippet children(id, describedBy)}
+      <select {id} aria-describedby={describedBy} aria-invalid={!!problemFor("fallback_self", "fallback_missing")}
         bind:value={() => draft.fallback_profile_id ?? "", (value) => { draft.fallback_profile_id = value || null; }}>
         {#each fallbackOptions as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
       </select>
@@ -296,10 +295,10 @@
     <Switch label={t("profiles.needs_key")} bind:checked={() => needsKey, setNeedsKey} />
     {#if needsKey}
       <Field label={t("profiles.key")} error={keyError}>
-        {#snippet children(id)}
+        {#snippet children(id, describedBy)}
           <input {id} type="password" autocomplete="off" spellcheck="false" bind:value={keyInput}
             placeholder={storedKey ? t("profiles.key_stored") : t("profiles.key_paste")}
-            aria-invalid={!!keyError} aria-describedby={keyError ? `${id}-description` : undefined} />
+            aria-invalid={!!keyError} aria-describedby={describedBy} />
         {/snippet}
       </Field>
       {#if storedKey}

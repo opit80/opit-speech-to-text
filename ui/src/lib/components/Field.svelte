@@ -1,33 +1,29 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import InfoTip from "./InfoTip.svelte";
 
   interface Props {
     label: string;
-    hint?: string;
+    /** Extra information, shown in a tooltip on the label. */
+    info?: string | null;
     error?: string | null;
     id?: string;
-    /** Set the control's id and use `${id}-description` for aria-describedby when hint/error exists. */
-    children: Snippet<[string]>;
+    /** Receives the control's id and the value for its aria-describedby (info and error, if any). */
+    children: Snippet<[string, string | undefined]>;
   }
   const generatedId = $props.id();
-  let { label, hint, error, id = generatedId, children }: Props = $props();
+  let { label, info, error, id = generatedId, children }: Props = $props();
+  const describedBy = $derived([info ? `${id}-info` : "", error ? `${id}-error` : ""].filter(Boolean).join(" ") || undefined);
 </script>
 
 <div class="field">
-  <label for={id}>{label}</label>
-  {@render children(id)}
-  {#if hint || error}
-    <div id={`${id}-description`} class="description">
-      {#if hint}<p class="hint">{hint}</p>{/if}
-      {#if error}<p class="error" role="alert">{error}</p>{/if}
-    </div>
-  {/if}
+  <InfoTip text={info} id={`${id}-info`}><label for={id}>{label}</label></InfoTip>
+  {@render children(id, describedBy)}
+  {#if error}<p id={`${id}-error`} class="error" role="alert">{error}</p>{/if}
 </div>
 
 <style>
   .field { display: flex; flex-direction: column; gap: var(--space-1); }
   label { font-weight: 600; }
-  .description { display: flex; flex-direction: column; gap: var(--space-1); font-size: var(--text-sm); }
-  .hint { color: var(--text-muted); }
-  .error { color: var(--danger); }
+  .error { color: var(--danger); font-size: var(--text-sm); }
 </style>

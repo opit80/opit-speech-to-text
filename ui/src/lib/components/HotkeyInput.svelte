@@ -6,16 +6,18 @@
   import type { MessageKey } from "../i18n";
   import Button from "./Button.svelte";
   import Field from "./Field.svelte";
+  import InfoTip from "./InfoTip.svelte";
   import Select from "./Select.svelte";
 
   interface Props {
     keys: string[];
     label?: string;
-    hint?: string;
+    /** Tooltip text on the label; the main shortcut's note by default. */
+    info?: string;
     optional?: boolean;
     onchange: (keys: string[]) => void | Promise<void>;
   }
-  let { keys, onchange, label, hint, optional = false }: Props = $props();
+  let { keys, onchange, label, info, optional = false }: Props = $props();
 
   const DEFAULT_KEYS = ["RightCtrl", "RightShift"];
   const PROBLEM_KEYS: Record<ComboProblem, MessageKey> = {
@@ -154,12 +156,12 @@
   });
 </script>
 
-<Field label={label ?? t("settings.shortcut")} hint={hint ?? t("settings.shortcut_note")} {error}>
-  {#snippet children(id)}
+<Field label={label ?? t("settings.shortcut")} info={info ?? t("settings.shortcut_note")} {error}>
+  {#snippet children(id, describedBy)}
     <div class="row">
       <input {id} bind:this={box} class="combo" class:capturing readonly
         value={capturing ? t("settings.press_keys") : formatCombo(keys, app.lang)}
-        aria-describedby={`${id}-description`}
+        aria-describedby={describedBy}
         onkeydown={keydown} onkeyup={keyup} onblur={stopCapture} />
       <Button busy={starting || checking || saving} onclick={() => void startCapture()}>
         {t("settings.change")}
@@ -170,8 +172,7 @@
   {/snippet}
 </Field>
 <details>
-  <summary>{t("settings.select_keys")}</summary>
-  <p class="key-note muted">{t("settings.shortcut_details")}</p>
+  <summary><InfoTip text={t("settings.shortcut_details")}>{t("settings.select_keys")}</InfoTip></summary>
   <div class="picker"><Select label={t("settings.key_choice")} options={keyOptions} bind:value={chosenKey} disabled={saving || checking} /><Button disabled={saving || checking} onclick={() => { if (!selectedKeys.includes(chosenKey)) selectedKeys = [...selectedKeys, chosenKey]; }}>{t("settings.add_key")}</Button></div>
   <div class="picker">
     {#each selectedKeys as key (key)}<Button variant="ghost" disabled={saving || checking} aria-label={t("settings.remove_key", { key: formatCombo([key], app.lang) })} onclick={() => { selectedKeys = selectedKeys.filter((item) => item !== key); }}>{formatCombo([key], app.lang)} ×</Button>{/each}
@@ -184,5 +185,4 @@
   .combo.capturing { border-color: var(--accent); font-weight: 400; color: var(--text-muted); }
   summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); }
   .picker { display: flex; align-items: flex-end; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
-  .key-note { font-size: var(--text-sm); margin-top: var(--space-2); max-width: 65ch; }
 </style>

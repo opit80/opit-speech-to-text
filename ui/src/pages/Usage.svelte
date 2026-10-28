@@ -9,6 +9,7 @@
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import InfoTip from "../lib/components/InfoTip.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import Select from "../lib/components/Select.svelte";
 
@@ -49,7 +50,7 @@
 </script>
 
 <div class="usage">
-  <PageHeader title={t("usage.title")} description={t("usage.description")} />
+  <PageHeader title={t("usage.title")} info={t("usage.retained_note")} />
   <div class="toolbar"><Select label={t("usage.period")} value={period} {options} onchange={(v) => { period = v as UsagePeriod; void load(); }} /><Button busy={busy} onclick={() => void load()}><Icon name="retry" />{t("settings.refresh")}</Button></div>
   {#if !app.config?.history.enabled}<Banner tone="info">{t("usage.history_off")} <a href="#/settings">{t("guide.open_settings")}</a></Banner>{/if}
   {#if error}<Banner tone="error">{error}</Banner>{/if}
@@ -58,13 +59,12 @@
     {:else if stats && stats.dictations > 0}
       <dl class="metrics">
         <div><dt>{t("usage.dictations")}</dt><dd>{formatNumber(stats.dictations, app.lang)}</dd><p>{t("usage.successful", { count: formatNumber(stats.successful, app.lang) })}</p></div>
-        <div><dt>{t("usage.duration")}</dt><dd class="mono">{formatClock(stats.audio_ms)}</dd><p>{t("usage.duration_hint")}</p></div>
-        <div><dt>{t("usage.characters")}</dt><dd>{formatNumber(stats.characters, app.lang)}</dd><p>{t("usage.characters_hint")}</p></div>
-        <div><dt>{t("usage.latency")}</dt><dd>{stats.successful ? formatMilliseconds(stats.average_latency_ms, app.lang) : t("usage.no_result")}</dd><p>{t("usage.latency_hint")}</p></div>
+        <div><dt>{t("usage.duration")}</dt><dd class="mono">{formatClock(stats.audio_ms)}</dd></div>
+        <div><dt><InfoTip text={t("usage.characters_hint")}>{t("usage.characters")}</InfoTip></dt><dd>{formatNumber(stats.characters, app.lang)}</dd></div>
+        <div><dt><InfoTip text={t("usage.latency_hint")}>{t("usage.latency")}</InfoTip></dt><dd>{stats.successful ? formatMilliseconds(stats.average_latency_ms, app.lang) : t("usage.no_result")}</dd></div>
       </dl>
     {:else if stats}<div class="empty"><Icon name="mic" size={28} /><h2>{t("usage.empty_title")}</h2><p class="muted">{t("usage.empty_body")}</p><a href="#/guide">{t("nav.guide")}</a></div>{/if}
   </section>
-  <p class="note muted">{t("usage.retained_note")}</p>
 </div>
 
 <style>
@@ -77,7 +77,7 @@
   .metrics > div:nth-last-child(-n+2) { border-bottom: 0; }
   dt { color: var(--text-muted); }
   dd { font-size: var(--text-2xl); font-weight: 600; margin: var(--space-2) 0; }
-  .metrics p, .note { font-size: var(--text-sm); color: var(--text-muted); }
+  .metrics p { font-size: var(--text-sm); color: var(--text-muted); }
   a { color: var(--accent); text-underline-offset: 3px; }
   .empty { display: flex; flex-direction: column; align-items: center; gap: var(--space-3); text-align: center; padding: var(--space-6); border: 1px solid var(--border); border-radius: var(--radius); }
   .empty :global(svg) { color: var(--accent); }

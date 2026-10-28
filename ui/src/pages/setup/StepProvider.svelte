@@ -29,12 +29,12 @@
     openai: "https://platform.openai.com/api-keys",
     elevenlabs: "https://elevenlabs.io/app/settings/api-keys",
   };
-  const CHOICES: { value: Choice; title: MessageKey; hint: MessageKey }[] = [
-    { value: "groq", title: "profiles.preset.groq", hint: "setup.provider.groq_hint" },
-    { value: "openai", title: "profiles.preset.openai", hint: "setup.provider.openai_hint" },
-    { value: "elevenlabs", title: "profiles.preset.elevenlabs", hint: "setup.provider.elevenlabs_hint" },
-    { value: "local", title: "profiles.preset.local", hint: "local.hint" },
-    { value: "custom", title: "profiles.preset.custom", hint: "setup.provider.custom_hint" },
+  const CHOICES: { value: Choice; title: MessageKey }[] = [
+    { value: "groq", title: "profiles.preset.groq" },
+    { value: "openai", title: "profiles.preset.openai" },
+    { value: "elevenlabs", title: "profiles.preset.elevenlabs" },
+    { value: "local", title: "profiles.preset.local" },
+    { value: "custom", title: "profiles.preset.custom" },
   ];
   const PROBLEM_KEYS: Record<FieldProblem, MessageKey> = {
     name: "profiles.problem.name",
@@ -251,8 +251,6 @@
   }
 </script>
 
-<p class="muted">{t("setup.provider.body")}</p>
-
 {#if presetsError}
   <Banner tone="error">
     {presetsError}
@@ -265,10 +263,7 @@
   {#each CHOICES as item (item.value)}
     <label class="choice">
       <input type="radio" name="setup-provider" value={item.value} bind:group={choice} onchange={choose} />
-      <span class="choice-text">
-        <span class="choice-title">{t(item.title)}</span>
-        <span class="choice-hint">{t(item.hint)}</span>
-      </span>
+      <span class="choice-text"><span class="choice-title">{t(item.title)}</span></span>
     </label>
   {/each}
 </fieldset>
@@ -277,24 +272,24 @@
 {#if choice === "custom"}
   <div class="stack custom">
     <Field label={t("profiles.name")} error={problemFor("name")}>
-      {#snippet children(id)}
+      {#snippet children(id, describedBy)}
         <input {id} type="text" bind:value={name} disabled={saving} autocomplete="off"
           onblur={() => (touched.name = true)} aria-invalid={!!problemFor("name")}
-          aria-describedby={problemFor("name") ? `${id}-description` : undefined} />
+          aria-describedby={describedBy} />
       {/snippet}
     </Field>
     <Field label={t("profiles.base_url")} error={problemFor("base_url")}>
-      {#snippet children(id)}
+      {#snippet children(id, describedBy)}
         <input {id} type="url" class="mono" bind:value={baseUrl} disabled={saving} autocomplete="off"
           spellcheck="false" onblur={() => (touched.base_url = true)} aria-invalid={!!problemFor("base_url")}
-          aria-describedby={problemFor("base_url") ? `${id}-description` : undefined} />
+          aria-describedby={describedBy} />
       {/snippet}
     </Field>
     <Field label={t("profiles.model")} error={problemFor("model")}>
-      {#snippet children(id)}
+      {#snippet children(id, describedBy)}
         <input {id} type="text" class="mono" bind:value={model} disabled={saving} autocomplete="off"
           spellcheck="false" onblur={() => (touched.model = true)} aria-invalid={!!problemFor("model")}
-          aria-describedby={problemFor("model") ? `${id}-description` : undefined} />
+          aria-describedby={describedBy} />
       {/snippet}
     </Field>
     <Switch label={t("profiles.needs_key")} disabled={saving} bind:checked={() => needsKey, setNeedsKey} />
@@ -314,10 +309,10 @@
   {/if}
   {#if storedKey}<Banner tone="info">{t("setup.provider.key_stored")}</Banner>{/if}
   <Field label={t("profiles.key")} error={keyError}>
-    {#snippet children(id)}
+    {#snippet children(id, describedBy)}
       <input {id} type="password" autocomplete="off" spellcheck="false" bind:value={keyInput} disabled={saving}
         placeholder={storedKey ? t("profiles.key_stored") : t("profiles.key_paste")}
-        aria-invalid={!!keyError} aria-describedby={keyError ? `${id}-description` : undefined} />
+        aria-invalid={!!keyError} aria-describedby={describedBy} />
     {/snippet}
   </Field>
 {/if}

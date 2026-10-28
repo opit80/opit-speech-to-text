@@ -98,7 +98,6 @@
 </div>
 {#if saveError}<Banner tone="error">{saveError}</Banner>{/if}
 {#if micsError}<Banner tone="error">{micsError}</Banner>{/if}
-<p class="muted">{t("setup.mic.body")}</p>
 <MicLevelTest device={app.config?.recording.microphone ?? null} />
 <form id={form} onsubmit={submit}></form>
 

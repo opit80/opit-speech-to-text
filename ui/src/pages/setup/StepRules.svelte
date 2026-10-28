@@ -119,8 +119,6 @@
   }
 </script>
 
-<p class="muted">{t("setup.rules.body")}</p>
-
 <fieldset class="packs" aria-busy={packsBusy || configBusy}>
   <legend>{t("rules.packs")}</legend>
   {#if packsError}
@@ -131,30 +129,22 @@
   {/if}
   {#if packsBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
   {#each packs as pack (pack.id)}
-    <label class="pack">
-      <input type="checkbox" disabled={configBusy || !app.config}
-        aria-describedby={`setup-pack-${pack.id}`}
-        bind:checked={() => packChecked(pack.id), (checked) => void togglePack(pack.id, checked)} />
-      <span class="pack-text">
-        <span>{pack.name}</span>
-        <span id={`setup-pack-${pack.id}`} class="hint">
-          {t("rules.pack_counts", { terms: pack.terms, corrections: pack.corrections, replacements: pack.replacements })}
-        </span>
-      </span>
-    </label>
+    <Switch label={pack.name} info={t("rules.pack_counts", { terms: pack.terms, corrections: pack.corrections, replacements: pack.replacements })}
+      disabled={configBusy || !app.config}
+      bind:checked={() => packChecked(pack.id), (checked) => void togglePack(pack.id, checked)} />
   {/each}
   {#if packsSaveError}<Banner tone="error">{packsSaveError}</Banner>{/if}
 </fieldset>
 
-<Field label={`${t("rules.context")} (${t("common.optional")})`} hint={t("rules.context_hint")} error={contextError}>
-  {#snippet children(id)}
+<Field label={`${t("rules.context")} (${t("common.optional")})`} info={t("rules.context_hint")} error={contextError}>
+  {#snippet children(id, describedBy)}
     <textarea {id} rows="2" bind:value={contextText} disabled={configBusy || !app.config}
-      onchange={() => void saveContext()} aria-invalid={!!contextError} aria-describedby={`${id}-description`}></textarea>
+      onchange={() => void saveContext()} aria-invalid={!!contextError} aria-describedby={describedBy}></textarea>
   {/snippet}
 </Field>
 
 <Switch label={t("settings.autostart")} disabled={debugBuild || configBusy || !app.config}
-  hint={debugBuild ? t("settings.autostart_debug") : undefined}
+  info={debugBuild ? t("settings.autostart_debug") : undefined}
   bind:checked={autostartChecked, (on) => void setAutostart(on)} />
 {#if autostartError}<Banner tone="error">{autostartError}</Banner>{/if}
 <form id={form} onsubmit={submit}></form>
@@ -162,9 +152,5 @@
 <style>
   .packs { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; border: 0; min-width: 0; }
   legend { font-weight: 600; padding: 0; margin-bottom: var(--space-2); }
-  .pack { display: flex; align-items: flex-start; gap: var(--space-3); cursor: pointer; }
-  .pack input { min-height: 0; margin: 3px 0 0; accent-color: var(--accent); }
-  .pack-text { display: flex; flex-direction: column; gap: var(--space-1); }
-  .hint { color: var(--text-muted); font-size: var(--text-sm); }
   textarea { width: 100%; }
 </style>

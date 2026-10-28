@@ -106,8 +106,6 @@
   }
 </script>
 
-<p class="muted">{t("cleanup.description")}</p>
-<p class="muted">{t("cleanup.privacy")}</p>
 {#if !loaded}
   <p class="muted" role="status">{t("common.loading")}</p>
   {#if error}<Banner tone="error">{error}<Button onclick={() => void load()}>{t("common.reload")}</Button></Banner>{/if}
@@ -115,7 +113,7 @@
 {#if draft && loaded}
   <form id={formId} class="stack" onsubmit={(e) => { e.preventDefault(); void save(); }}>
     <fieldset class="stack" disabled={busy}>
-      <Switch label={t("cleanup.enable")} bind:checked={draft.enabled} />
+      <Switch label={t("cleanup.enable")} info={t("cleanup.privacy")} bind:checked={draft.enabled} />
       <Select label={t("cleanup.preset")} value={selected} {options} onchange={choose} />
       {#if keyUrl}<p class="muted selectable">{t("cleanup.key_page", { url: keyUrl })}</p>{/if}
       <Field label={t("profiles.base_url")}>
@@ -127,16 +125,16 @@
       <Switch label={t("profiles.needs_key")} checked={draft.api_key_ref !== null}
         onchange={(on) => { draft.api_key_ref = on ? presets.find((p) => p.id === selected)?.config.api_key_ref ?? "cleanup-custom" : null; keyInput = ""; }} />
       {#if draft.api_key_ref !== null}
-        <Field label={t("profiles.key")} hint={t("cleanup.key_hint")}>
+        <Field label={t("profiles.key")}>
           {#snippet children(id)}<input {id} type="password" autocomplete="off" spellcheck="false" bind:value={keyInput}
-            placeholder={storedKey ? t("profiles.key_stored") : t("profiles.key_paste")} aria-describedby={`${id}-description`} />{/snippet}
+            placeholder={storedKey ? t("profiles.key_stored") : t("profiles.key_paste")} />{/snippet}
         </Field>
       {/if}
       <Field label={t("cleanup.timeout")}>
         {#snippet children(id)}<input {id} type="number" min="1" max="120" step="1" bind:value={draft.timeout_seconds} required />{/snippet}
       </Field>
-      <Field label={t("cleanup.reasoning")} hint={t("cleanup.reasoning_hint")}>
-        {#snippet children(id)}<input {id} value={draft.reasoning_effort ?? ""} aria-describedby={`${id}-description`}
+      <Field label={t("cleanup.reasoning")} info={t("cleanup.reasoning_hint")}>
+        {#snippet children(id, describedBy)}<input {id} value={draft.reasoning_effort ?? ""} aria-describedby={describedBy}
           onchange={(e) => { if (draft) draft.reasoning_effort = e.currentTarget.value.trim() || null; }} />{/snippet}
       </Field>
       <details>
@@ -144,11 +142,11 @@
         <div class="stack prompt-fields">
           <Select label={t("cleanup.prompt_language")} bind:value={promptLanguage}
             options={[{ value: "tr", label: t("cleanup.turkish") }, { value: "en", label: t("cleanup.other_languages") }]} />
-          <Field label={t("cleanup.builtin_prompt")} hint={t("cleanup.language_hint")}>
-            {#snippet children(id)}<textarea {id} readonly rows="8" value={prompts?.[promptLanguage] ?? ""} aria-describedby={`${id}-description`}></textarea>{/snippet}
+          <Field label={t("cleanup.builtin_prompt")} info={t("cleanup.language_hint")}>
+            {#snippet children(id, describedBy)}<textarea {id} readonly rows="8" value={prompts?.[promptLanguage] ?? ""} aria-describedby={describedBy}></textarea>{/snippet}
           </Field>
-          <Field label={t("cleanup.override")} hint={t("cleanup.override_hint")}>
-            {#snippet children(id)}<textarea {id} rows="5" bind:value={draft.prompt_override} aria-describedby={`${id}-description`}></textarea>{/snippet}
+          <Field label={t("cleanup.override")} info={t("cleanup.override_hint")}>
+            {#snippet children(id, describedBy)}<textarea {id} rows="5" bind:value={draft.prompt_override} aria-describedby={describedBy}></textarea>{/snippet}
           </Field>
           <Button onclick={() => { if (draft) draft.prompt_override = ""; }}>{t("cleanup.restore")}</Button>
         </div>

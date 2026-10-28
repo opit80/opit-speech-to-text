@@ -48,7 +48,7 @@ describe("message tables", () => {
     for (const table of [tr, en]) for (const [key, value] of Object.entries(table)) {
       expect(value, key).not.toMatch(corruption);
     }
-    expect(tr["ask.description"]).toContain("isteğe bağlı bir özelliğidir");
+    expect(tr["ask.description"]).toContain("ajanın yanıtını yapıştırın");
     expect(tr["ask.permission_warning"]).toContain("Çalışma dizinine erişim");
     expect(en["ask.description"]).toContain("agent’s answer");
     expect(en["ask.history_agent"]).toBe("Ask · {agent}");

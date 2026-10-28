@@ -115,15 +115,12 @@
   <div role="status"><StatusBadge status={app.status} /></div>
 </div>
 
-<div class="stack">
-  <div class="row">
-    <Button busy={actionBusy} disabled={busyState} onclick={() => void toggle()}>
-      {#if busyState}{t("home.working")}
-      {:else if app.status.state === "recording"}<Icon name="stop" />{t("home.stop")}
-      {:else}<Icon name="mic" />{t("setup.try.here")}{/if}
-    </Button>
-  </div>
-  <p class="muted note">{t("setup.try.here_note")}</p>
+<div class="row">
+  <Button busy={actionBusy} disabled={busyState} onclick={() => void toggle()}>
+    {#if busyState}{t("home.working")}
+    {:else if app.status.state === "recording"}<Icon name="stop" />{t("home.stop")}
+    {:else}<Icon name="mic" />{t("setup.try.here")}{/if}
+  </Button>
 </div>
 
 {#if actionError}<Banner tone="error">{actionError}</Banner>{/if}
@@ -148,7 +145,6 @@
 <form id={form} onsubmit={submit}></form>
 
 <style>
-  .note { font-size: var(--text-sm); }
   .result { padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
   .worked { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--success); font-weight: 600; }
   .transcript { overflow-wrap: anywhere; white-space: pre-wrap; }

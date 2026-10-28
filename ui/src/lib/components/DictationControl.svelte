@@ -5,6 +5,7 @@
   import type { DictationState, DictationStatus, HotkeyMode } from "../types";
   import Button from "./Button.svelte";
   import Icon from "./Icon.svelte";
+  import InfoTip from "./InfoTip.svelte";
   import StatusBadge from "./StatusBadge.svelte";
 
   interface Props {
@@ -27,7 +28,6 @@
     idle: "home.control.ready_title", recording: "home.control.recording_title", transcribing: "home.control.processing_title",
     asking: "status.asking", cleaning: "status.cleaning", pasting: "status.pasting", cancelled: "status.cancelled", error: "status.error",
   };
-  const bodyKey = $derived(recording ? "home.control.recording_body" : working ? "home.control.processing_body" : "home.control.ready_body");
   const actionKey = $derived(busy ? "home.working" : recording ? "home.stop" : "home.start");
   const wave = [10, 16, 24, 12, 30, 20, 34, 18, 26, 14, 22, 10];
 </script>
@@ -45,10 +45,10 @@
       </Button>
     </div>
     <div class="copy">
-      <h2 id="record-title">{t(status.paused ? "status.paused" : titles[status.state])}</h2>
+      <h2><InfoTip text={status.state === "idle" && !status.paused ? t("home.control.ready_body") : undefined}><span id="record-title">{t(status.paused ? "status.paused" : titles[status.state])}</span></InfoTip></h2>
       {#if status.retry_wait}
         <p role="status">{t(`error.kind.${status.retry_wait.kind}`)} — {t("dictation.retry_wait", status.retry_wait)}</p>
-      {:else}<p>{t(bodyKey)}</p>{/if}
+      {/if}
       {#if recording}
         <div class="wave" class:paused={status.paused} aria-hidden="true">{#each wave as height, i}<span style:height={`${height}px`} style:animation-delay={`${i * -0.11}s`}></span>{/each}</div>
       {:else if profileName}<span class="provider"><Icon name="profiles" size={12} />{t("home.control.provider", { name: profileName })}</span>{/if}

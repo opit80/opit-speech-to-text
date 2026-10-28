@@ -3,6 +3,7 @@
   import type { Replacement, RulePack } from "../lib/types";
   import Button from "../lib/components/Button.svelte";
   import Field from "../lib/components/Field.svelte";
+  import InfoTip from "../lib/components/InfoTip.svelte";
 
   interface Props { pack: RulePack; onchange: (pack: RulePack) => void; }
   let { pack, onchange }: Props = $props();
@@ -116,8 +117,7 @@
   </section>
 
   <section class="stack" aria-label={t("rules.hallucinations")}>
-    <h3>{t("rules.hallucinations")}</h3>
-    <p class="muted hint">{t("rules.hallucinations_hint")}</p>
+    <h3><InfoTip text={t("rules.hallucinations_hint")}>{t("rules.hallucinations")}</InfoTip></h3>
     {#each hallucinations as row (row.id)}
       <div class="edit-row">
         <Field label={t("rules.hallucinations")}>
@@ -134,7 +134,6 @@
   .table-sections { display: flex; flex-direction: column; gap: var(--space-5); }
   section + section { border-top: 1px solid var(--border); padding-top: var(--space-4); }
   h3 { font-size: var(--text-md); }
-  .hint { font-size: var(--text-sm); }
   .edit-row { display: flex; align-items: flex-end; gap: var(--space-2); flex-wrap: wrap; }
   .edit-row :global(.field) { flex: 1 1 160px; min-width: 0; }
   input[type="text"] { width: 100%; }

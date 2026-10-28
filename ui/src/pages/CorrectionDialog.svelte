@@ -126,15 +126,15 @@
 
 <Dialog bind:open title={t("correction.title")}>
   <div class="stack">
-    <Field label={t("correction.wrong")} hint={t("correction.hint")}>
-      {#snippet children(id)}
-        <input {id} type="text" bind:value={wrong} disabled={saveBusy} aria-describedby={`${id}-description`} />
+    <Field label={t("correction.wrong")} info={t("correction.hint")}>
+      {#snippet children(id, describedBy)}
+        <input {id} type="text" bind:value={wrong} disabled={saveBusy} aria-describedby={describedBy} />
       {/snippet}
     </Field>
     <Field label={t("correction.right")} error={previewError}>
-      {#snippet children(id)}
+      {#snippet children(id, describedBy)}
         <input {id} type="text" bind:this={correctInput} bind:value={correct} disabled={saveBusy}
-          aria-invalid={!!previewError} aria-describedby={previewError ? `${id}-description` : undefined} />
+          aria-invalid={!!previewError} aria-describedby={describedBy} />
       {/snippet}
     </Field>
     {#if previewBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}

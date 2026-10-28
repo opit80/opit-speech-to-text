@@ -74,11 +74,10 @@
 </script>
 
 <section class="stack" aria-label={t("profiles.preset.local")}>
-  <p class="muted">{t("local.hint")}</p>
   <p role="status">{t(status)}</p>
   {#if error}<Banner tone="error">{error}</Banner>{/if}
   {#if config}
-    <Select label={t("local.model")} value={model} disabled={busy || !!snapshot?.progress}
+    <Select label={t("local.model")} info={t("local.hint")} value={model} disabled={busy || !!snapshot?.progress}
       options={(snapshot?.models ?? []).map((m) => ({ value: m.id, label: `${m.id.replace(/^ggml-/, "").replace(/\.bin$/, "")} · ${size(m.size)}${m.id === snapshot?.recommended ? ` · ${t("local.recommended")}` : ""}` }))}
       onchange={(value) => { model = value; }} />
     <div class="row">
@@ -100,16 +99,16 @@
     <details>
       <summary>{t("local.advanced")}</summary>
       <div class="stack advanced">
-        <Field label={t("local.threads")} hint={t("local.threads_hint")}>
-          {#snippet children(id)}<input {id} type="number" min="0" max="65535" value={config.threads} onchange={(e) => saveNumber("threads", e.currentTarget.value)} />{/snippet}
+        <Field label={t("local.threads")} info={t("local.threads_hint")}>
+          {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} type="number" min="0" max="65535" value={config.threads} onchange={(e) => saveNumber("threads", e.currentTarget.value)} />{/snippet}
         </Field>
-        <Switch label={t("local.gpu")} hint={t("local.gpu_hint")} checked={config.gpu} onchange={(value) => void update("gpu", value)} />
-        <Field label={t("local.idle")} hint={t("local.idle_hint")}>
-          {#snippet children(id)}<input {id} type="number" min="0" max="65535" value={config.idle_minutes} onchange={(e) => saveNumber("idle_minutes", e.currentTarget.value)} />{/snippet}
+        <Switch label={t("local.gpu")} info={t("local.gpu_hint")} checked={config.gpu} onchange={(value) => void update("gpu", value)} />
+        <Field label={t("local.idle")} info={t("local.idle_hint")}>
+          {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} type="number" min="0" max="65535" value={config.idle_minutes} onchange={(e) => saveNumber("idle_minutes", e.currentTarget.value)} />{/snippet}
         </Field>
         <Switch label={t("local.preload")} checked={config.preload} onchange={(value) => void update("preload", value)} />
-        <Field label={t("local.folder")} hint={t("local.folder_hint")}>
-          {#snippet children(id)}<input {id} type="text" bind:value={folder} spellcheck="false" />{/snippet}
+        <Field label={t("local.folder")} info={t("local.folder_hint")}>
+          {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} type="text" bind:value={folder} spellcheck="false" />{/snippet}
         </Field>
         <Button disabled={busy || !!snapshot?.progress} onclick={() => void update("models_folder", folder.trim() || null)}>{t("local.save_folder")}</Button>
         {#if snapshot}<p class="muted path">{snapshot.folder}</p>{/if}

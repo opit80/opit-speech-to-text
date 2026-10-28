@@ -10,6 +10,7 @@
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import Field from "../lib/components/Field.svelte";
+  import InfoTip from "../lib/components/InfoTip.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import Switch from "../lib/components/Switch.svelte";
   import RulesTable from "./RulesTable.svelte";
@@ -291,22 +292,22 @@
 </script>
 
 <div>
-  <PageHeader title={t("rules.title")} description={t("rules.description")} />
+  <PageHeader title={t("rules.title")} />
   <div class="rules-sections">
     <section class="card stack">
-      <Switch label={t("rules.numbers")} hint={t("rules.numbers_hint")} checked={numbersView.checked}
+      <Switch label={t("rules.numbers")} info={t("rules.numbers_hint")} checked={numbersView.checked}
         disabled={configBusy || !app.config} onchange={(checked) => void setNumbers(checked)} />
       {#if numbersError}<Banner tone="error">{numbersError}</Banner>{/if}
     </section>
     <section class="card stack" aria-labelledby="rules-packs" aria-busy={packsBusy || configBusy}>
       <h2 id="rules-packs">{t("rules.packs")}</h2>
-      <div class="personal-row"><p>{t("rules.personal")}</p><p class="muted hint">{t("rules.personal_hint")}</p></div>
+      <p class="personal-row"><InfoTip text={t("rules.personal_hint")}>{t("rules.personal")}</InfoTip></p>
       {#if packsError}
         <Banner tone="error">{packsError}{#snippet action()}<Button busy={packsBusy} onclick={() => void loadPacks()}>{t("common.reload")}</Button>{/snippet}</Banner>
       {/if}
       {#if packsBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
       {#each packs as pack (pack.id)}
-        <Switch label={pack.name} hint={t("rules.pack_counts", { terms: pack.terms, corrections: pack.corrections, replacements: pack.replacements })}
+        <Switch label={pack.name} info={t("rules.pack_counts", { terms: pack.terms, corrections: pack.corrections, replacements: pack.replacements })}
           bind:checked={() => packChecked(pack.id), (checked) => void togglePack(pack.id, checked)}
           disabled={packsBusy || configBusy || !app.config} />
       {/each}
@@ -316,9 +317,9 @@
     <section class="card stack" aria-labelledby="rules-try">
       <h2 id="rules-try">{t("rules.try")}</h2>
       <Field label={t("rules.try_input")} error={previewError}>
-        {#snippet children(id)}
+        {#snippet children(id, describedBy)}
           <textarea {id} rows="3" bind:value={tryText} aria-invalid={!!previewError}
-            aria-describedby={previewError ? `${id}-description` : undefined}></textarea>
+            aria-describedby={describedBy}></textarea>
         {/snippet}
       </Field>
       <div class="stack" aria-live="polite" aria-busy={previewBusy}>
@@ -340,10 +341,10 @@
     <details class="card advanced" open={!!contextError || !!budgetError}>
       <summary>{t("rules.advanced_prompt")}</summary>
       <div class="stack advanced-body">
-      <Field label={t("rules.context")} hint={t("rules.context_hint")} error={contextError}>
-        {#snippet children(id)}
+      <Field label={t("rules.context")} info={t("rules.context_hint")} error={contextError}>
+        {#snippet children(id, describedBy)}
           <textarea {id} rows="2" bind:value={contextText} disabled={configBusy || !app.config} onchange={() => void saveContext()}
-            aria-invalid={!!contextError} aria-describedby={`${id}-description`}></textarea>
+            aria-invalid={!!contextError} aria-describedby={describedBy}></textarea>
         {/snippet}
       </Field>
       <div class="stack" aria-busy={budgetBusy}>
@@ -387,10 +388,10 @@
       </div>
       <div id="rules-panel-yaml" role="tabpanel" aria-labelledby="rules-tab-yaml" hidden={tab !== "yaml"}>
         <Field label={t("rules.tab_yaml")} error={editorError}>
-          {#snippet children(id)}
+          {#snippet children(id, describedBy)}
             <textarea {id} class="mono" rows="18" spellcheck="false" bind:value={yamlText} disabled={editorLocked}
               oninput={() => { editorError = null; warnings = []; }} aria-invalid={!!editorError}
-              aria-describedby={editorError ? `${id}-description` : undefined}></textarea>
+              aria-describedby={describedBy}></textarea>
           {/snippet}
         </Field>
       </div>
