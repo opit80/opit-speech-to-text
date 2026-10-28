@@ -166,6 +166,14 @@ impl Lang {
         self.pick("Cleaning text…", "Metin düzenleniyor…")
     }
 
+    pub fn cleaning_skippable(self) -> &'static str {
+        self.pick("Cleaning text… Esc to skip", "Metin düzenleniyor… Atlamak için Esc")
+    }
+
+    pub fn answer_truncated(self) -> &'static str {
+        self.pick("The model ran out of answer tokens", "Modelin yanıt token sınırına ulaşıldı")
+    }
+
     pub fn cleanup_failed(self, error: opit_core::cleanup::CleanupError, clipboard_only: bool) -> String {
         use opit_core::cleanup::CleanupError::*;
         let reason = match error {
@@ -175,6 +183,7 @@ impl Lang {
             Timeout => self.error(ErrorKind::Timeout),
             Rejected => self.error(ErrorKind::Rejected),
             BadResponse => self.error(ErrorKind::BadResponse),
+            Truncated => self.answer_truncated(),
         };
         let destination = if clipboard_only {
             self.pick("Original text on clipboard", "Özgün metin panoda")
@@ -372,6 +381,8 @@ mod tests {
             ("listening", lang.listening().into()),
             ("listening_default_mic", lang.listening_default_mic().into()),
             ("cleaning", lang.cleaning().into()),
+            ("cleaning_skippable", lang.cleaning_skippable().into()),
+            ("answer_truncated", lang.answer_truncated().into()),
             ("transcribing", lang.transcribing().into()),
             ("pasted", lang.pasted(1.25)),
             ("clipboard_only", lang.clipboard_only().into()),
@@ -424,6 +435,7 @@ mod tests {
             CleanupError::Timeout,
             CleanupError::Rejected,
             CleanupError::BadResponse,
+            CleanupError::Truncated,
         ] {
             for clipboard_only in [false, true] {
                 out.push(("cleanup_failed", lang.cleanup_failed(error, clipboard_only)));

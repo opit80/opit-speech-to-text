@@ -120,12 +120,31 @@ pub async fn edit(
     instruction: &str,
     language: &str,
 ) -> Result<String, CleanupError> {
-    let answer = client.complete_mode(&edit_messages(selection, instruction, language)).await?;
+    edit_with_stats(client, selection, instruction, language, &crate::cleanup::CleanupStats::default()).await
+}
+
+pub async fn edit_with_stats(
+    client: &CleanupClient,
+    selection: Option<&str>,
+    instruction: &str,
+    language: &str,
+    stats: &crate::cleanup::CleanupStats,
+) -> Result<String, CleanupError> {
+    let answer = client.complete_mode_with_stats(&edit_messages(selection, instruction, language), stats).await?;
     strip_mode_answer(&answer, selection)
 }
 
 pub async fn translate(client: &CleanupClient, text: &str, target: &str) -> Result<String, CleanupError> {
-    let answer = client.complete_mode(&translation_messages(text, target)?).await?;
+    translate_with_stats(client, text, target, &crate::cleanup::CleanupStats::default()).await
+}
+
+pub async fn translate_with_stats(
+    client: &CleanupClient,
+    text: &str,
+    target: &str,
+    stats: &crate::cleanup::CleanupStats,
+) -> Result<String, CleanupError> {
+    let answer = client.complete_mode_with_stats(&translation_messages(text, target)?, stats).await?;
     strip_mode_answer(&answer, Some(text))
 }
 

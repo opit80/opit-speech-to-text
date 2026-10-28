@@ -16,6 +16,43 @@ use crate::settings::{Settings, SettingsHandle};
 
 use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 
+#[test]
+fn cleanup_log_records_one_safe_metadata_line_for_every_outcome() {
+    #[derive(Clone)]
+    struct Writer(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    for (outcome, error, kind) in [
+        ("ok", None, "None"),
+        ("skipped", None, "Cancelled"),
+        ("failed", Some(CleanupError::Timeout), "Timeout"),
+        ("failed", Some(CleanupError::Truncated), "Truncated"),
+    ] {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let writer = Writer(bytes.clone());
+        let subscriber =
+            tracing_subscriber::fmt().without_time().with_ansi(false).with_writer(move || writer.clone()).finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let mut log = CleanupLog::new(42, "test-model".into());
+            if outcome != "skipped" {
+                log.finished(error);
+            }
+        });
+        let text = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert_eq!(text.lines().count(), 1);
+        for field in ["session=42", "attempts=0", "elapsed_ms=", "model=test-model", kind, outcome] {
+            assert!(text.contains(field), "missing {field}");
+        }
+    }
+}
+
 // ---------- scripted providers ----------
 #[path = "live_tests.rs"]
 mod live_tests;
@@ -1031,7 +1068,7 @@ async fn cleanup_failure_pastes_rules_applied_text_and_warns() {
 }
 
 #[tokio::test]
-async fn cleanup_success_is_saved_and_escape_during_cleanup_never_pastes() {
+async fn cleanup_success_is_saved_and_escape_during_cleanup_pastes_rules_applied_input() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
     for cancel in [false, true] {
@@ -1050,25 +1087,177 @@ async fn cleanup_success_is_saved_and_escape_during_cleanup_never_pastes() {
         config.cleanup.base_url = server.uri();
         config.cleanup.api_key_ref = None;
         let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
-        let mut h = harness(config);
+        let mut h = harness(config.clone());
+        let pack =
+            opit_core::rules::RulePack::from_yaml("schema: 1\nid: user\nname: Personal\nterms: [Today]\n").unwrap();
+        h.settings.replace(Settings::build(config, Some(pack), Some("en-US")).0);
         *h.providers.cleanup.lock().unwrap() = Some(client);
         h.script("groq", vec![Ok("um today today we have a meeting")]);
-        h.send(Msg::Toggle);
+        h.hotkey(HotkeyEvent::ComboDown);
         h.expect(&[Recording]).await;
-        h.send(Msg::Toggle);
+        h.hotkey(HotkeyEvent::ComboDown);
         h.expect(&[Transcribing, DictationState::Cleaning]).await;
+        assert!(h.overlay.last().text.contains("Esc to skip"));
         if cancel {
             h.hotkey(HotkeyEvent::Escape);
+            h.expect(&[Transcribing, Pasting, Idle]).await;
+            assert_eq!(h.paster.texts(), ["um Today Today we have a meeting "]);
+            assert_eq!(h.history.entries()[0].cleanup_status, Some(cleanup::CleanupStatus::Skipped));
+            assert_eq!(*h.paster.policies.lock().unwrap(), [true]);
+            assert!(h.overlay.last().tone != Tone::Warning);
+            // A later Escape still cancels an ordinary recording.
+            h.send(Msg::Toggle);
+            h.expect(&[Recording]).await;
+            h.hotkey(HotkeyEvent::Escape);
             h.expect(&[Cancelled, Idle]).await;
-            tokio::time::sleep(Duration::from_millis(550)).await;
-            assert!(h.paster.texts().is_empty());
-            assert!(h.history.entries().is_empty());
         } else {
             h.expect(&[Pasting, Idle]).await;
             assert_eq!(h.paster.texts(), ["Today we have a meeting. "]);
             assert_eq!(h.history.entries()[0].cleanup_status, Some(cleanup::CleanupStatus::Ok));
             assert_eq!(h.history.entries()[0].raw_text, "um today today we have a meeting");
         }
+        h.send(Msg::Shutdown);
+    }
+}
+
+#[tokio::test]
+async fn escape_after_cleanup_completion_overrides_success_and_failure_before_delivery() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    for failed in [false, true] {
+        for retry in [false, true] {
+            let server = MockServer::start().await;
+            let response = if failed {
+                ResponseTemplate::new(500)
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{"message": {"content": "Today we have a meeting."}, "finish_reason": "stop"}]
+                }))
+            };
+            Mock::given(method("POST")).respond_with(response).expect(1).mount(&server).await;
+            let mut config = AppConfig::default();
+            config.cleanup.enabled = true;
+            config.cleanup.base_url = server.uri();
+            config.cleanup.api_key_ref = None;
+            let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+            let gate = Arc::new(TranscriptionDeliveryGate { completed: Semaphore::new(0), deliver: Semaphore::new(0) });
+            let mut h = harness_with_delivery_gate(config.clone(), Some(gate.clone()));
+            let pack =
+                opit_core::rules::RulePack::from_yaml("schema: 1\nid: user\nname: Personal\nterms: [Today]\n").unwrap();
+            h.settings.replace(Settings::build(config, Some(pack), Some("en-US")).0);
+            *h.providers.cleanup.lock().unwrap() = Some(client);
+            if retry {
+                // Seed a failed row using the production failure-persistence path.
+                h.script("groq", vec![Err(ProviderError::Unauthorized(401))]);
+                h.send(Msg::Toggle);
+                h.expect(&[Recording]).await;
+                h.send(Msg::Toggle);
+                h.expect(&[Transcribing]).await;
+                gate.wait_until_completed().await;
+                gate.deliver.add_permits(1);
+                h.expect_error(ErrorKind::InvalidKey).await;
+                assert_eq!(h.history.entries().len(), 1);
+            }
+            h.script("groq", vec![Ok("um today today we have a meeting")]);
+            let reply = if retry {
+                let (reply, received) = oneshot::channel();
+                let audio = Arc::new(PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 });
+                h.send(Msg::RetryHistory { id: 1, audio, reply });
+                Some(received)
+            } else {
+                h.hotkey(HotkeyEvent::ComboDown);
+                h.expect(&[Recording]).await;
+                h.hotkey(HotkeyEvent::ComboDown);
+                None
+            };
+            h.expect(&[Transcribing, DictationState::Cleaning]).await;
+            gate.wait_until_completed().await;
+            // The result is complete and held outside the controller inbox.
+            // Escape must win even though the worker cannot observe it anymore.
+            h.hotkey(HotkeyEvent::Escape);
+            h.expect(&[Transcribing]).await;
+            gate.deliver.add_permits(1);
+            h.expect(&[Pasting, Idle]).await;
+            if let Some(reply) = reply {
+                assert!(reply.await.unwrap().is_ok());
+            }
+            assert_eq!(h.paster.texts(), ["um Today Today we have a meeting "]);
+            let entries = h.history.entries();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].text, "um Today Today we have a meeting");
+            assert_eq!(entries[0].raw_text, "um today today we have a meeting");
+            assert_eq!(entries[0].cleanup_status, Some(cleanup::CleanupStatus::Skipped));
+            if retry {
+                assert_eq!(h.overlay.last().text, Lang::En.clipboard_only());
+            } else {
+                assert_ne!(h.overlay.last().tone, Tone::Warning);
+            }
+            h.send(Msg::Shutdown);
+        }
+    }
+}
+
+#[tokio::test]
+async fn second_escape_after_skipping_cleanup_cancels_the_pending_dictation() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)))
+        .mount(&server)
+        .await;
+    let mut config = AppConfig::default();
+    config.cleanup.enabled = true;
+    config.cleanup.base_url = server.uri();
+    config.cleanup.api_key_ref = None;
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    h.script("groq", vec![Ok("three input words")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::Toggle);
+    h.expect(&[Transcribing, DictationState::Cleaning]).await;
+    // Both messages are queued before the worker can publish the skipped result.
+    h.hotkey(HotkeyEvent::Escape);
+    h.hotkey(HotkeyEvent::Escape);
+    h.expect(&[Transcribing, Cancelled, Idle]).await;
+    h.settle().await;
+    assert!(h.paster.texts().is_empty());
+    assert!(h.history.entries().is_empty());
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn escape_during_voice_modes_or_ask_cleanup_still_cancels_fully() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    for event in [HotkeyEvent::Edit, HotkeyEvent::Translate, HotkeyEvent::Ask] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)))
+            .mount(&server)
+            .await;
+        let mut config = AppConfig::default();
+        config.cleanup.enabled = true;
+        config.ask.cleanup_request = true;
+        config.cleanup.base_url = server.uri();
+        config.cleanup.api_key_ref = None;
+        let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+        let mut h = harness(config);
+        *h.providers.cleanup.lock().unwrap() = Some(client);
+        h.script("groq", vec![Ok("three input words")]);
+        h.hotkey(event.clone());
+        h.wait_for(|s| s.state == Recording).await;
+        h.hotkey(event);
+        h.expect(&[Transcribing, DictationState::Cleaning]).await;
+        assert!(!h.overlay.last().text.contains("Esc to skip"));
+        h.hotkey(HotkeyEvent::Escape);
+        h.expect(&[Cancelled, Idle]).await;
+        h.settle().await;
+        assert!(h.paster.texts().is_empty());
+        assert!(h.history.entries().is_empty());
+        h.send(Msg::Shutdown);
     }
 }
 
@@ -1093,6 +1282,25 @@ async fn disabled_cleanup_is_skipped_on_retry_and_by_profile() {
 }
 
 fn harness(config: AppConfig) -> Harness {
+    harness_with_delivery_gate(config, None)
+}
+
+struct TranscriptionDeliveryGate {
+    completed: Semaphore,
+    deliver: Semaphore,
+}
+
+impl TranscriptionDeliveryGate {
+    async fn wait_until_completed(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.completed.acquire())
+            .await
+            .expect("transcription did not complete")
+            .unwrap()
+            .forget();
+    }
+}
+
+fn harness_with_delivery_gate(config: AppConfig, gate: Option<Arc<TranscriptionDeliveryGate>>) -> Harness {
     let (tx, states) = mpsc::unbounded_channel();
     let providers = Arc::new(ProviderState::new());
     let settings = SettingsHandle::new(settings(config));
@@ -1109,6 +1317,28 @@ fn harness(config: AppConfig) -> Harness {
     let (overlay, sounds, history) =
         (Arc::<FakeOverlay>::default(), Arc::<FakeSounds>::default(), Arc::<FakeHistory>::default());
     let (handle, inbox) = channel();
+    let inbox = if let Some(gate) = gate {
+        let (forward, forwarded) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut inbox = inbox.0;
+            while let Some(msg) = inbox.recv().await {
+                if matches!(msg, Msg::Transcribed { .. }) {
+                    let gate = gate.clone();
+                    let forward = forward.clone();
+                    tokio::spawn(async move {
+                        gate.completed.add_permits(1);
+                        gate.deliver.acquire().await.unwrap().forget();
+                        let _ = forward.send(msg);
+                    });
+                } else if forward.send(msg).is_err() {
+                    break;
+                }
+            }
+        });
+        Inbox(forwarded)
+    } else {
+        inbox
+    };
     let media = Arc::new(FakeMedia::default());
     let foreground = Arc::new(FakeForegroundApp::default());
     tokio::spawn(run(

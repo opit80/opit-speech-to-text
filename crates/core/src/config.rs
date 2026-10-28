@@ -48,6 +48,7 @@ pub struct AppConfig {
     pub learning: crate::learning::LearningConfig,
     pub rules: RulesConfig,
     pub ask: crate::ask::AskConfig,
+    #[serde(default = "crate::cleanup::legacy_config")]
     pub cleanup: crate::cleanup::CleanupConfig,
     pub translate: crate::voice_modes::TranslateConfig,
     pub app_rules: crate::app_rules::AppRulesConfig,
@@ -444,6 +445,19 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn new_cleanup_timeout_preserves_legacy_and_explicit_config_values() {
+        assert_eq!(AppConfig::default().cleanup.timeout_seconds, 8);
+        for json in [r#"{}"#, r#"{"cleanup":{}}"#] {
+            assert_eq!(AppConfig::from_json(json).unwrap().cleanup.timeout_seconds, 15);
+        }
+        for seconds in [1, 8, 15, 30, 120] {
+            let json = format!(r#"{{"cleanup":{{"timeout_seconds":{seconds}}}}}"#);
+            let config = AppConfig::from_json(&json).unwrap();
+            assert_eq!(config.cleanup.timeout_seconds, seconds);
+            assert_eq!(AppConfig::from_json(&config.to_json()).unwrap().cleanup.timeout_seconds, seconds);
+        }
+    }
     #[test]
     fn voice_modes_default_off_normalize_languages_and_validate_all_shortcuts() {
         let old = AppConfig::from_json("{}").unwrap();

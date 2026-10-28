@@ -1,5 +1,6 @@
 //! Optional text editing over the OpenAI-compatible chat API. No transcript-bearing errors.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,7 @@ pub struct CleanupConfig {
     pub prompt_override: String,
     pub styles: Vec<CleanupStyle>,
     pub active_style_id: String,
+    #[serde(default = "legacy_timeout_seconds")]
     pub timeout_seconds: u32,
     pub reasoning_effort: Option<String>,
 }
@@ -39,10 +41,19 @@ impl Default for CleanupConfig {
             prompt_override: String::new(),
             styles: styles::builtin_styles(),
             active_style_id: "clean".into(),
-            timeout_seconds: 15,
+            timeout_seconds: 8,
             reasoning_effort: None,
         }
     }
+}
+
+fn legacy_timeout_seconds() -> u32 {
+    15
+}
+
+/// Preserve the effective timeout when loading configs written before this field existed.
+pub(crate) fn legacy_config() -> CleanupConfig {
+    CleanupConfig { timeout_seconds: legacy_timeout_seconds(), ..CleanupConfig::default() }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,6 +158,8 @@ pub enum CleanupError {
     Rejected,
     #[error("cleanup returned an invalid answer")]
     BadResponse,
+    #[error("the model ran out of answer tokens")]
+    Truncated,
 }
 
 /// Detected language wins, then the successful profile, then the resolved UI language.
@@ -222,6 +235,18 @@ pub struct CleanupClient {
     key: Option<String>,
 }
 
+/// Per-operation metadata; never contains request or response material.
+#[derive(Default)]
+pub struct CleanupStats {
+    attempts: AtomicU32,
+}
+
+impl CleanupStats {
+    pub fn attempts(&self) -> u32 {
+        self.attempts.load(Ordering::Relaxed)
+    }
+}
+
 fn network_error(error: reqwest::Error) -> CleanupError {
     if error.is_timeout() { CleanupError::Timeout } else { CleanupError::Network }
 }
@@ -243,18 +268,27 @@ impl CleanupClient {
         if config.api_key_ref.is_some() && key.is_none() {
             return Err(CleanupError::MissingKey);
         }
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(u64::from(config.timeout_seconds.clamp(1, 3600))))
-            .build()
-            .map_err(network_error)?;
+        let client = Self::http_client()?;
         Ok(Self { client, config, key })
     }
 
+    fn http_client() -> Result<reqwest::Client, CleanupError> {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .connect_timeout(Duration::from_secs(3))
+            .pool_idle_timeout(Duration::from_secs(10))
+            .build()
+            .map_err(network_error)
+    }
+
     fn request(&self, suffix: &str) -> reqwest::RequestBuilder {
+        self.request_with(&self.client, suffix)
+    }
+
+    fn request_with(&self, client: &reqwest::Client, suffix: &str) -> reqwest::RequestBuilder {
         let url = format!("{}/{}", self.config.base_url.trim().trim_end_matches('/'), suffix);
-        let request = if suffix == "models" { self.client.get(url) } else { self.client.post(url) };
+        let request = if suffix == "models" { client.get(url) } else { client.post(url) };
         match &self.key {
             Some(key) => request.bearer_auth(key),
             None => request,
@@ -262,45 +296,135 @@ impl CleanupClient {
     }
 
     pub async fn warm_up(&self) {
-        if let Ok(response) = self.request("models").timeout(Duration::from_secs(3)).send().await {
-            let _ = response.bytes().await;
-        }
+        let _ = tokio::time::timeout(Duration::from_secs(3), async {
+            if let Ok(response) = self.request("models").send().await {
+                let _ = response.bytes().await;
+            }
+        })
+        .await;
     }
 
     pub async fn clean(&self, text: &str, system: &str) -> Result<String, CleanupError> {
+        self.clean_with_stats(text, system, &CleanupStats::default()).await
+    }
+
+    fn output_budget(&self, input_len: usize) -> usize {
+        let base = input_len.saturating_mul(2).saturating_add(128).max(2048);
+        let headroom = if self.reasoning_effort().is_some() { 4096 } else { 0 };
+        base.saturating_add(headroom).min(16384)
+    }
+
+    fn reasoning_effort(&self) -> Option<&str> {
+        self.config.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    pub async fn clean_with_stats(
+        &self,
+        text: &str,
+        system: &str,
+        stats: &CleanupStats,
+    ) -> Result<String, CleanupError> {
         let mut body = serde_json::json!({
             "model": self.config.model, "temperature": 0,
-            "max_tokens": (text.len().saturating_mul(2) + 128).clamp(256, 16384),
+            "max_tokens": self.output_budget(text.len()),
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": text}],
         });
-        if let Some(effort) = self.config.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(effort) = self.reasoning_effort() {
             body["reasoning_effort"] = effort.into();
         }
-        let answer = self.send_chat(body).await?;
+        let answer = self.send_chat(body, stats).await?;
         strip_answer(&answer, text)
     }
 
     /// Shared transport for Ask conversations. Answers are not edited or shortened.
     pub async fn complete(&self, messages: &[ChatMessage]) -> Result<String, CleanupError> {
-        self.send_chat(serde_json::json!({
-            "model": self.config.model, "temperature": 0, "max_tokens": 4096, "messages": messages,
-        }))
+        self.send_chat(
+            serde_json::json!({
+                "model": self.config.model, "temperature": 0, "max_tokens": 4096, "messages": messages,
+            }),
+            &CleanupStats::default(),
+        )
         .await
     }
 
     /// Voice modes share connection, timeout and reasoning settings, without cleanup's length ratio.
     pub async fn complete_mode(&self, messages: &[ChatMessage]) -> Result<String, CleanupError> {
+        self.complete_mode_with_stats(messages, &CleanupStats::default()).await
+    }
+
+    pub async fn complete_mode_with_stats(
+        &self,
+        messages: &[ChatMessage],
+        stats: &CleanupStats,
+    ) -> Result<String, CleanupError> {
+        // Keep voice generation's larger existing allowance, including reasoning headroom.
         let mut body = serde_json::json!({
             "model": self.config.model, "temperature": 0, "max_tokens": 16384, "messages": messages,
         });
-        if let Some(effort) = self.config.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(effort) = self.reasoning_effort() {
             body["reasoning_effort"] = effort.into();
         }
-        self.send_chat(body).await
+        self.send_chat(body, stats).await
     }
 
-    async fn send_chat(&self, body: serde_json::Value) -> Result<String, CleanupError> {
-        let mut response = self.request("chat/completions").json(&body).send().await.map_err(network_error)?;
+    async fn send_chat(&self, body: serde_json::Value, stats: &CleanupStats) -> Result<String, CleanupError> {
+        let total = Duration::from_secs(u64::from(self.config.timeout_seconds.clamp(1, 3600)));
+        let deadline = tokio::time::Instant::now() + total;
+        tokio::time::timeout_at(deadline, self.send_hedged(&body, stats, total))
+            .await
+            .unwrap_or(Err(CleanupError::Timeout))
+    }
+
+    async fn send_hedged(
+        &self,
+        body: &serde_json::Value,
+        stats: &CleanupStats,
+        total: Duration,
+    ) -> Result<String, CleanupError> {
+        stats.attempts.fetch_add(1, Ordering::Relaxed);
+        let first = self.send_once(&self.client, body);
+        tokio::pin!(first);
+        // Budgets below two seconds cannot fit a one-second hedge point and a
+        // one-second response window. They use one attempt, even on connection errors.
+        if total < Duration::from_secs(2) {
+            return first.await;
+        }
+        let first_error = tokio::select! {
+            biased;
+            result = &mut first => match result {
+                Err(error @ (CleanupError::Timeout | CleanupError::Network)) => Some(error),
+                result => return result,
+            },
+            _ = tokio::time::sleep(total / 2) => None,
+        };
+        // A separate client owns a new pool. Keep the original request alive:
+        // slow healthy servers must still be allowed their full response budget.
+        let fresh = match Self::http_client() {
+            Ok(client) => client,
+            Err(error) => return if first_error.is_some() { Err(error) } else { first.await },
+        };
+        stats.attempts.fetch_add(1, Ordering::Relaxed);
+        let second = self.send_once(&fresh, body);
+        tokio::pin!(second);
+        if first_error.is_some() {
+            return second.await;
+        }
+        tokio::select! {
+            biased;
+            result = &mut first => match result {
+                Ok(answer) => Ok(answer),
+                Err(_) => second.await,
+            },
+            result = &mut second => match result {
+                Ok(answer) => Ok(answer),
+                Err(_) => first.await,
+            },
+        }
+    }
+
+    async fn send_once(&self, client: &reqwest::Client, body: &serde_json::Value) -> Result<String, CleanupError> {
+        let mut response =
+            self.request_with(client, "chat/completions").json(body).send().await.map_err(network_error)?;
         match response.status().as_u16() {
             200..=299 => {}
             401 | 403 => return Err(CleanupError::InvalidKey),
@@ -317,7 +441,7 @@ impl CleanupClient {
         }
         #[derive(Deserialize)]
         struct Message {
-            content: String,
+            content: Option<String>,
         }
         // Never include JSON errors: they can quote transcript or server text.
         let mut bytes = Vec::new();
@@ -329,10 +453,13 @@ impl CleanupClient {
         }
         let reply: Reply = serde_json::from_slice(&bytes).map_err(|_| CleanupError::BadResponse)?;
         let choice = reply.choices.first().ok_or(CleanupError::BadResponse)?;
+        if choice.finish_reason.as_deref() == Some("length") {
+            return Err(CleanupError::Truncated);
+        }
         if choice.finish_reason.as_deref().is_some_and(|s| s != "stop") {
             return Err(CleanupError::BadResponse);
         }
-        let answer = choice.message.content.trim();
+        let answer = choice.message.content.as_deref().unwrap_or_default().trim();
         if answer.is_empty() {
             return Err(CleanupError::BadResponse);
         }
@@ -356,9 +483,20 @@ pub async fn apply(
     rules: &RuleSet,
     apply_rules: bool,
 ) {
+    apply_with_stats(transcript, client, system, rules, apply_rules, &CleanupStats::default()).await;
+}
+
+pub async fn apply_with_stats(
+    transcript: &mut Transcript,
+    client: Result<&CleanupClient, CleanupError>,
+    system: &str,
+    rules: &RuleSet,
+    apply_rules: bool,
+    stats: &CleanupStats,
+) {
     let started = Instant::now();
     let result = match client {
-        Ok(client) => client.clean(&transcript.text, system).await,
+        Ok(client) => client.clean_with_stats(&transcript.text, system, stats).await,
         Err(error) => Err(error),
     };
     match result {

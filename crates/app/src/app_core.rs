@@ -109,7 +109,7 @@ impl From<opit_core::cleanup::CleanupError> for CommandError {
             Network => ErrorKind::Network,
             Timeout => ErrorKind::Timeout,
             Rejected => ErrorKind::Rejected,
-            BadResponse => ErrorKind::BadResponse,
+            BadResponse | Truncated => ErrorKind::BadResponse,
         };
         Self { code: "cleanup", message: error.to_string(), kind: Some(kind) }
     }

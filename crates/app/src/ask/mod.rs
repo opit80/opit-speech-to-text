@@ -144,7 +144,7 @@ fn chat_error(error: CleanupError) -> ErrorKind {
         CleanupError::Timeout => ErrorKind::Timeout,
         CleanupError::Network => ErrorKind::Network,
         CleanupError::Rejected => ErrorKind::Rejected,
-        CleanupError::BadResponse => ErrorKind::BadResponse,
+        CleanupError::BadResponse | CleanupError::Truncated => ErrorKind::BadResponse,
     }
 }
 

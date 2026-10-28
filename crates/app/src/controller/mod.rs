@@ -201,6 +201,13 @@ pub enum Msg {
         session: u64,
         audio: Option<Arc<PreparedAudio>>,
         result: Result<Transcript, PipelineError>,
+        /// Rules-applied text, retained until the controller accepts cleanup.
+        cleanup_input: Option<String>,
+    },
+    RetrySaved {
+        session: u64,
+        audio: Option<Arc<PreparedAudio>>,
+        result: Result<Transcript, PipelineError>,
     },
     Pasted {
         session: u64,
@@ -529,6 +536,48 @@ fn effective_style(settings: &Settings) -> CleanupStyle {
     settings.config.cleanup.active_style()
 }
 
+/// Logs safe metadata even when the worker is aborted during cleanup.
+struct CleanupLog {
+    session: u64,
+    model: String,
+    started: Instant,
+    stats: cleanup::CleanupStats,
+    outcome: &'static str,
+    error: Option<CleanupError>,
+}
+
+impl CleanupLog {
+    fn new(session: u64, model: String) -> Self {
+        Self {
+            session,
+            model,
+            started: Instant::now(),
+            stats: cleanup::CleanupStats::default(),
+            outcome: "skipped",
+            error: None,
+        }
+    }
+
+    fn finished(&mut self, error: Option<CleanupError>) {
+        self.error = error;
+        self.outcome = if error.is_some() { "failed" } else { "ok" };
+    }
+}
+
+impl Drop for CleanupLog {
+    fn drop(&mut self) {
+        let error_kind = self
+            .error
+            .map(|e| format!("{e:?}"))
+            .unwrap_or_else(|| if self.outcome == "skipped" { "Cancelled" } else { "None" }.into());
+        info!(
+            session = self.session, outcome = self.outcome, error_kind,
+            attempts = self.stats.attempts(), elapsed_ms = self.started.elapsed().as_millis() as u64,
+            model = %self.model, "cleanup finished"
+        );
+    }
+}
+
 enum Phase {
     Idle,
     /// The microphone was lost; the audio captured so far is being prepared so it can be kept
@@ -766,7 +815,10 @@ impl<P: Providers> Controller<P> {
                 }
             }
             Msg::Salvaged { session, result } => self.on_salvaged(session, result),
-            Msg::Transcribed { session, audio, result } => self.on_transcribed(session, audio, result),
+            Msg::Transcribed { session, audio, result, cleanup_input } => {
+                self.on_transcribed(session, audio, result, cleanup_input)
+            }
+            Msg::RetrySaved { session, audio, result } => self.finish_transcription(session, audio, result),
             Msg::Pasted { session, outcome } => self.on_pasted(session, outcome),
             Msg::HoldForUpdate(reply) => {
                 let idle = self.is_idle();
@@ -1383,6 +1435,7 @@ impl<P: Providers> Controller<P> {
         let (cancel, cancel_rx) = watch::channel(false);
         let worker = tokio::spawn(async move {
             let tx = worker_tx;
+            let mut cleanup_input = None;
             let (audio, mut result) = match input {
                 Input::Text(text) => (
                     None,
@@ -1413,7 +1466,12 @@ impl<P: Providers> Controller<P> {
                             match prepare_off_thread(recording, task_settings.config.recording.clone()).await {
                                 Ok(audio) => Arc::new(audio),
                                 Err(err) => {
-                                    let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
+                                    let _ = tx.send(Msg::Transcribed {
+                                        session,
+                                        audio: None,
+                                        result: Err(err),
+                                        cleanup_input: None,
+                                    });
                                     return;
                                 }
                             }
@@ -1471,6 +1529,7 @@ impl<P: Providers> Controller<P> {
                         if cleanup::eligible(transcript, config, profile)
                             || (is_ask && transcript.status == TranscriptStatus::Ok && !transcript.text.is_empty())
                         {
+                            let mut log = CleanupLog::new(session, config.model.clone());
                             let _ = tx.send(Msg::Cleaning { session });
                             let ui_language = if task_settings.lang == Lang::Tr { "tr" } else { "en" };
                             let language = cleanup::prompt_language(
@@ -1485,14 +1544,33 @@ impl<P: Providers> Controller<P> {
                                 &task_settings.config.rules.prompt_context,
                             );
                             transcript.cleanup_model = Some(config.model.clone());
+                            if !is_ask {
+                                cleanup_input = Some(transcript.text.clone());
+                            }
                             let provider = providers.clone();
                             let client_config = config.clone();
-                            let client = tokio::task::spawn_blocking(move || provider.cleanup_client(&client_config))
-                                .await
-                                .unwrap_or(Err(CleanupError::Rejected));
-                            let client = client.as_ref().map(Arc::as_ref).map_err(|error| *error);
-                            cleanup::apply(transcript, client, &system, &task_settings.rules, profile.apply_rules)
-                                .await;
+                            let mut skip = cancel_rx.clone();
+                            let skipped = tokio::select! {
+                                biased;
+                                _ = skip.wait_for(|cancelled| *cancelled), if !is_ask => true,
+                                _ = async {
+                                    let client = tokio::task::spawn_blocking(move || provider.cleanup_client(&client_config))
+                                        .await
+                                        .unwrap_or(Err(CleanupError::Rejected));
+                                    let client = client.as_ref().map(Arc::as_ref).map_err(|error| *error);
+                                    cleanup::apply_with_stats(
+                                        transcript, client, &system, &task_settings.rules, profile.apply_rules, &log.stats,
+                                    ).await;
+                                } => false,
+                            };
+                            if skipped {
+                                // Pipeline rules are already applied; dropping the cleanup future preserves them.
+                                transcript.cleanup_status = Some(cleanup::CleanupStatus::Skipped);
+                                transcript.cleanup_error = None;
+                                transcript.request_ms += log.started.elapsed().as_millis() as u64;
+                            } else {
+                                log.finished(transcript.cleanup_error);
+                            }
                         }
                     }
                     (Some(audio), result)
@@ -1514,25 +1592,36 @@ impl<P: Providers> Controller<P> {
                     if task_settings.lang == Lang::Tr { "tr" } else { "en" },
                 );
                 let timer = Instant::now();
+                let mut log = CleanupLog::new(
+                    session,
+                    opit_core::voice_modes::connection_config(
+                        &task_settings.config.cleanup,
+                        (voice.mode == VoiceMode::Translate).then_some(&task_settings.config.translate),
+                    )
+                    .model,
+                );
                 let answer = match voice.mode {
                     VoiceMode::Edit => {
-                        opit_core::voice_modes::edit(
+                        opit_core::voice_modes::edit_with_stats(
                             &voice.client,
                             voice.selection.as_deref(),
                             &transcript.text,
                             language,
+                            &log.stats,
                         )
                         .await
                     }
                     VoiceMode::Translate => {
-                        opit_core::voice_modes::translate(
+                        opit_core::voice_modes::translate_with_stats(
                             &voice.client,
                             &transcript.text,
                             &task_settings.config.translate.target_language,
+                            &log.stats,
                         )
                         .await
                     }
                 };
+                log.finished(answer.as_ref().err().copied());
                 transcript.request_ms += timer.elapsed().as_millis() as u64;
                 transcript.cleanup_model = Some(
                     opit_core::voice_modes::connection_config(
@@ -1587,8 +1676,7 @@ impl<P: Providers> Controller<P> {
                     }
                 }
             }
-            if !is_ask && task_settings.config.history.enabled && (is_voice || result.is_err() || history_id.is_some())
-            {
+            if !is_ask && task_settings.config.history.enabled && (is_voice || result.is_err()) {
                 let audio = audio.clone().expect("speech retry has prepared audio");
                 let saved = save_transcription(
                     history,
@@ -1612,13 +1700,13 @@ impl<P: Providers> Controller<P> {
                     }
                 }
             }
-            let _ = tx.send(Msg::Transcribed { session, audio, result });
+            let _ = tx.send(Msg::Transcribed { session, audio, result, cleanup_input });
         });
         let task = worker.abort_handle();
         tokio::spawn(async move {
             if worker.await.is_err() {
                 let result = Err(PipelineError::Encode(EncodeError("transcription worker stopped".into())));
-                let _ = tx.send(Msg::Transcribed { session, audio: None, result });
+                let _ = tx.send(Msg::Transcribed { session, audio: None, result, cleanup_input: None });
             }
         });
         self.phase = Phase::Transcribing { session, job, task, cancel, progress: None, cleaning: false, asking: false };
@@ -1669,6 +1757,9 @@ impl<P: Providers> Controller<P> {
         let text = match &self.phase {
             Phase::Transcribing { asking: true, job, .. } => {
                 job.settings.lang.asking(job.settings.config.ask.agent.name(), job.started.elapsed().as_secs())
+            }
+            Phase::Transcribing { cleaning: true, job, .. } if job.voice.is_none() && !job.ask => {
+                lang.cleaning_skippable().into()
             }
             Phase::Transcribing { cleaning: true, .. } => lang.cleaning().into(),
             Phase::Transcribing { progress: Some(progress), .. } => lang.retry_wait(*progress),
@@ -1754,6 +1845,65 @@ impl<P: Providers> Controller<P> {
         &mut self,
         session: u64,
         audio: Option<Arc<PreparedAudio>>,
+        mut result: Result<Transcript, PipelineError>,
+        cleanup_input: Option<String>,
+    ) {
+        let Phase::Transcribing { session: current, job, cancel, cleaning, task, .. } = &mut self.phase else {
+            return;
+        };
+        if *current != session {
+            return;
+        }
+        // Escape may have been queued after the worker finished cleanup. Accept
+        // its decision here, before either history persistence or paste starts.
+        if !job.ask
+            && job.voice.is_none()
+            && *cancel.borrow()
+            && let (Ok(transcript), Some(input)) = (&mut result, cleanup_input)
+        {
+            transcript.text = input;
+            transcript.cleanup_status = Some(cleanup::CleanupStatus::Skipped);
+            transcript.cleanup_error = None;
+        }
+        if job.history_id.is_some() && job.settings.config.history.enabled && result.is_ok() {
+            let history = self.env.history.clone();
+            let settings = job.settings.clone();
+            let history_id = job.history_id;
+            let elapsed = job.started.elapsed();
+            let context = HistoryContext { style_id: job.cleanup_style.id.clone(), voice: job.voice.clone() };
+            let tx = self.tx.clone();
+            *cleaning = false;
+            // Successful history retries are saved only after cleanup acceptance.
+            // The controller remains responsive while persistence runs off-thread.
+            *task = tokio::spawn(async move {
+                let saved = save_transcription(
+                    history,
+                    settings,
+                    history_id,
+                    audio.clone().expect("history retry has audio"),
+                    result.clone(),
+                    elapsed,
+                    context,
+                )
+                .await;
+                if let Ok(id) = saved {
+                    let _ = tx.send(Msg::HistoryStored(id));
+                } else {
+                    warn!("history write failed");
+                    result = Err(PipelineError::Encode(EncodeError("history retry could not be saved".into())));
+                }
+                let _ = tx.send(Msg::RetrySaved { session, audio, result });
+            })
+            .abort_handle();
+            return;
+        }
+        self.finish_transcription(session, audio, result);
+    }
+
+    fn finish_transcription(
+        &mut self,
+        session: u64,
+        audio: Option<Arc<PreparedAudio>>,
         result: Result<Transcript, PipelineError>,
     ) {
         if !matches!(self.phase, Phase::Transcribing { session: current, .. } if current == session) {
@@ -1832,9 +1982,12 @@ impl<P: Providers> Controller<P> {
             rule_hits = transcript.hits.len(),
             "transcribed"
         );
-        if job.voice.is_some() && transcript.cleanup_error.is_some() {
+        if job.voice.is_some()
+            && let Some(error) = transcript.cleanup_error
+        {
             self.record(&job, &transcript, audio.as_deref());
-            return self.fail_with_message(ErrorKind::Rejected, lang, lang.voice_failed().into());
+            let message = if error == CleanupError::Truncated { lang.answer_truncated() } else { lang.voice_failed() };
+            return self.fail_with_message(ErrorKind::Rejected, lang, message.into());
         }
         if transcript.status != TranscriptStatus::Ok || transcript.text.is_empty() {
             self.record(&job, &transcript, audio.as_deref());
@@ -1980,6 +2133,14 @@ impl<P: Providers> Controller<P> {
                 settings.lang
             }
             Phase::Transcribing { session, task, job, cancel, progress, cleaning, asking } => {
+                if announce && cleaning && job.voice.is_none() && !job.ask {
+                    // Retain the skip even if the completed worker has dropped its receiver.
+                    cancel.send_replace(true);
+                    self.phase = Phase::Transcribing { session, task, job, cancel, progress, cleaning: false, asking };
+                    self.show_progress();
+                    self.set_state(DictationState::Transcribing);
+                    return;
+                }
                 if progress.is_some() || asking {
                     let _ = cancel.send(true);
                     self.phase = Phase::Transcribing { session, task, job, cancel, progress, cleaning, asking };
