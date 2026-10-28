@@ -7,7 +7,7 @@ pub mod keys;
 pub mod windows;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use opit_core::audio::Recording;
 use opit_core::config::OverlayPosition;
@@ -145,11 +145,27 @@ pub struct OverlayButton {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RecordingTiming {
+    pub session: u64,
+    /// Active recording time at `updated_at`, excluding all pauses.
+    pub elapsed: Duration,
+    pub updated_at: Instant,
+    pub paused: bool,
+}
+
+impl RecordingTiming {
+    pub fn elapsed_at(&self, now: Instant) -> Duration {
+        self.elapsed + if self.paused { Duration::ZERO } else { now.saturating_duration_since(self.updated_at) }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct OverlayView {
     pub tone: Tone,
     pub text: String,
-    /// Some(level 0..1) draws a level bar under the text.
+    /// Some(level 0..1) supplies the latest microphone level for the waveform.
     pub level: Option<f32>,
+    pub recording: Option<RecordingTiming>,
     /// Some → the overlay becomes clickable (not click-through) and clicking it fires the action.
     pub button: Option<OverlayButton>,
     /// Auto-hide after this long; None = stays until the next show/hide.

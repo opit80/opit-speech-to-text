@@ -12,6 +12,7 @@ pub const APP_DIR_NAME: &str = "opit-speech-to-text";
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const MIN_RECORDING_SECONDS: u32 = 10;
 pub const MAX_RECORDING_SECONDS: u32 = 600;
+pub const MAX_HISTORY_ENTRIES: u32 = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -122,11 +123,13 @@ pub struct HistoryConfig {
     pub enabled: bool,
     pub save_audio: bool,
     pub audio_retention_days: u32,
+    /// Maximum retained rows, including failures; zero disables the row cap.
+    pub max_entries: u32,
 }
 
 impl Default for HistoryConfig {
     fn default() -> Self {
-        Self { enabled: true, save_audio: false, audio_retention_days: 30 }
+        Self { enabled: true, save_audio: false, audio_retention_days: 30, max_entries: 1000 }
     }
 }
 
@@ -159,9 +162,19 @@ pub enum OverlayPosition {
     LeftCenter,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Theme {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
+    pub theme: Theme,
     pub start_in_tray: bool,
     pub autostart: bool,
     pub overlay_position: OverlayPosition,
@@ -175,6 +188,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            theme: Theme::System,
             start_in_tray: false,
             autostart: true,
             overlay_position: OverlayPosition::RightCenter,
@@ -231,6 +245,7 @@ impl AppConfig {
 
     /// Repairs values a hand edit or an old version could leave inconsistent.
     pub fn normalize(&mut self) {
+        self.history.max_entries = self.history.max_entries.min(MAX_HISTORY_ENTRIES);
         self.cleanup.timeout_seconds = self.cleanup.timeout_seconds.clamp(1, 120);
         self.schema_version = CONFIG_SCHEMA_VERSION;
         self.recording.max_seconds = self.recording.max_seconds.clamp(MIN_RECORDING_SECONDS, MAX_RECORDING_SECONDS);
@@ -286,6 +301,27 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_cap_and_theme_defaults_normalize_and_round_trip() {
+        let mut c = AppConfig::from_json(r#"{"history":{},"ui":{}}"#).unwrap();
+        assert_eq!(c.history.max_entries, 1000);
+        assert_eq!(c.ui.theme, Theme::System);
+        for cap in [0, 1, 1000, 100_000] {
+            c.history.max_entries = cap;
+            c.normalize();
+            assert_eq!(c.history.max_entries, cap);
+        }
+        c.history.max_entries = u32::MAX;
+        c.normalize();
+        assert_eq!(c.history.max_entries, 100_000);
+        for theme in [Theme::System, Theme::Light, Theme::Dark] {
+            c.ui.theme = theme;
+            assert_eq!(AppConfig::from_json(&c.to_json()).unwrap(), c);
+        }
+        assert!(AppConfig::from_json(r#"{"ui":{"theme":"unknown"}}"#).is_err());
+        assert!(AppConfig::from_json(r#"{"history":{"max_entries":-1}}"#).is_err());
+    }
 
     #[test]
     fn cleanup_is_opt_in_and_old_profiles_default_to_applying_it() {

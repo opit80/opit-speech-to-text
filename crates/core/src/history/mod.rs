@@ -279,6 +279,31 @@ impl HistoryStore {
         Ok(paths)
     }
 
+    /// Deletes the oldest recording dates first (id breaks ties), including failures.
+    /// Returns detached audio paths for the caller to delete. Zero means unlimited.
+    pub fn trim_to_max_entries(&mut self, max_entries: u32) -> Result<Vec<String>, HistoryError> {
+        if max_entries == 0 {
+            return Ok(Vec::new());
+        }
+        let tx = self.conn.transaction()?;
+        let paths = {
+            let mut stmt = tx.prepare(
+                "SELECT audio_path FROM dictations WHERE id IN (
+                    SELECT id FROM dictations ORDER BY created_at_ms DESC, id DESC LIMIT -1 OFFSET ?1
+                ) AND audio_path IS NOT NULL ORDER BY created_at_ms, id",
+            )?;
+            stmt.query_map([max_entries], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
+        };
+        tx.execute(
+            "DELETE FROM dictations WHERE id IN (
+                SELECT id FROM dictations ORDER BY created_at_ms DESC, id DESC LIMIT -1 OFFSET ?1
+            )",
+            [max_entries],
+        )?;
+        tx.commit()?;
+        Ok(paths)
+    }
+
     /// Detaches audio files of dictations created before `older_than_ms` and
     /// returns their paths for deletion.
     pub fn take_expired_audio(&self, older_than_ms: i64) -> Result<Vec<String>, HistoryError> {
@@ -341,6 +366,29 @@ pub fn fts_query(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cap_removes_oldest_dates_then_ids_including_failed_audio_and_fts() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let newer = store.insert(&entry("retained", "retained", 300)).unwrap();
+        let older = store.insert(&entry("removed", "removed", 100)).unwrap();
+        store.set_audio_path(older, "old.wav").unwrap();
+        let mut failed = entry("", "", 100);
+        failed.status = TranscriptStatus::Failed;
+        let failure = store.insert(&failed).unwrap();
+        store.set_audio_path(failure, "failed.wav").unwrap();
+        let newest = store.insert(&entry("latest", "latest", 400)).unwrap();
+        assert!(store.trim_to_max_entries(0).unwrap().is_empty());
+        assert_eq!(store.recent(10, None).unwrap().len(), 4);
+        assert_eq!(store.trim_to_max_entries(3).unwrap(), ["old.wav"]);
+        assert!(store.get(older).unwrap().is_none());
+        assert!(store.search("removed", 10).unwrap().is_empty());
+        assert_eq!(store.trim_to_max_entries(2).unwrap(), ["failed.wav"]);
+        assert_eq!(ids(&store.recent(10, None).unwrap()), [newest, newer]);
+        assert!(store.trim_to_max_entries(2).unwrap().is_empty());
+        assert!(store.trim_to_max_entries(1000).unwrap().is_empty());
+        assert!(store.insert(&entry("next", "next", 500)).unwrap() > newest);
+    }
 
     #[test]
     fn version_three_migration_keeps_raw_final_and_search_and_round_trips_cleanup() {

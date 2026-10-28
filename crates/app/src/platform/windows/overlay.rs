@@ -2,34 +2,39 @@
 //! UI thread. Other threads hand it state through a mutex and a coalesced `WM_APP + 1`.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use opit_core::config::OverlayPosition;
 use windows::Win32::Foundation::{
-    COLORREF, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+    COLORREF, ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateCompatibleBitmap, CreateCompatibleDC,
-    CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, Ellipse, EndPaint, FW_NORMAL,
-    FW_SEMIBOLD, FillRect, GetMonitorInfoW, GetStockObject, HDC, HFONT, HGDIOBJ, InvalidateRect,
-    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, NULL_PEN, OUT_DEFAULT_PRECIS, PAINTSTRUCT, RoundRect,
-    SRCCOPY, SelectObject, SetBkMode, SetTextColor, SetWindowRgn, TRANSPARENT,
+    BeginPaint, BitBlt, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, COLOR_WINDOW, COLOR_WINDOWTEXT, CreateCompatibleBitmap,
+    CreateCompatibleDC, CreateFontW, CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DRAW_TEXT_FORMAT, DT_LEFT,
+    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteDC, DeleteObject, DrawTextW, Ellipse,
+    EndPaint, FW_NORMAL, FW_SEMIBOLD, FillRect, GetMonitorInfoW, GetStockObject, GetSysColor, GetTextExtentPoint32W,
+    HDC, HFONT, HGDIOBJ, InvalidateRect, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, NULL_PEN,
+    OUT_DEFAULT_PRECIS, PAINTSTRUCT, RoundRect, SRCCOPY, SelectObject, SetBkMode, SetTextColor, SetWindowRgn,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForMonitor, MDT_EFFECTIVE_DPI, SetThreadDpiAwarenessContext,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GWL_EXSTYLE, GetClientRect, GetForegroundWindow, GetMessageW,
     GetWindowLongPtrW, HWND_TOPMOST, IDC_ARROW, IDC_HAND, KillTimer, LWA_ALPHA, LoadCursorW, MA_NOACTIVATE, MSG,
-    PostMessageW, PostQuitMessage, RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
-    WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_EX_TRANSPARENT, WS_POPUP,
+    PostMessageW, PostQuitMessage, RegisterClassW, SPI_GETHIGHCONTRAST, SW_HIDE, SW_SHOWNOACTIVATE, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetCursor, SetLayeredWindowAttributes, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TranslateMessage, WINDOW_EX_STYLE, WM_APP,
+    WM_CLOSE, WM_DESTROY, WM_DPICHANGED, WM_ERASEBKGND, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_PAINT, WM_SETCURSOR,
+    WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -39,23 +44,129 @@ use crate::platform::{Overlay, OverlaySink, OverlayView, Tone};
 /// Posted by other threads when `Pending` has something new.
 const WM_APP_UPDATE: u32 = WM_APP + 1;
 const HIDE_TIMER: usize = 1;
+const RECORDING_TIMER: usize = 2;
+const SAMPLE_MS: u32 = 100;
+const WAVE_BARS: usize = 25; // 2.5 seconds at 10 samples per second.
 const CLASS_NAME: PCWSTR = w!("OpitOverlayWindow");
 const ALPHA: u8 = 235;
 
 /// Logical (96-dpi) layout constants.
-const WIDTH: i32 = 260;
-const HEIGHT: i32 = 56;
-const HEIGHT_WITH_BUTTON: i32 = 76;
+const WIDTH: i32 = 420;
+const HEIGHT: i32 = 88;
+const HEIGHT_WITH_BUTTON: i32 = 104;
 const MARGIN: i32 = 24;
 const PAD: i32 = 16;
 const CORNER: i32 = 16;
 const DOT: i32 = 10;
 const ROW: i32 = 22;
-const BAR: i32 = 4;
 
 const BG: COLORREF = rgb(30, 31, 36);
 const FG: COLORREF = rgb(236, 236, 240);
 const TRACK: COLORREF = rgb(62, 63, 72);
+
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: COLORREF,
+    fg: COLORREF,
+    high_contrast: bool,
+    light: bool,
+}
+
+impl Palette {
+    fn system() -> Self {
+        let mut contrast = HIGHCONTRASTW { cbSize: size_of::<HIGHCONTRASTW>() as u32, ..Default::default() };
+        // SAFETY: initialized structure and matching size, queried only on the overlay thread.
+        let high_contrast = unsafe {
+            SystemParametersInfoW(
+                SPI_GETHIGHCONTRAST,
+                contrast.cbSize,
+                Some((&mut contrast as *mut HIGHCONTRASTW).cast()),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            )
+            .is_ok()
+                && contrast.dwFlags.0 & HCF_HIGHCONTRASTON.0 != 0
+        };
+        if high_contrast {
+            // SAFETY: reading system palette entries.
+            return unsafe {
+                Self {
+                    bg: COLORREF(GetSysColor(COLOR_WINDOW)),
+                    fg: COLORREF(GetSysColor(COLOR_WINDOWTEXT)),
+                    high_contrast,
+                    light: false,
+                }
+            };
+        }
+        let light = windows_registry::CURRENT_USER
+            .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+            .and_then(|key| key.get_u32("AppsUseLightTheme"))
+            .unwrap_or(1)
+            != 0;
+        Self {
+            bg: if light { rgb(243, 243, 243) } else { BG },
+            fg: if light { rgb(27, 27, 27) } else { FG },
+            high_contrast,
+            light,
+        }
+    }
+
+    fn accent(self, tone: Tone) -> COLORREF {
+        if self.high_contrast {
+            return self.fg;
+        }
+        if !self.light {
+            return tone_color(tone);
+        }
+        match tone {
+            Tone::Neutral => rgb(0, 99, 177),
+            Tone::Busy => rgb(102, 61, 170),
+            Tone::Success => rgb(15, 123, 15),
+            Tone::Warning => rgb(140, 80, 0),
+            Tone::Error => rgb(196, 43, 28),
+        }
+    }
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn bar_height(level: f32, max: i32) -> i32 {
+    if max <= 0 {
+        return 0;
+    }
+    let level = if level.is_finite() { level.clamp(0.0, 1.0) } else { 0.0 };
+    ((max as f32 * level).round() as i32).clamp(1, max)
+}
+
+/// Fits at most two lines using actual font metrics, never cutting a word or UTF-16 unit.
+fn fit_status(value: &str, width: i32, measure: impl Fn(&str) -> i32) -> String {
+    if width <= 0 {
+        return String::new();
+    }
+    let mut lines = vec![String::new()];
+    for word in value.split_whitespace() {
+        let first_line = lines.len() == 1;
+        let last = lines.last_mut().unwrap();
+        let candidate = if last.is_empty() { word.to_string() } else { format!("{last} {word}") };
+        if measure(&candidate) <= width {
+            *last = candidate;
+        } else if first_line && !last.is_empty() && measure(word) <= width {
+            lines.push(word.to_string());
+        } else {
+            let last = lines.last_mut().unwrap();
+            while !last.is_empty() && measure(&format!("{last}…")) > width {
+                *last = last.rsplit_once(' ').map_or("", |(prefix, _)| prefix).to_string();
+            }
+            if measure("…") <= width {
+                last.push('…');
+            }
+            break;
+        }
+    }
+    lines.join("\n")
+}
 
 const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
@@ -275,6 +386,8 @@ struct WinState {
     dpi: u32,
     fonts: Option<Fonts>,
     clickable: bool,
+    waveform: VecDeque<f32>,
+    palette: Palette,
 }
 
 thread_local! {
@@ -327,7 +440,18 @@ fn window_thread(
         let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), ALPHA, LWA_ALPHA);
         hwnd
     };
-    WIN.set(Some(WinState { shared, sink, view: None, position, dpi: 96, fonts: None, clickable: false }));
+    WIN.set(Some(WinState {
+        shared,
+        sink,
+        view: None,
+        position,
+        dpi: 96,
+        fonts: None,
+        clickable: false,
+        waveform: VecDeque::with_capacity(WAVE_BARS),
+        palette: Palette::system(),
+    }));
+    refresh_palette(hwnd);
     let _ = ready.send(Ok(hwnd.0 as isize));
 
     // SAFETY: standard message loop; `msg` outlives every call.
@@ -356,6 +480,27 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             hide_now(hwnd);
             LRESULT(0)
         }
+        WM_TIMER if wparam.0 == RECORDING_TIMER => {
+            with_state(|s| {
+                if let Some(view) = &s.view
+                    && view.recording.as_ref().is_some_and(|r| !r.paused)
+                {
+                    if s.waveform.len() == WAVE_BARS {
+                        s.waveform.pop_front();
+                    }
+                    s.waveform.push_back(view.level.unwrap_or(0.0));
+                }
+            });
+            // SAFETY: invalidation on the overlay thread; painting stays double-buffered.
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE | WM_SYSCOLORCHANGE | WM_THEMECHANGED => {
+            refresh_palette(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_SETCURSOR if with_state(|s| s.clickable) == Some(true) => {
             // SAFETY: plain FFI calls with a system cursor id.
@@ -374,8 +519,13 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
-        // We size ourselves for the target monitor; ignore the suggested rect.
-        WM_DPICHANGED => LRESULT(0),
+        // Recompute physical dimensions and font metrics on the target monitor.
+        WM_DPICHANGED => {
+            if let Some(Some(has_button)) = with_state(|s| s.view.as_ref().map(|v| v.button.is_some())) {
+                place(hwnd, has_button);
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             // SAFETY: plain FFI call on the window's own thread.
             unsafe { PostQuitMessage(0) };
@@ -418,11 +568,24 @@ fn apply_pending(hwnd: HWND) {
 fn show_view(hwnd: HWND, view: OverlayView, force_place: bool) {
     let has_button = view.button.is_some();
     let hide_after = view.hide_after;
-    let Some(previous) = with_state(|s| s.view.replace(view)) else {
+    let recording_session = view.recording.as_ref().map(|r| r.session);
+    let Some(previous) = with_state(|s| {
+        let previous_session = s.view.as_ref().and_then(|v| v.recording.as_ref()).map(|r| r.session);
+        if recording_session != previous_session {
+            s.waveform.clear();
+        }
+        s.view.replace(view)
+    }) else {
         return;
     };
     // SAFETY: timer calls on our own window.
     unsafe {
+        let previous_session = previous.as_ref().and_then(|v| v.recording.as_ref()).map(|r| r.session);
+        if recording_session.is_none() {
+            let _ = KillTimer(Some(hwnd), RECORDING_TIMER);
+        } else if previous_session != recording_session {
+            SetTimer(Some(hwnd), RECORDING_TIMER, SAMPLE_MS, None);
+        }
         match hide_after {
             Some(d) => {
                 let ms = u32::try_from(d.as_millis()).unwrap_or(u32::MAX).max(1);
@@ -445,11 +608,26 @@ fn show_view(hwnd: HWND, view: OverlayView, force_place: bool) {
 }
 
 fn hide_now(hwnd: HWND) {
-    with_state(|s| s.view = None);
+    with_state(|s| {
+        s.view = None;
+        s.waveform.clear();
+    });
     // SAFETY: plain FFI calls on our own window.
     unsafe {
         let _ = KillTimer(Some(hwnd), HIDE_TIMER);
+        let _ = KillTimer(Some(hwnd), RECORDING_TIMER);
         let _ = ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
+fn refresh_palette(hwnd: HWND) {
+    let palette = Palette::system();
+    with_state(|s| s.palette = palette);
+    // SAFETY: own window; opaque in high contrast so desktop content cannot lower contrast.
+    unsafe {
+        let _ =
+            SetLayeredWindowAttributes(hwnd, COLORREF(0), if palette.high_contrast { 255 } else { ALPHA }, LWA_ALPHA);
+        let _ = InvalidateRect(Some(hwnd), None, false);
     }
 }
 
@@ -498,6 +676,15 @@ fn place(hwnd: HWND, has_button: bool) {
     }
 }
 
+struct Frame {
+    view: OverlayView,
+    dpi: u32,
+    text_font: HFONT,
+    link_font: HFONT,
+    waveform: Vec<f32>,
+    palette: Palette,
+}
+
 fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     // SAFETY: BeginPaint/EndPaint pair on our own window; always called so WM_PAINT is validated.
@@ -508,15 +695,22 @@ fn paint(hwnd: HWND) {
             s.fonts = Some(Fonts::new(s.dpi));
         }
         let fonts = s.fonts.as_ref()?;
-        Some((view, s.dpi, fonts.text, fonts.link))
+        Some(Frame {
+            view,
+            dpi: s.dpi,
+            text_font: fonts.text,
+            link_font: fonts.link,
+            waveform: s.waveform.iter().copied().collect(),
+            palette: s.palette,
+        })
     })
     .flatten();
-    if let Some((view, dpi, text_font, link_font)) = snapshot {
+    if let Some(frame) = snapshot {
         let mut rc = RECT::default();
         // SAFETY: valid out-pointer.
         if unsafe { GetClientRect(hwnd, &mut rc) }.is_ok() && rc.right > 0 && rc.bottom > 0 {
             // SAFETY: `hdc` is the paint DC for this window.
-            unsafe { draw_buffered(hdc, rc.right, rc.bottom, &view, dpi, text_font, link_font) };
+            unsafe { draw_buffered(hdc, rc.right, rc.bottom, &frame) };
         }
     }
     // SAFETY: pairs with BeginPaint above.
@@ -529,13 +723,13 @@ fn paint(hwnd: HWND) {
 ///
 /// # Safety
 /// `hdc` must be a valid device context.
-unsafe fn draw_buffered(hdc: HDC, w: i32, h: i32, view: &OverlayView, dpi: u32, text_font: HFONT, link_font: HFONT) {
+unsafe fn draw_buffered(hdc: HDC, w: i32, h: i32, frame: &Frame) {
     // SAFETY: every GDI object created here is deselected and deleted before returning.
     unsafe {
         let mem = CreateCompatibleDC(Some(hdc));
         let bitmap = CreateCompatibleBitmap(hdc, w, h);
         let old_bitmap = SelectObject(mem, bitmap.into());
-        draw(mem, w, h, view, dpi, text_font, link_font);
+        draw(mem, w, h, frame);
         let _ = BitBlt(hdc, 0, 0, w, h, Some(mem), 0, 0, SRCCOPY);
         SelectObject(mem, old_bitmap);
         let _ = DeleteObject(bitmap.into());
@@ -578,51 +772,74 @@ unsafe fn text(dc: HDC, s: &str, mut r: RECT, font: HFONT, color: COLORREF, alig
     unsafe {
         let old: HGDIOBJ = SelectObject(dc, font.into());
         SetTextColor(dc, color);
-        DrawTextW(dc, &mut wide, &mut r, align | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        DrawTextW(dc, &mut wide, &mut r, align | DT_NOPREFIX);
         SelectObject(dc, old);
     }
 }
 
-unsafe fn draw(dc: HDC, w: i32, h: i32, view: &OverlayView, dpi: u32, text_font: HFONT, link_font: HFONT) {
-    let s = |v: i32| scale(v, dpi);
-    let accent = tone_color(view.tone);
+unsafe fn draw(dc: HDC, w: i32, h: i32, frame: &Frame) {
+    let view = &frame.view;
+    let s = |v: i32| scale(v, frame.dpi);
+    let accent = frame.palette.accent(view.tone);
     let pad = s(PAD);
     let row = s(ROW);
-    // Text row: top-aligned when a second element (button or level bar) sits below it.
-    let row_top = if view.button.is_some() {
-        s(12)
-    } else if view.level.is_some() {
-        s(9)
-    } else {
-        (h - row) / 2
-    };
+    let row_top = s(10);
     let dot = s(DOT);
     let text_left = pad + dot + s(10);
     // SAFETY: `dc` is the memory DC set up by draw_buffered.
     unsafe {
-        fill(dc, &RECT { left: 0, top: 0, right: w, bottom: h }, BG);
+        fill(dc, &RECT { left: 0, top: 0, right: w, bottom: h }, frame.palette.bg);
         SetBkMode(dc, TRANSPARENT);
 
         let dot_top = row_top + (row - dot) / 2;
         round_rect(dc, RECT { left: pad, top: dot_top, right: pad + dot, bottom: dot_top + dot }, dot, accent, true);
 
-        let text_rect = RECT { left: text_left, top: row_top, right: w - pad, bottom: row_top + row };
-        text(dc, &view.text, text_rect, text_font, FG, DT_LEFT);
+        let text_rect = RECT { left: text_left, top: row_top, right: w - pad, bottom: row_top + row * 2 };
+        let old_font = SelectObject(dc, frame.text_font.into());
+        let fitted = fit_status(&view.text, (text_rect.right - text_rect.left).max(0), |value| {
+            let wide: Vec<u16> = value.encode_utf16().collect();
+            let mut size = SIZE::default();
+            let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
+            size.cx
+        });
+        SelectObject(dc, old_font);
+        text(dc, &fitted, text_rect, frame.text_font, frame.palette.fg, DT_LEFT | DT_WORDBREAK);
 
         if let Some(button) = &view.button {
             let bottom = h - s(12);
             let r = RECT { left: text_left, top: bottom - row, right: w - pad, bottom };
-            text(dc, &button.label, r, link_font, accent, DT_RIGHT);
-        } else if let Some(level) = view.level {
-            let bar = s(BAR);
-            let top = h - s(15);
-            let track = RECT { left: text_left, top, right: w - pad, bottom: top + bar };
-            round_rect(dc, track, bar, TRACK, false);
-            let span = (track.right - track.left) as f32;
-            let filled = (span * level.clamp(0.0, 1.0)).round() as i32;
-            if filled > 0 {
-                let fill_rect = RECT { right: track.left + filled.max(bar), ..track };
-                round_rect(dc, fill_rect, bar, accent, false);
+            text(dc, &button.label, r, frame.link_font, accent, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+        } else if view.level.is_some() {
+            let top = h - s(28);
+            let max_height = s(18);
+            let right = w - pad - s(70);
+            let span = (right - text_left).max(0);
+            let step = span / WAVE_BARS as i32;
+            let bar_width = (step - s(2)).max(1);
+            for (index, level) in frame.waveform.iter().enumerate() {
+                let index = WAVE_BARS - frame.waveform.len() + index;
+                let height = bar_height(*level, max_height);
+                let left = text_left + index as i32 * step;
+                let bar_top = top + (max_height - height) / 2;
+                let color = if *level > 0.0 || frame.palette.high_contrast {
+                    accent
+                } else if frame.palette.light {
+                    rgb(95, 95, 95)
+                } else {
+                    TRACK
+                };
+                if step > 0 {
+                    fill(
+                        dc,
+                        &RECT { left, top: bar_top, right: (left + bar_width).min(right), bottom: bar_top + height },
+                        color,
+                    );
+                }
+            }
+            if let Some(recording) = &view.recording {
+                let elapsed = format_elapsed(recording.elapsed_at(Instant::now()));
+                let r = RECT { left: right + s(8), top: top - s(2), right: w - pad, bottom: top + row };
+                text(dc, &elapsed, r, frame.text_font, frame.palette.fg, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
             }
         }
     }
@@ -638,13 +855,107 @@ mod tests {
     const WORK: RectI = RectI { left: 0, top: 0, right: 1920, bottom: 1040 };
 
     #[test]
+    fn elapsed_clock_excludes_pauses_and_formats_minutes() {
+        use crate::platform::RecordingTiming;
+        let now = Instant::now();
+        let mut timing =
+            RecordingTiming { session: 1, elapsed: Duration::from_millis(59_750), updated_at: now, paused: false };
+        assert_eq!(format_elapsed(timing.elapsed_at(now + Duration::from_millis(250))), "1:00");
+        timing.paused = true;
+        assert_eq!(format_elapsed(timing.elapsed_at(now + Duration::from_secs(50))), "0:59");
+        timing.elapsed = Duration::from_secs(60);
+        timing.updated_at = now + Duration::from_secs(50);
+        timing.paused = false;
+        assert_eq!(format_elapsed(timing.elapsed_at(now + Duration::from_secs(52))), "1:02");
+        assert_eq!(format_elapsed(Duration::ZERO), "0:00");
+        assert_eq!(format_elapsed(Duration::from_secs(600)), "10:00");
+    }
+
+    #[test]
+    fn bars_are_bounded_and_readable_at_all_dpi_scales() {
+        for dpi in [96, 120, 144, 192, 288] {
+            let max = scale(18, dpi);
+            assert_eq!(bar_height(f32::NAN, max), 1);
+            assert_eq!(bar_height(f32::INFINITY, max), 1);
+            assert_eq!(bar_height(-1.0, max), 1);
+            assert_eq!(bar_height(2.0, max), max);
+            assert_eq!(bar_height(0.5, max), (max as f32 * 0.5).round() as i32);
+        }
+        assert_eq!(bar_height(1.0, 0), 0);
+    }
+
+    #[test]
+    fn stage_text_wraps_and_ellipsizes_at_whole_words() {
+        let measure = |s: &str| s.chars().count() as i32;
+        assert_eq!(fit_status("Çevriliyor…", 20, measure), "Çevriliyor…");
+        assert_eq!(
+            fit_status("Yeniden deneniyor 120 saniye sonra", 20, measure),
+            "Yeniden deneniyor\n120 saniye sonra"
+        );
+        assert_eq!(
+            fit_status("Temizleniyor ve sırada bekleyen başka kayıtlar var", 17, measure),
+            "Temizleniyor ve\nsırada bekleyen…"
+        );
+        assert_eq!(fit_status("Çokuzunbirkayıtadı", 5, measure), "…");
+        assert_eq!(fit_status("bir", 0, measure), "");
+    }
+
+    #[test]
+    fn localized_stages_and_queue_count_fit_with_native_font_metrics_at_every_dpi() {
+        use crate::i18n::Lang;
+        use opit_core::provider::retry::RetryWait;
+        use windows::Win32::Graphics::Gdi::DT_CALCRECT;
+
+        // SAFETY: memory DC only, no desktop window, input, microphone or personal data.
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            assert!(!dc.is_invalid());
+            for dpi in [96, 120, 144, 192, 288] {
+                let fonts = Fonts::new(dpi);
+                let old = SelectObject(dc, fonts.text.into());
+                let width = scale(WIDTH - 2 * PAD - DOT - 10, dpi);
+                let measure = |value: &str| {
+                    let mut size = SIZE::default();
+                    assert!(GetTextExtentPoint32W(dc, &value.encode_utf16().collect::<Vec<_>>(), &mut size).as_bool());
+                    size.cx
+                };
+                for lang in [Lang::En, Lang::Tr] {
+                    for stage in [
+                        lang.transcribing().to_string(),
+                        lang.cleaning().to_string(),
+                        lang.pasted(0.9),
+                        lang.listening_default_mic().to_string(),
+                        lang.recording_paused().to_string(),
+                        lang.retry_wait(RetryWait { kind: "rate_limited", seconds: 120, attempt: 4, total: 4 }),
+                    ] {
+                        let label = lang.with_waiting(&stage, 3);
+                        let fitted = fit_status(&label, width, measure);
+                        assert_eq!(
+                            fitted.split_whitespace().collect::<Vec<_>>(),
+                            label.split_whitespace().collect::<Vec<_>>(),
+                            "{dpi}: {label}"
+                        );
+                        assert!(fitted.lines().all(|line| measure(line) <= width));
+                        let mut wide: Vec<_> = fitted.encode_utf16().collect();
+                        let mut bounds = RECT { right: width, ..Default::default() };
+                        DrawTextW(dc, &mut wide, &mut bounds, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+                        assert!(bounds.bottom <= scale(2 * ROW, dpi), "{dpi}: {label}");
+                    }
+                }
+                SelectObject(dc, old);
+            }
+            let _ = DeleteDC(dc);
+        }
+    }
+
+    #[test]
     fn scale_rounds() {
         assert_eq!(scale(260, 96), 260);
         assert_eq!(scale(260, 144), 390);
         assert_eq!(scale(24, 120), 30);
         assert_eq!(scale(10, 120), 13); // 12.5 rounds up
-        assert_eq!(overlay_height(false, 96), 56);
-        assert_eq!(overlay_height(true, 192), 152);
+        assert_eq!(overlay_height(false, 96), 88);
+        assert_eq!(overlay_height(true, 192), 208);
     }
 
     #[test]
@@ -652,14 +963,14 @@ mod tests {
         let r = overlay_rect(WORK, OverlayPosition::RightCenter, 96, 56);
         assert_eq!(
             r,
-            RectI { left: 1920 - 24 - 260, top: (1040 - 56) / 2, right: 1920 - 24, bottom: (1040 - 56) / 2 + 56 }
+            RectI { left: 1920 - 24 - 420, top: (1040 - 56) / 2, right: 1920 - 24, bottom: (1040 - 56) / 2 + 56 }
         );
     }
 
     #[test]
     fn all_positions_at_150_percent() {
-        let h = overlay_height(false, 144); // 84
-        let (w, m) = (390, 36);
+        let h = overlay_height(false, 144); // 132
+        let (w, m) = (630, 36);
         let r = overlay_rect(WORK, OverlayPosition::LeftCenter, 144, h);
         assert_eq!((r.left, r.top, r.width(), r.height()), (m, (1040 - h) / 2, w, h));
         let r = overlay_rect(WORK, OverlayPosition::TopCenter, 144, h);
@@ -675,7 +986,7 @@ mod tests {
         // Secondary monitor left of the primary with a taskbar on top.
         let work = RectI { left: -2560, top: 48, right: 0, bottom: 1440 };
         let r = overlay_rect(work, OverlayPosition::TopCenter, 96, 56);
-        assert_eq!((r.left, r.top), (-2560 + (2560 - 260) / 2, 48 + 24));
+        assert_eq!((r.left, r.top), (-2560 + (2560 - 420) / 2, 48 + 24));
         let r = overlay_rect(work, OverlayPosition::RightCenter, 96, 56);
         assert_eq!(r.right, -24);
         assert_eq!(r.top, 48 + (1392 - 56) / 2);
@@ -714,6 +1025,7 @@ mod tests {
                 tone: Tone::Neutral,
                 text: "Listening…".into(),
                 level: Some(level),
+                recording: None,
                 button: None,
                 hide_after: None,
             });
@@ -723,6 +1035,7 @@ mod tests {
             tone: Tone::Error,
             text: "The API key was rejected by the provider".into(),
             level: None,
+            recording: None,
             button: Some(OverlayButton { action: OverlayAction::OpenSettings, label: "Open settings".into() }),
             hide_after: Some(Duration::from_secs(5)),
         });
@@ -744,6 +1057,7 @@ mod tests {
             tone: Tone::Success,
             text: "Pasted".into(),
             level: None,
+            recording: None,
             button: None,
             hide_after: Some(Duration::from_millis(300)),
         });
@@ -783,6 +1097,7 @@ mod tests {
             tone: Tone::Warning,
             text: "Nothing was heard".into(),
             level: None,
+            recording: None,
             button,
             hide_after: None,
         };

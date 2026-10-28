@@ -225,6 +225,7 @@ impl AppCore {
             tone: Tone::Warning,
             text: text.into(),
             level: None,
+            recording: None,
             button: None,
             hide_after: Some(STARTUP_NOTICE_HIDE),
         })
@@ -1194,7 +1195,7 @@ mod tests {
             cleanup_model: None,
         };
         let audio = opit_core::pipeline::PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 };
-        let id = history.record(&entry, Some(&audio)).unwrap();
+        let id = history.record(&entry, Some(&audio), 1000).unwrap();
         drop(history);
         f.core.history = Some(Arc::new(HistoryService::open(&db, f.core.paths.audio.clone()).unwrap()));
         let loaded = f.core.history_retry_audio(id).unwrap();
@@ -1269,7 +1270,7 @@ mod tests {
                 cleanup_status: None,
                 cleanup_model: None,
             };
-            history.record(&entry, None).unwrap();
+            history.record(&entry, None, 1000).unwrap();
         }
         assert_eq!(f.core.history_recent(2, None).unwrap().len(), 2);
         assert_eq!(f.core.history_search("git", 10).unwrap().len(), 3);

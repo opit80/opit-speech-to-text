@@ -2,6 +2,7 @@
 // crates/core (config, provider, history, rules) and crates/app (commands, app_core, controller).
 
 export type Lang = "en" | "tr";
+export type Theme = "system" | "light" | "dark";
 
 export type ErrorKind =
   | "missing_key" | "invalid_key" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
@@ -60,9 +61,10 @@ export interface AppConfig {
     min_speech_seconds: number;
   };
   paste: { restore_clipboard: boolean; trailing_space: boolean };
-  history: { enabled: boolean; save_audio: boolean; audio_retention_days: number };
+  history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
   rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
   ui: {
+    theme: Theme;
     start_in_tray: boolean;
     autostart: boolean;
     overlay_position: OverlayPosition;

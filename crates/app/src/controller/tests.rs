@@ -127,7 +127,12 @@ impl FakeHistory {
 }
 
 impl HistorySink for FakeHistory {
-    fn record(&self, entry: &NewDictation<'_>, audio: Option<&PreparedAudio>) -> Result<i64, String> {
+    fn record(
+        &self,
+        entry: &NewDictation<'_>,
+        audio: Option<&PreparedAudio>,
+        _max_entries: u32,
+    ) -> Result<i64, String> {
         let mut saved = self.saved.lock().unwrap();
         saved.push(Saved {
             profile_id: entry.profile_id.into(),
@@ -1115,6 +1120,10 @@ async fn pause_discards_samples_freezes_meter_and_excludes_paused_time_from_limi
     h.expect(&[Recording]).await;
     assert!(h.handle.status().paused);
     let frozen = h.overlay.last();
+    let timing = frozen.recording.as_ref().unwrap();
+    assert!(timing.paused);
+    assert_eq!(timing.elapsed, Duration::from_secs(4));
+    assert_eq!(timing.elapsed_at(timing.updated_at + Duration::from_secs(30)), Duration::from_secs(4));
     h.mic.append_samples(&[0.9; 100]);
     h.mic.emit(CaptureEvent::Level(0.9));
     h.settle().await;
@@ -1124,6 +1133,10 @@ async fn pause_discards_samples_freezes_meter_and_excludes_paused_time_from_limi
     assert_eq!(h.mic.finished.load(SeqCst), 0);
     h.hotkey(HotkeyEvent::Pause);
     h.expect(&[Recording]).await;
+    let resumed = h.overlay.last().recording.unwrap();
+    assert!(!resumed.paused);
+    assert_eq!(resumed.session, timing.session);
+    assert_eq!(resumed.elapsed, Duration::from_secs(4));
     h.mic.append_samples(&[0.3]);
     tokio::time::advance(Duration::from_secs(5)).await;
     h.settle().await;

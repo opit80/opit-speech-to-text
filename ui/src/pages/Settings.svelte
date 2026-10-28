@@ -5,7 +5,7 @@
   import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
-  import type { AppConfig, HotkeyMode, OverlayPosition } from "../lib/types";
+  import type { AppConfig, HotkeyMode, OverlayPosition, Theme } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import Field from "../lib/components/Field.svelte";
@@ -68,6 +68,11 @@
     { value: "en", label: endonym("en") },
     { value: "tr", label: endonym("tr") },
   ]);
+  const themeOptions = $derived([
+    { value: "system", label: t("settings.theme_system") },
+    { value: "light", label: t("settings.theme_light") },
+    { value: "dark", label: t("settings.theme_dark") },
+  ]);
 
   function languageValue(c: AppConfig): string {
     if (c.ui_language === null) return "system";
@@ -84,6 +89,7 @@
     if (!c) return null;
     return {
       language: languageValue(c),
+      theme: c.ui.theme,
       autostart: c.ui.autostart,
       startInTray: c.ui.start_in_tray,
       sound: c.ui.sound_feedback,
@@ -238,12 +244,15 @@
   <PageHeader title={t("settings.title")} description={t("settings.description")} />
   {#if config && view}
     <div class="sections">
-      <details class="card settings-group" open={["language", "autostart", "start_in_tray", "sound"].some((field) => !!errors[field])}>
+      <details class="card settings-group" open={["language", "theme", "autostart", "start_in_tray", "sound"].some((field) => !!errors[field])}>
         <summary>{t("settings.general")}</summary>
         <div class="stack group-body">
         <Select label={t("settings.language")} options={languageOptions} value={view.language}
           onchange={(v) => void save("language", (c) => { c.ui_language = v === "system" ? null : v; })} />
         {@render fieldError("language")}
+        <Select label={t("settings.theme")} hint={t("settings.theme_hint")} options={themeOptions} value={view.theme}
+          onchange={(v) => void save("theme", (c) => { c.ui.theme = v as Theme; })} />
+        {@render fieldError("theme")}
         <Switch label={t("settings.autostart")} checked={view.autostart}
           disabled={app.info?.debug_build ?? false}
           hint={app.info?.debug_build ? t("settings.autostart_debug") : undefined}
@@ -330,12 +339,15 @@
       </div>
       </details>
 
-      <details class="card settings-group" open={["history_enabled", "save_audio", "retention"].some((field) => !!errors[field])}>
+      <details class="card settings-group" open={["history_enabled", "save_audio", "retention", "max_entries"].some((field) => !!errors[field])}>
         <summary>{t("settings.history")}</summary>
         <div class="stack group-body">
         <Switch label={t("settings.history_enabled")} checked={view.historyEnabled}
           onchange={(v) => void save("history_enabled", (c) => { c.history.enabled = v; })} />
         {@render fieldError("history_enabled")}
+        {@render numberInput("max_entries", t("settings.max_entries"), t("settings.max_entries_hint"), 0, 100000, 1,
+          !config.history.enabled,
+          (c) => c.history.max_entries, (c, n) => { c.history.max_entries = n; })}
         <Switch label={t("settings.save_audio")} hint={t("settings.save_audio_hint")}
           checked={view.saveAudio} disabled={!config.history.enabled}
           onchange={(v) => void save("save_audio", (c) => { c.history.save_audio = v; })} />

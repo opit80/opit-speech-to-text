@@ -27,7 +27,7 @@ pub use status::{DictationState, DictationStatus, ErrorKind};
 use crate::i18n::Lang;
 use crate::platform::{
     Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyEvent, HotkeySink, Microphone, Overlay, OverlayAction,
-    OverlayButton, OverlaySink, OverlayView, PasteOutcome, Paster, SecretError, Sound, Sounds, Tone,
+    OverlayButton, OverlaySink, OverlayView, PasteOutcome, Paster, RecordingTiming, SecretError, Sound, Sounds, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 
@@ -76,7 +76,7 @@ impl SetupError {
 
 pub trait HistorySink: Send + Sync {
     /// Stores one dictation (and its 16 kHz audio when given); returns the row id.
-    fn record(&self, entry: &NewDictation<'_>, audio: Option<&PreparedAudio>) -> Result<i64, String>;
+    fn record(&self, entry: &NewDictation<'_>, audio: Option<&PreparedAudio>, max_entries: u32) -> Result<i64, String>;
     fn replace(&self, id: i64, entry: &NewDictation<'_>, keep_audio: bool) -> Result<(), String>;
 }
 
@@ -873,7 +873,7 @@ impl<P: Providers> Controller<P> {
             error_code: None,
         };
         let audio = if history.save_audio { audio } else { None };
-        match self.env.history.record(&entry, audio) {
+        match self.env.history.record(&entry, audio, history.max_entries) {
             Ok(id) => self.env.events.history_added(id),
             Err(err) => warn!(error = %err, "history write failed"),
         }
@@ -947,6 +947,7 @@ impl<P: Providers> Controller<P> {
             tone: Tone::Error,
             text: message.clone(),
             level: None,
+            recording: None,
             button,
             hide_after: Some(hide_after),
         });
@@ -1044,7 +1045,16 @@ impl<P: Providers> Controller<P> {
     fn show_recording(&self) {
         if let Some(r) = &self.recording {
             let label = if r.paused { r.settings.lang.recording_paused() } else { r.label };
-            self.env.overlay.show(listening(&r.settings.lang.with_waiting(label, self.waiting.len()), r.level));
+            let max = Duration::from_secs(u64::from(r.settings.config.recording.max_seconds));
+            let remaining = if r.paused { r.remaining } else { r.remaining.saturating_sub(r.resumed_at.elapsed()) };
+            let mut view = listening(&r.settings.lang.with_waiting(label, self.waiting.len()), r.level);
+            view.recording = Some(RecordingTiming {
+                session: r.session,
+                elapsed: max.saturating_sub(remaining),
+                updated_at: Instant::now(),
+                paused: r.paused,
+            });
+            self.env.overlay.show(view);
         }
     }
 
@@ -1148,7 +1158,7 @@ async fn save_transcription(
             Some(id) => {
                 history.replace(id, &entry, failure_code.is_some() || settings.config.history.save_audio).map(|()| id)
             }
-            None => history.record(&entry, Some(&audio)),
+            None => history.record(&entry, Some(&audio), settings.config.history.max_entries),
         }
     })
     .await
@@ -1166,11 +1176,18 @@ async fn prepare_off_thread(
 }
 
 fn view(tone: Tone, text: impl Into<String>, hide_after: Option<Duration>) -> OverlayView {
-    OverlayView { tone, text: text.into(), level: None, button: None, hide_after }
+    OverlayView { tone, text: text.into(), level: None, recording: None, button: None, hide_after }
 }
 
 fn listening(label: &str, rms: f32) -> OverlayView {
-    OverlayView { tone: Tone::Busy, text: label.into(), level: Some(meter(rms)), button: None, hide_after: None }
+    OverlayView {
+        tone: Tone::Busy,
+        text: label.into(),
+        level: Some(meter(rms)),
+        recording: None,
+        button: None,
+        hide_after: None,
+    }
 }
 
 /// Maps microphone RMS to a 0..1 bar on a -60..0 dB scale, so normal speech (≈ -20 dB)

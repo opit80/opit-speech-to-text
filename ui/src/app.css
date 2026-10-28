@@ -1,6 +1,6 @@
 /* Design tokens and base element styles. Components use only these variables. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, monospace;
   --text-sm: 12px;
@@ -40,8 +40,32 @@
   --shadow: 0 2px 8px rgb(0 0 0 / 0.12);
 }
 
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #202020;
+  --surface: #2b2b2b;
+  --surface-2: #323232;
+  --border: #3d3d3d;
+  --text: #f3f3f3;
+  --text-muted: #b5b5b5;
+  --accent: #4cc2ff;
+  --accent-hover: #6fcfff;
+  --accent-text: #0b1e2b;
+  --success: #6ccb5f;
+  --warning: #fce100;
+  --danger: #ff99a4;
+  --danger-hover: #ffb3bb;
+  --focus: #4cc2ff;
+  --warning-bg: #433519;
+  --danger-bg: #442726;
+  --success-bg: #293d29;
+  --info-bg: #1e3346;
+  --shadow: 0 2px 8px rgb(0 0 0 / 0.5);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
+    color-scheme: dark;
     --bg: #202020;
     --surface: #2b2b2b;
     --surface-2: #323232;

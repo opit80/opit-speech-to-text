@@ -19,6 +19,7 @@
   import Setup from "./pages/Setup.svelte";
   import Guide from "./pages/Guide.svelte";
   import Usage from "./pages/Usage.svelte";
+  import { watchTheme } from "./lib/theme";
 
 
   const NAV: { route: Route; icon: "home" | "history" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [
@@ -45,6 +46,8 @@
 
   let resumeBusy = $state(false);
   let resumeError = $state<string | null>(null);
+
+  $effect(() => watchTheme(app.config?.ui.theme ?? "system"));
 
   async function resumeHotkey() {
     resumeBusy = true;
