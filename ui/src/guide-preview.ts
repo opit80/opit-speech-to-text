@@ -50,6 +50,7 @@ const config: AppConfig = {
     { id: "rule-preview1", enabled: true, exe: "windowsterminal.exe", title_contains: "", style_id: "raw", profile_id: null, paste_method: "ctrl_shift_v", paste_after: null },
     { id: "rule-preview2", enabled: false, exe: "outlook.exe", title_contains: "Yanıt", style_id: "formal", profile_id: null, paste_method: null, paste_after: "none" },
   ] : [] },
+  learning: { enabled: params.get("learning") !== "false" },
   history: { enabled: true, save_audio: false, audio_retention_days: 7, max_entries: 1000 },
   rules: { enabled_packs: ["tr-core", "tr-tech"], prompt_context: "", numbers_as_words: false },
   ui: { theme: "system", start_in_tray: false, autostart: false, overlay_position: "right_center", sound_feedback: true, setup_done: params.get("setup") !== "true", check_updates: false },
@@ -189,6 +190,29 @@ mockIPC(async (command, payload) => {
     case "history_search": return rows;
     case "history_delete": rows = rows.filter(row => row.id !== (payload as {id: number}).id); return;
     case "history_clear": rows = []; return;
+    case "history_update_text": {
+      const { id, text } = payload as { id: number; text: string };
+      const row = rows.find(row => row.id === id);
+      if (!row || row.status !== "ok") throw { code: "invalid_input", message: "only successful transcripts can be edited", kind: null };
+      // A same-position word comparison stands in for the real diff (Rust tests cover that).
+      const words = (value: string) => value.match(/[\p{L}\p{N}_]+/gu) ?? [];
+      const before = words(row.text);
+      const after = words(text);
+      const suggestions = !config.learning.enabled || before.length !== after.length ? [] : before
+        .map((heard, i) => ({ heard, corrected: after[i] }))
+        .filter(pair => pair.heard !== pair.corrected).slice(0, 8);
+      row.text = text;
+      await emit("history-updated", id);
+      return { dictation: structuredClone(row), suggestions };
+    }
+    case "learning_apply":
+      await new Promise(resolve => setTimeout(resolve, 400));
+      await emit("rules-changed", null);
+      if (params.get("learningFail") === "true") throw { code: "learning", message: "learning preferences are invalid", kind: null };
+      return [];
+    case "learning_dismiss":
+      await new Promise(resolve => setTimeout(resolve, 300));
+      return;
     case "history_retry": {
       const row = rows.find(row => row.id === (payload as {id: number}).id);
       if (!row) throw { code: "unavailable", message: "Preview row is missing", kind: null };

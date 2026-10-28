@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use opit_core::config::{AppConfig, ConfigError};
 use opit_core::history::{Dictation, HistoryError, UsageStats};
+use opit_core::learning::{Dismissals, LearningItem, LearningTarget, MAX_SUGGESTIONS, TermChange};
 use opit_core::provider::{Profile, ProviderClient, ProviderError};
 use opit_core::rules::pack::{CorrectionOutcome, header_comments};
 use opit_core::rules::prompt::{BuiltPrompt, build_prompt};
@@ -99,6 +100,14 @@ pub struct CorrectionDraft {
     pub yaml: String,
     pub outcome: CorrectionOutcome,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HistoryUpdate {
+    pub dictation: Dictation,
+    pub suggestions: Vec<TermChange>,
+}
+
+pub const MAX_HISTORY_TEXT_BYTES: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HotkeyState {
@@ -239,7 +248,7 @@ impl AppCore {
         let user = self.user_pack.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let (settings, warnings) = Settings::build(config, user, self.system_locale.as_deref());
         for warning in &warnings {
-            warn!(pack = %warning.pack_id, message = %warning.message, "rule skipped");
+            warn!(pack = %warning.pack_id, "rule skipped");
         }
         self.settings.replace(settings);
         warnings
@@ -615,8 +624,9 @@ impl AppCore {
     pub fn correction_draft(&self, canonical: &str, variant: &str) -> Result<CorrectionDraft, CommandError> {
         let current = self.user_rules_yaml()?;
         let mut pack = RulePack::from_yaml(&current)?;
-        let outcome =
-            pack.add_correction(canonical, variant).map_err(|e| CommandError::new("invalid_input", e.to_string()))?;
+        let outcome = pack.add_correction(canonical, variant).map_err(|_| {
+            CommandError::new("invalid_input", "the correction is empty, unchanged or conflicts with an existing rule")
+        })?;
         Ok(CorrectionDraft { yaml: Self::render_user_rules(&pack, &current)?, outcome })
     }
 
@@ -632,6 +642,11 @@ impl AppCore {
     pub fn save_user_rules(&self, yaml: &str) -> Result<Vec<RuleWarning>, CommandError> {
         // Async commands may save rules and config concurrently; serialize their settings rebuilds.
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        self.save_user_rules_locked(yaml)
+    }
+
+    /// Caller holds config_lock across the complete read-modify-write operation.
+    fn save_user_rules_locked(&self, yaml: &str) -> Result<Vec<RuleWarning>, CommandError> {
         let pack = RulePack::from_yaml(yaml)?;
         if let Some(dir) = self.paths.user_rules.parent() {
             std::fs::create_dir_all(dir).map_err(|e| CommandError::new("rules", e.to_string()))?;
@@ -643,6 +658,62 @@ impl AppCore {
         *self.user_pack.lock().unwrap_or_else(PoisonError::into_inner) = Some(pack);
         info!("user rules saved");
         Ok(self.rebuild(self.config()))
+    }
+
+    pub fn learning_apply(&self, items: &[LearningItem]) -> Result<Vec<RuleWarning>, CommandError> {
+        Self::validate_learning_count(items.len())?;
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let safe_rules = || CommandError::new("rules", "could not read or save personal rules");
+        let current = self.user_rules_yaml().map_err(|_| safe_rules())?;
+        let mut pack = RulePack::from_yaml(&current).map_err(|_| safe_rules())?;
+        let mut pairs = Vec::new();
+        for item in items {
+            let pair = item.change.normalized().map_err(Self::learning_error)?;
+            let result = match item.target {
+                LearningTarget::Rule => pack.add_correction(&pair.corrected, &pair.heard),
+                LearningTarget::Term => pack.add_term(&pair.corrected),
+            };
+            result.map_err(|_| CommandError::new("invalid_input", "the correction conflicts with an existing rule"))?;
+            pairs.push(pair);
+        }
+        let path = self.paths.root.join("learning.json");
+        let mut dismissed = Dismissals::load(&path).map_err(Self::learning_error)?;
+        // Remember approved pairs too: a keyword-only choice must not be offered again.
+        dismissed.dismiss(&pairs).map_err(Self::learning_error)?;
+        let yaml = Self::render_user_rules(&pack, &current).map_err(|_| safe_rules())?;
+        let warnings = self.save_user_rules_locked(&yaml).map_err(|_| safe_rules())?;
+        dismissed.save(&path).map_err(|_| {
+            CommandError::new(
+                "learning",
+                "personal rules were saved, but learning preferences could not be saved; retry to remember this choice",
+            )
+        })?;
+        Ok(warnings)
+    }
+
+    pub fn learning_dismiss(&self, items: &[TermChange]) -> Result<(), CommandError> {
+        Self::validate_learning_count(items.len())?;
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let path = self.paths.root.join("learning.json");
+        let mut dismissed = Dismissals::load(&path).map_err(Self::learning_error)?;
+        dismissed.dismiss(items).map_err(Self::learning_error)?;
+        dismissed.save(&path).map_err(Self::learning_error)
+    }
+
+    fn validate_learning_count(len: usize) -> Result<(), CommandError> {
+        if !(1..=MAX_SUGGESTIONS).contains(&len) {
+            return Err(CommandError::new("invalid_input", "select between one and eight learning suggestions"));
+        }
+        Ok(())
+    }
+
+    fn learning_error(error: opit_core::learning::LearningError) -> CommandError {
+        use opit_core::learning::LearningError;
+        let code = match error {
+            LearningError::InvalidPair => "invalid_input",
+            _ => "learning",
+        };
+        CommandError::new(code, error.to_string())
     }
 
     /// Runs `text` through the rules, optionally with an unsaved `user.yaml` draft.
@@ -679,6 +750,42 @@ impl AppCore {
 
     fn history(&self) -> Result<&HistoryService, CommandError> {
         self.history.as_deref().ok_or_else(|| CommandError::new("unavailable", "history is not available"))
+    }
+
+    pub fn history_update_text(&self, id: i64, text: &str) -> Result<HistoryUpdate, CommandError> {
+        if id <= 0 || text.trim().is_empty() || text.len() > MAX_HISTORY_TEXT_BYTES || text.contains('\0') {
+            return Err(CommandError::new(
+                "invalid_input",
+                "provide a valid history id and nonempty text of at most 100000 UTF-8 bytes without NUL",
+            ));
+        }
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let settings = self.settings.current();
+        // Load preferences before committing the edit, so a read failure is safely retryable.
+        let dismissed = if settings.config.learning.enabled {
+            Dismissals::load(&self.paths.root.join("learning.json")).map_err(Self::learning_error)?
+        } else {
+            Dismissals::default()
+        };
+        let history = self.history()?;
+        let store = history.store();
+        let before = store.get(id)?.ok_or_else(|| CommandError::new("unavailable", "history row is missing"))?;
+        if before.status != opit_core::pipeline::TranscriptStatus::Ok {
+            return Err(CommandError::new("invalid_input", "only successful transcripts can be edited"));
+        }
+        let suggestions = if settings.config.learning.enabled {
+            opit_core::learning::filter_suggestions(
+                opit_core::learning::diff_terms(&before.text, text),
+                true,
+                &settings.rules,
+                &dismissed,
+            )
+        } else {
+            Vec::new()
+        };
+        let dictation =
+            store.update_text(id, text)?.ok_or_else(|| CommandError::new("unavailable", "history row is missing"))?;
+        Ok(HistoryUpdate { dictation, suggestions })
     }
 
     pub fn history_recent(&self, limit: usize, before_id: Option<i64>) -> Result<Vec<Dictation>, CommandError> {
@@ -783,6 +890,247 @@ mod tests {
 
     fn fixture() -> Fixture {
         fixture_with(tempfile::tempdir().unwrap(), Vec::new())
+    }
+
+    fn learning_pair(heard: &str, corrected: &str) -> TermChange {
+        TermChange { heard: heard.into(), corrected: corrected.into() }
+    }
+
+    fn learning_history(core: &AppCore, text: &str) -> i64 {
+        core.history
+            .as_ref()
+            .unwrap()
+            .store()
+            .insert(&NewDictation {
+                created_at_ms: 42,
+                profile_id: "groq",
+                raw_text: "original recognition",
+                text,
+                status: TranscriptStatus::Ok,
+                audio_ms: 1000,
+                latency_ms: 50,
+                error_code: None,
+                language: Some("tr"),
+                cleanup_status: None,
+                cleanup_model: None,
+                cleanup_style_id: None,
+                source_text: None,
+                instruction: None,
+                mode: "dictation",
+                agent: None,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn learning_history_edit_offers_without_saving_rules_and_uses_latest_text() {
+        let f = fixture();
+        let id = learning_history(&f.core, "use zeta wrong today");
+        let update = f.core.history_update_text(id, "use ZetaSuite today").unwrap();
+        assert_eq!(update.suggestions, [learning_pair("zeta wrong", "ZetaSuite")]);
+        assert_eq!(update.dictation.raw_text, "original recognition");
+        assert_eq!(update.dictation.created_at_ms, 42);
+        assert!(!f.core.paths.user_rules.exists());
+        assert!(!f.core.paths.root.join("learning.json").exists());
+        assert!(f.core.history_update_text(id, "use ZetaSuite today").unwrap().suggestions.is_empty());
+        let next = f.core.history_update_text(id, "use OmegaSuite today").unwrap();
+        assert_eq!(next.suggestions, [learning_pair("ZetaSuite", "OmegaSuite")]);
+        assert_eq!(f.core.history_search("OmegaSuite", 10).unwrap()[0].id, id);
+    }
+
+    #[test]
+    fn learning_disabled_still_saves_history_and_allows_explicit_apply() {
+        let f = fixture();
+        f.core
+            .update_config(|config| {
+                config.learning.enabled = false;
+                Ok(())
+            })
+            .unwrap();
+        let id = learning_history(&f.core, "wrongword");
+        // Disabled suggestions do not read a broken preferences file.
+        let path = f.core.paths.root.join("learning.json");
+        std::fs::write(&path, "bad private data").unwrap();
+        let updated = f.core.history_update_text(id, "RightWord").unwrap();
+        assert!(updated.suggestions.is_empty());
+        assert_eq!(updated.dictation.text, "RightWord");
+        std::fs::remove_file(&path).unwrap();
+        f.core
+            .learning_apply(&[LearningItem {
+                change: learning_pair("wrongword", "RightWord"),
+                target: LearningTarget::Rule,
+            }])
+            .unwrap();
+        assert_eq!(f.core.settings.current().rules.apply("wrongword"), "RightWord");
+    }
+
+    #[test]
+    fn learning_apply_preserves_header_recompiles_and_persists_confirmed_choices() {
+        let f = fixture();
+        f.core
+            .save_user_rules(
+                "# Personal dictionary\n# Keep this context\nschema: 1\nid: user\nname: Personal\nterms: [zetasuite]\n",
+            )
+            .unwrap();
+        let items = [
+            LearningItem { change: learning_pair("zeta wrong", "ZetaSuite"), target: LearningTarget::Rule },
+            LearningItem { change: learning_pair("omega wrong", "OmegaSuite"), target: LearningTarget::Term },
+            LearningItem { change: learning_pair("zetasuite", "ZetaSuite"), target: LearningTarget::Term },
+        ];
+        assert!(f.core.learning_apply(&items).unwrap().is_empty());
+        let yaml = f.core.user_rules_yaml().unwrap();
+        assert!(yaml.starts_with("# Personal dictionary\n# Keep this context\n"));
+        let pack = RulePack::from_yaml(&yaml).unwrap();
+        assert_eq!(pack.corrections["ZetaSuite"], ["zeta wrong"]);
+        assert!(!pack.corrections.contains_key("OmegaSuite"));
+        assert_eq!(pack.terms, ["ZetaSuite", "OmegaSuite"]);
+        assert_eq!(f.core.settings.current().rules.apply("zeta wrong and omegasuite"), "ZetaSuite and OmegaSuite");
+        assert!(f.core.prompt_budget().prompt.unwrap().contains("OmegaSuite"));
+        f.core.learning_apply(&items).unwrap();
+        assert_eq!(f.core.user_rules_yaml().unwrap(), yaml, "retries are idempotent");
+        let saved = Dismissals::load(&f.core.paths.root.join("learning.json")).unwrap();
+        assert!(saved.contains(&learning_pair("omega wrong", "OmegaSuite")));
+        let id = learning_history(&f.core, "omega wrong");
+        assert!(f.core.history_update_text(id, "OmegaSuite").unwrap().suggestions.is_empty());
+    }
+
+    #[test]
+    fn learning_dismiss_survives_restarting_core_and_batch_errors_do_not_write() {
+        let f = fixture();
+        let pair = learning_pair("zeta wrong", "ZetaSuite");
+        f.core.learning_dismiss(std::slice::from_ref(&pair)).unwrap();
+        let yaml = f.core.user_rules_yaml().unwrap();
+        let before = std::fs::read(f.core.paths.root.join("learning.json")).unwrap();
+        let bad = learning_pair("", "Nope");
+        assert_eq!(f.core.learning_dismiss(&[pair.clone(), bad.clone()]).unwrap_err().code, "invalid_input");
+        assert_eq!(std::fs::read(f.core.paths.root.join("learning.json")).unwrap(), before);
+        assert_eq!(
+            f.core
+                .learning_apply(&[
+                    LearningItem { change: pair, target: LearningTarget::Rule },
+                    LearningItem { change: bad, target: LearningTarget::Term },
+                ])
+                .unwrap_err()
+                .code,
+            "invalid_input"
+        );
+        assert_eq!(f.core.user_rules_yaml().unwrap(), yaml);
+        let dir = f._dir;
+        drop(f.core);
+        let reopened = fixture_with(dir, Vec::new());
+        let id = learning_history(&reopened.core, "zeta wrong");
+        assert!(reopened.core.history_update_text(id, "ZetaSuite").unwrap().suggestions.is_empty());
+    }
+
+    #[test]
+    fn learning_validates_inputs_and_conflicts_without_disclosing_text() {
+        let f = fixture();
+        let id = learning_history(&f.core, "private original");
+        for text in ["".into(), " ".into(), "private\0data".into(), "x".repeat(MAX_HISTORY_TEXT_BYTES + 1)] {
+            assert_eq!(f.core.history_update_text(id, &text).unwrap_err().code, "invalid_input");
+        }
+        assert_eq!(f.core.history_update_text(-1, "valid").unwrap_err().code, "invalid_input");
+        assert_eq!(f.core.history_update_text(i64::MAX, "valid").unwrap_err().code, "unavailable");
+        assert_eq!(f.core.learning_apply(&[]).unwrap_err().code, "invalid_input");
+        assert_eq!(f.core.learning_dismiss(&vec![learning_pair("a", "b"); 9]).unwrap_err().code, "invalid_input");
+        f.core
+            .save_user_rules("schema: 1\nid: user\nname: Personal\ncorrections:\n  ExistingPrivate: [privateheard]\n")
+            .unwrap();
+        let before = f.core.user_rules_yaml().unwrap();
+        let error = f
+            .core
+            .learning_apply(&[LearningItem {
+                change: learning_pair("privateheard", "CorrectedPrivate"),
+                target: LearningTarget::Rule,
+            }])
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert!(!error.message.contains("Private") && !error.message.contains("privateheard"));
+        assert_eq!(f.core.user_rules_yaml().unwrap(), before);
+        let store = f.core.history.as_ref().unwrap().store();
+        let failed_id = store
+            .insert(&NewDictation {
+                status: TranscriptStatus::Failed,
+                created_at_ms: 1,
+                profile_id: "groq",
+                raw_text: "",
+                text: "",
+                audio_ms: 1,
+                latency_ms: 1,
+                error_code: Some("network"),
+                language: None,
+                cleanup_status: None,
+                cleanup_model: None,
+                cleanup_style_id: None,
+                source_text: None,
+                instruction: None,
+                mode: "dictation",
+                agent: None,
+            })
+            .unwrap();
+        drop(store);
+        assert_eq!(f.core.history_update_text(failed_id, "valid").unwrap_err().code, "invalid_input");
+    }
+
+    #[test]
+    fn learning_read_failure_keeps_history_and_rules_unchanged() {
+        let f = fixture();
+        let id = learning_history(&f.core, "private original");
+        std::fs::create_dir_all(&f.core.paths.root).unwrap();
+        std::fs::write(f.core.paths.root.join("learning.json"), "private malformed data").unwrap();
+        let err = f.core.history_update_text(id, "private corrected").unwrap_err();
+        assert_eq!(err.code, "learning");
+        assert!(!err.message.contains("private"));
+        assert_eq!(f.core.history_recent(1, None).unwrap()[0].text, "private original");
+        let item = LearningItem { change: learning_pair("wrong", "Right"), target: LearningTarget::Term };
+        assert_eq!(f.core.learning_apply(&[item]).unwrap_err().code, "learning");
+        assert!(!f.core.paths.user_rules.exists());
+    }
+
+    #[test]
+    fn learning_reports_partial_disk_failure_and_retry_is_safe() {
+        let f = fixture();
+        let blocked_tmp = f.core.paths.root.join("learning.json.tmp");
+        std::fs::create_dir_all(&blocked_tmp).unwrap();
+        let item = LearningItem { change: learning_pair("wrong", "Right"), target: LearningTarget::Term };
+        let error = f.core.learning_apply(std::slice::from_ref(&item)).unwrap_err();
+        assert_eq!(error.code, "learning");
+        assert!(error.message.starts_with("personal rules were saved"));
+        assert_eq!(RulePack::from_yaml(&f.core.user_rules_yaml().unwrap()).unwrap().terms, ["Right"]);
+        std::fs::remove_dir(&blocked_tmp).unwrap();
+        f.core.learning_apply(std::slice::from_ref(&item)).unwrap();
+        assert_eq!(RulePack::from_yaml(&f.core.user_rules_yaml().unwrap()).unwrap().terms, ["Right"]);
+        assert!(Dismissals::load(&f.core.paths.root.join("learning.json")).unwrap().contains(&item.change));
+    }
+
+    #[test]
+    fn concurrent_learning_batches_preserve_both_changes() {
+        let f = fixture();
+        std::thread::scope(|scope| {
+            let a = scope.spawn(|| {
+                f.core
+                    .learning_apply(&[LearningItem {
+                        change: learning_pair("zeta wrong", "ZetaSuite"),
+                        target: LearningTarget::Rule,
+                    }])
+                    .unwrap()
+            });
+            let b = scope.spawn(|| {
+                f.core
+                    .learning_apply(&[LearningItem {
+                        change: learning_pair("omega wrong", "OmegaSuite"),
+                        target: LearningTarget::Rule,
+                    }])
+                    .unwrap()
+            });
+            a.join().unwrap();
+            b.join().unwrap();
+        });
+        let pack = RulePack::from_yaml(&f.core.user_rules_yaml().unwrap()).unwrap();
+        assert_eq!(pack.corrections.len(), 2);
+        let saved = Dismissals::load(&f.core.paths.root.join("learning.json")).unwrap();
+        assert!(saved.contains(&learning_pair("zeta wrong", "ZetaSuite")));
+        assert!(saved.contains(&learning_pair("omega wrong", "OmegaSuite")));
     }
 
     #[tokio::test]

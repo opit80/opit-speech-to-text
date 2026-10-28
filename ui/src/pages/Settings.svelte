@@ -113,6 +113,7 @@
       mediaMode: c.media.mode as string,
       historyEnabled: c.history.enabled,
       saveAudio: c.history.save_audio,
+      learning: c.learning.enabled,
       checkUpdates: c.ui.check_updates,
       translateLanguage: c.translate.target_language,
       translateModel: c.translate.model ?? "",
@@ -465,7 +466,7 @@
       </div>
       </details>
 
-      <details class="card settings-group" open={["history_enabled", "save_audio", "retention", "max_entries"].some((field) => !!errors[field])}>
+      <details class="card settings-group" open={["history_enabled", "save_audio", "retention", "max_entries", "learning"].some((field) => !!errors[field])}>
         <summary>{t("settings.history")}</summary>
         <div class="stack group-body">
         <Switch label={t("settings.history_enabled")} checked={view.historyEnabled}
@@ -481,6 +482,9 @@
         {@render numberInput("retention", t("settings.retention"), undefined, 1, 365, 1,
           !config.history.enabled || !config.history.save_audio,
           (c) => c.history.audio_retention_days, (c, n) => { c.history.audio_retention_days = n; })}
+        <Switch label={t("settings.learning")} info={t("settings.learning_hint")} checked={view.learning}
+          onchange={(v) => void save("learning", (c) => { c.learning.enabled = v; })} />
+        {@render fieldError("learning")}
       </div>
       </details>
 

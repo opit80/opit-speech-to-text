@@ -1,15 +1,18 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import CleanupMarker from "../lib/components/CleanupMarker.svelte";
   import ModeBadge from "../lib/components/ModeBadge.svelte";
   import { canRetryRow, isVoiceMode, originalOf } from "../lib/voice-modes";
   import { api } from "../lib/api";
   import { app, errorText, loadStyleDefaults, t } from "../lib/app.svelte";
-  import { onHistoryAdded } from "../lib/events";
+  import { onHistoryAdded, onHistoryUpdated } from "../lib/events";
   import { formatClock, formatDateTime, formatSeconds } from "../lib/format";
   import { expandToWords } from "../lib/selection";
   import { HISTORY_PAGE, refreshHistory, refreshWindow, sameList } from "../lib/history";
+  import { canEditRow, editIssue, editorRows, type EditIssue } from "../lib/learning";
+  import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
-  import type { Dictation } from "../lib/types";
+  import type { Dictation, TermChange } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import Dialog from "../lib/components/Dialog.svelte";
@@ -17,6 +20,7 @@
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import CorrectionDialog from "./CorrectionDialog.svelte";
+  import LearningDialog from "./LearningDialog.svelte";
 
   let rawIds = $state<number[]>([]);
   let query = $state("");
@@ -47,6 +51,20 @@
   let correctionOpen = $state(false);
   let correctionTarget = $state<Dictation | null>(null);
   let variant = $state("");
+  // Text editing: one row at a time; the draft lives here until saved or cancelled.
+  let editingId = $state<number | null>(null);
+  let editDraft = $state("");
+  let editBusy = $state(false);
+  let editError = $state<string | null>(null);
+  let editInput = $state<HTMLTextAreaElement>();
+  // Rows edited while this page is open (the row data has no "edited" flag).
+  let editedIds = $state<number[]>([]);
+  // Suggestions from the last saved edit, offered once in LearningDialog.
+  let offer = $state<TermChange[] | null>(null);
+  let offerRow: number | null = null;
+  const editIssueKeys: Record<EditIssue, MessageKey> = {
+    empty: "history.edit_empty", nul: "history.edit_nul", too_long: "history.edit_too_long",
+  };
   let disposed = false;
   let generation = 0;
   let listRequest = 0;
@@ -94,6 +112,21 @@
 
   $effect(() => {
     let unlisten: (() => void) | undefined;
+    let stopUpdated: (() => void) | undefined;
+    onHistoryUpdated((id) => {
+      if (disposed) return;
+      // The pending save replaces the row from its own response.
+      if (editBusy && editingId === id) return;
+      if (mutationBusy) { refreshPending = true; return; }
+      // An edit can change whether a row matches the search, so a search always reruns.
+      if (query) void load(query, generation);
+      else if (rows.some((row) => row.id === id)) void load("", generation, true);
+    }).then((stop) => {
+      if (disposed) stop();
+      else stopUpdated = stop;
+    }).catch((error: unknown) => {
+      if (!disposed) liveError = errorText(error);
+    });
     onHistoryAdded(() => {
       if (query || disposed) return;
       if (mutationBusy) refreshPending = true;
@@ -111,6 +144,7 @@
     return () => {
       disposed = true;
       unlisten?.();
+      stopUpdated?.();
       stopAudio();
     };
   });
@@ -226,6 +260,66 @@
     correctionOpen = true;
   }
 
+  async function focusEditButton(id: number) {
+    await tick();
+    if (!disposed) document.querySelector<HTMLElement>(`[data-edit-row="${id}"]`)?.focus();
+  }
+
+  async function startEdit(row: Dictation) {
+    if (disposed || editBusy || offer || !canEditRow(row)) return;
+    editingId = row.id;
+    editDraft = row.text;
+    editError = null;
+    rawIds = rawIds.filter((id) => id !== row.id);
+    await tick();
+    if (!disposed && editingId === row.id) editInput?.focus();
+  }
+
+  async function cancelEdit() {
+    if (editBusy || editingId === null) return;
+    const id = editingId;
+    editingId = null;
+    editError = null;
+    await focusEditButton(id);
+  }
+
+  async function saveEdit() {
+    const id = editingId;
+    if (disposed || editBusy || id === null) return;
+    const row = rows.find((item) => item.id === id);
+    const text = editDraft;
+    const issue = editIssue(text);
+    if (issue) { editError = t(editIssueKeys[issue]); return; }
+    if (row?.text === text) { await cancelEdit(); return; }
+    editBusy = true;
+    editError = null;
+    try {
+      const { dictation, suggestions } = await api.historyUpdateText(id, text);
+      if (disposed) return;
+      rows = rows.map((item) => item.id === id ? dictation : item);
+      if (!editedIds.includes(id)) editedIds = [...editedIds, id];
+      editingId = null;
+      toast(t("common.saved"));
+      if (suggestions.length && app.config?.learning.enabled !== false) { offerRow = id; offer = suggestions; }
+      else await focusEditButton(id);
+    } catch (error) {
+      if (!disposed) editError = errorText(error);
+    } finally {
+      if (!disposed) editBusy = false;
+    }
+  }
+
+  function editKey(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      void cancelEdit();
+    } else if (event.key === "Enter" && event.ctrlKey) {
+      event.preventDefault();
+      void saveEdit();
+    }
+  }
+
   async function remove(clear: boolean) {
     if (disposed || mutationBusy || (!clear && !deleteTarget)) return;
     const target = deleteTarget;
@@ -241,12 +335,14 @@
       if (disposed) return;
       if (clear) {
         rows = [];
+        editingId = null;
         hasMore = false;
         clearOpen = false;
         stopAudio();
         toast(t("history.cleared"));
       } else if (target) {
         rows = rows.filter((row) => row.id !== target.id);
+        if (editingId === target.id) editingId = null;
         deleteOpen = false;
         if (audioId === target.id) stopAudio();
       }
@@ -303,9 +399,24 @@
               {#if row.language}<span>{t("history.language", { language: row.language.toUpperCase() })}</span>{/if}
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
               <span>{t("history.audio_length", { duration: formatClock(row.audio_ms) })}</span>
+              {#if editedIds.includes(row.id)}<span class="edited">{t("history.edited")}</span>{/if}
             </div>
             {#if row.status === "failed"}
               <p class="failure"><span class="failed-badge">{t("history.failed")}</span> {t(`error.kind.${row.error_code ?? "rejected"}`)}</p>
+            {:else if editingId === row.id}
+            <form class="stack" onsubmit={(event) => { event.preventDefault(); void saveEdit(); }}>
+              <Field label={t("history.transcript")} info={t("history.edit_hint")} error={editError}>
+                {#snippet children(id, describedBy)}
+                  <textarea {id} bind:this={editInput} bind:value={editDraft} rows={editorRows(editDraft)} spellcheck="false"
+                    readonly={editBusy} aria-invalid={!!editError} aria-describedby={describedBy}
+                    oninput={() => { editError = null; }} onkeydown={editKey}></textarea>
+                {/snippet}
+              </Field>
+              <div class="row edit-actions">
+                <Button disabled={editBusy} onclick={() => void cancelEdit()}>{t("common.cancel")}</Button>
+                <Button type="submit" variant="primary" busy={editBusy}>{t("common.save")}</Button>
+              </div>
+            </form>
             {:else}
             <!-- A caret enables keyboard selection; beforeinput keeps the single text node read-only. -->
             <div class="transcript" data-transcript contenteditable="plaintext-only" role="textbox" aria-readonly="true"
@@ -348,8 +459,10 @@
                 <Button variant="ghost" title={t("history.play")} aria-label={t("history.play")}
                   disabled={mutationBusy} onclick={() => void play(row)}><Icon name="play" /></Button>
               {/if}
+              {#if canEditRow(row)}<Button variant="ghost" title={t("history.edit")} aria-label={t("history.edit")} data-edit-row={row.id}
+                disabled={mutationBusy || editBusy || offer !== null || editingId === row.id} onclick={() => void startEdit(row)}><Icon name="pencil" /></Button>{/if}
               {#if row.status !== "failed" && row.mode === "dictation"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
-                disabled={mutationBusy || rawIds.includes(row.id)} onpointerdown={(event) => event.preventDefault()}
+                disabled={mutationBusy || rawIds.includes(row.id) || editingId === row.id} onpointerdown={(event) => event.preventDefault()}
                 onclick={(event) => addCorrection(row, event.currentTarget)}><Icon name="wand" /></Button>{/if}
               <Button variant="ghost" title={t("common.delete")} aria-label={t("common.delete")} disabled={mutationBusy}
                 onclick={() => { deleteTarget = row; mutationError = null; deleteOpen = true; }}><Icon name="trash" /></Button>
@@ -387,6 +500,7 @@
   {/snippet}
 </Dialog>
 <CorrectionDialog bind:open={correctionOpen} dictation={correctionTarget} {variant} />
+<LearningDialog bind:suggestions={offer} ondone={() => { if (offerRow !== null) void focusEditButton(offerRow); }} />
 
 <style>
   input { width: 100%; }
@@ -396,6 +510,9 @@
   li + li { border-top: 1px solid var(--border); }
   .metadata { display: flex; gap: var(--space-3); flex-wrap: wrap; font-size: var(--text-sm); margin-bottom: var(--space-2); }
   .transcript { white-space: pre-wrap; overflow-wrap: anywhere; }
+  textarea { width: 100%; resize: vertical; }
+  .edit-actions { justify-content: flex-end; }
+  .edited { font-weight: 600; color: var(--text); }
   .failure { color: var(--danger); }
   .failed-badge { display: inline-block; font-size: var(--text-sm); font-weight: 600; border: 1px solid currentColor; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); margin-right: var(--space-2); }
   .actions { justify-content: flex-end; margin-top: var(--space-2); }

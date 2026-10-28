@@ -10,6 +10,10 @@ function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn
 
 export const onStatus = (h: (s: DictationStatus) => void) => on("dictation-status", h);
 export const onHistoryAdded = (h: (id: number) => void) => on("history-added", h);
+/** A History row's text was edited; the payload is the row id (never the text). */
+export const onHistoryUpdated = (h: (id: number) => void) => on("history-updated", h);
+/** Personal rules were saved (Rules page or `learning_apply`, even a failed one). */
+export const onRulesChanged = (h: () => void) => on<null>("rules-changed", () => h());
 export const onConfigChanged = (h: (c: AppConfig) => void) => on("config-changed", h);
 export const onNavigate = (h: (route: string) => void) => on("navigate", h);
 export const onHotkeyState = (h: (s: HotkeyState) => void) => on("hotkey-state", h);

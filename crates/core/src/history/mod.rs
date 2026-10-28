@@ -213,6 +213,20 @@ impl HistoryStore {
         Ok(())
     }
 
+    /// Edits only the displayed transcript and its search index. The recognized
+    /// `raw_text`, audio, timestamps and processing metadata remain retrievable.
+    /// Failed/filtered rows must be recovered rather than edited into successes.
+    pub fn update_text(&self, id: i64, text: &str) -> Result<Option<Dictation>, HistoryError> {
+        if self.conn.execute(
+            "UPDATE dictations SET text=?2, search_text=?3 WHERE id=?1 AND status='ok'",
+            params![id, text, fold(text)],
+        )? == 0
+        {
+            return Ok(None);
+        }
+        self.get(id)
+    }
+
     /// Replaces content in place; id and original recording time remain unchanged.
     /// Returns false if the user deleted the row while a retry was running.
     pub fn replace(&self, id: i64, d: &NewDictation<'_>, keep_audio: bool) -> Result<bool, HistoryError> {
@@ -400,6 +414,30 @@ pub fn fts_query(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correcting_text_preserves_recognition_and_updates_fts_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let store = HistoryStore::open(&path).unwrap();
+        let id = store.insert(&entry("Displayed original", "Recognized original", 1)).unwrap();
+        let original = store.get(id).unwrap().unwrap();
+        let updated = store.update_text(id, "Corrected İstanbul").unwrap().unwrap();
+        let mut expected = original;
+        expected.text = "Corrected İstanbul".into();
+        assert_eq!(updated, expected);
+        assert!(store.search("Displayed", 10).unwrap().is_empty());
+        assert_eq!(store.search("ıstanbul", 10).unwrap()[0].id, id);
+        assert_eq!(store.search("Recognized", 10).unwrap()[0].id, id);
+        assert!(store.update_text(i64::MAX, "Missing").unwrap().is_none());
+        let mut failed = entry("", "", 2);
+        failed.status = TranscriptStatus::Failed;
+        let failed_id = store.insert(&failed).unwrap();
+        assert!(store.update_text(failed_id, "Not a recovery").unwrap().is_none());
+        drop(store);
+        let reopened = HistoryStore::open(&path).unwrap();
+        assert_eq!(reopened.get(id).unwrap().unwrap(), expected);
+    }
 
     #[test]
     fn version_six_migrates_modes_and_preserves_originals_on_failed_edits() {

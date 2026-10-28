@@ -94,11 +94,7 @@ impl RulePack {
         }
         let folded = fold(&variant);
         if fold(&canonical) == folded {
-            if self.terms.contains(&canonical) {
-                return Ok(CorrectionOutcome::AlreadyPresent);
-            }
-            self.terms.push(canonical);
-            return Ok(CorrectionOutcome::AddedTerm);
+            return self.add_term(&canonical);
         }
         for (key, variants) in &self.corrections {
             if *key != canonical && variants.iter().any(|v| fold(v) == folded) {
@@ -111,6 +107,24 @@ impl RulePack {
         }
         variants.push(variant);
         Ok(CorrectionOutcome::AddedVariant)
+    }
+
+    /// Add or update a canonical spelling without creating a casing-only duplicate.
+    pub fn add_term(&mut self, canonical: &str) -> Result<CorrectionOutcome, CorrectionError> {
+        let canonical = collapse_ws(canonical);
+        if canonical.is_empty() {
+            return Err(CorrectionError::Empty);
+        }
+        let key = fold(&canonical);
+        if let Some(existing) = self.terms.iter_mut().find(|term| fold(&collapse_ws(term)) == key) {
+            if *existing == canonical {
+                return Ok(CorrectionOutcome::AlreadyPresent);
+            }
+            *existing = canonical;
+        } else {
+            self.terms.push(canonical);
+        }
+        Ok(CorrectionOutcome::AddedTerm)
     }
 }
 
@@ -175,6 +189,15 @@ fn is_false(value: &bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn term_updates_casing_in_place_with_turkish_folding() {
+        let mut pack = RulePack::from_yaml("schema: 1\nid: user\nname: Personal\nterms: [github, ıstanbul]\n").unwrap();
+        assert_eq!(pack.add_correction("GitHub", "GITHUB"), Ok(CorrectionOutcome::AddedTerm));
+        assert_eq!(pack.add_term("İstanbul"), Ok(CorrectionOutcome::AddedTerm));
+        assert_eq!(pack.terms, ["GitHub", "İstanbul"]);
+        assert_eq!(pack.add_term("GitHub"), Ok(CorrectionOutcome::AlreadyPresent));
+    }
 
     const FULL: &str = r#"
 schema: 1

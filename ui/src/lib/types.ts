@@ -165,6 +165,8 @@ export interface AppConfig {
   translate: TranslateConfig;
   media: MediaConfig;
   app_rules: AppRulesConfig;
+  /** Only whether suggestions are offered after a History edit; nothing is added without confirmation. */
+  learning: LearningConfig;
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
   rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
   ui: {
@@ -202,7 +204,9 @@ export interface Dictation {
   cleanup_model: string | null;
   /** The cleanup style chosen for the dictation; null for Ask and older rows. May name a deleted style. */
   cleanup_style_id: string | null;
+  /** The original recognition (Ask: the request); unchanged by a History edit. */
   raw_text: string;
+  /** Editable from History (`history_update_text`). */
   text: string;
   status: TranscriptStatus;
   audio_ms: number;
@@ -214,6 +218,30 @@ export interface Dictation {
   source_text: string | null;
   /** Edit: the spoken instruction. Else null. */
   instruction: string | null;
+}
+
+export interface LearningConfig {
+  enabled: boolean;
+}
+
+/** One suggested dictionary addition from a History edit (each side: 1–4 words). */
+export interface TermChange {
+  heard: string;
+  corrected: string;
+}
+
+/** "rule": a correction rule heard → corrected; "term": the corrected spelling as a personal term. */
+export type LearningTarget = "rule" | "term";
+
+/** A `learning_apply` item (Rust flattens `TermChange` into it). */
+export interface LearningItem extends TermChange {
+  target: LearningTarget;
+}
+
+/** `history_update_text`: the saved row and at most eight suggestions (none when learning is off). */
+export interface HistoryUpdate {
+  dictation: Dictation;
+  suggestions: TermChange[];
 }
 
 export type RuleKind = "correction" | "replacement" | "casing" | "numbers";
@@ -290,7 +318,7 @@ export type StartupNotice =
   | { kind: "user_rules_broken"; reason: string };
 
 export type CommandErrorCode =
-  | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable" | "update"
+  | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable" | "update" | "learning"
   | "file_busy" | "file_pick" | "file_result" | "file_timestamps" | "file_language" | "file_speakers"
   | "file_decode" | "file_limit" | "file_cancelled" | "file_worker" | "file_save" | "file_blocked_by_update"
   | "update_blocked_by_dictation" | "update_blocked_by_file_job";

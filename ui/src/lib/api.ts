@@ -4,6 +4,7 @@ import type {
   AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
   FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, RunningApp, StyleDefaults, TranslateLanguage,
+  HistoryUpdate, LearningItem, TermChange,
 } from "./types";
 
 export const api = {
@@ -75,6 +76,12 @@ export const api = {
   historyClear: () => invoke<void>("history_clear"),
   historyAudio: (id: number) => invoke<ArrayBuffer>("history_audio", { id }),
   historyRetry: (id: number) => invoke<Dictation>("history_retry", { id }),
+  /** Saves an edited transcript (`raw_text` keeps the original) and returns dictionary suggestions. */
+  historyUpdateText: (id: number, text: string) => invoke<HistoryUpdate>("history_update_text", { id, text }),
+  /** Adds confirmed suggestions (1–8) to the personal rules; `rules-changed` follows even on failure. */
+  learningApply: (items: LearningItem[]) => invoke<RuleWarning[]>("learning_apply", { items }),
+  /** Remembers rejected suggestions (1–8) so they are never offered again. */
+  learningDismiss: (items: TermChange[]) => invoke<void>("learning_dismiss", { items }),
 
   getHotkeyState: () => invoke<HotkeyState>("get_hotkey_state"),
   setHotkeyPaused: (paused: boolean) => invoke<HotkeyState>("set_hotkey_paused", { paused }),

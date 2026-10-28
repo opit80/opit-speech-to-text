@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use opit_core::config::AppConfig;
 use opit_core::history::{Dictation, UsageStats};
+use opit_core::learning::{LearningItem, TermChange};
 use opit_core::provider::Profile;
 use opit_core::rules::builtin::PackInfo;
 use opit_core::rules::prompt::BuiltPrompt;
@@ -13,7 +14,7 @@ use opit_core::rules::{RulePack, RuleWarning};
 use serde::Serialize;
 use tauri::{AppHandle, State};
 
-use crate::app_core::{AppCore, CommandError, CorrectionDraft, HotkeyState, MicTestSink, RulesPreview};
+use crate::app_core::{AppCore, CommandError, CorrectionDraft, HistoryUpdate, HotkeyState, MicTestSink, RulesPreview};
 use crate::controller::{DictationStatus, Msg};
 use crate::startup::StartupNotice;
 use crate::updates::{self, UpdateState};
@@ -84,6 +85,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         parse_user_rules,
         render_user_rules,
         correction_draft,
+        history_update_text,
+        learning_apply,
+        learning_dismiss,
         history_recent,
         usage_stats,
         history_search,
@@ -391,8 +395,10 @@ async fn get_user_rules(core: Core<'_>) -> Result<String> {
 }
 
 #[tauri::command]
-async fn save_user_rules(core: Core<'_>, yaml: String) -> Result<Vec<RuleWarning>> {
-    blocking(core.inner().clone(), move |core| core.save_user_rules(&yaml)).await
+async fn save_user_rules(app: AppHandle, core: Core<'_>, yaml: String) -> Result<Vec<RuleWarning>> {
+    let warnings = blocking(core.inner().clone(), move |core| core.save_user_rules(&yaml)).await?;
+    events::emit(&app, events::RULES_CHANGED, ());
+    Ok(warnings)
 }
 
 #[tauri::command]
@@ -423,6 +429,27 @@ fn render_user_rules(pack: RulePack, previous_yaml: String) -> Result<String> {
 #[tauri::command]
 async fn correction_draft(core: Core<'_>, canonical: String, variant: String) -> Result<CorrectionDraft> {
     blocking(core.inner().clone(), move |core| core.correction_draft(&canonical, &variant)).await
+}
+
+#[tauri::command]
+async fn history_update_text(app: AppHandle, core: Core<'_>, id: i64, text: String) -> Result<HistoryUpdate> {
+    let updated = blocking(core.inner().clone(), move |core| core.history_update_text(id, &text)).await?;
+    events::emit(&app, events::HISTORY_UPDATED, id);
+    Ok(updated)
+}
+
+#[tauri::command]
+async fn learning_apply(app: AppHandle, core: Core<'_>, items: Vec<LearningItem>) -> Result<Vec<RuleWarning>> {
+    let warnings = blocking(core.inner().clone(), move |core| core.learning_apply(&items)).await;
+    // A preference-file write can fail after user.yaml was saved. Always refresh
+    // observers so they can inspect the actual saved state, including after retry.
+    events::emit(&app, events::RULES_CHANGED, ());
+    warnings
+}
+
+#[tauri::command]
+async fn learning_dismiss(core: Core<'_>, items: Vec<TermChange>) -> Result<()> {
+    blocking(core.inner().clone(), move |core| core.learning_dismiss(&items)).await
 }
 
 #[tauri::command]

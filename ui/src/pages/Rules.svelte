@@ -2,6 +2,7 @@
   import { tick, untrack } from "svelte";
   import { api } from "../lib/api";
   import { app, errorText, saveConfig, t } from "../lib/app.svelte";
+  import { onRulesChanged } from "../lib/events";
   import type { MessageKey } from "../lib/i18n";
   import { budgetLevel, hasInlineComments } from "../lib/rules";
   import { createSerialQueue } from "../lib/serial";
@@ -52,6 +53,11 @@
   let previewBusy = $state(false);
   let previewError = $state<string | null>(null);
   let previewRevision = $state(0);
+  // Personal rules were saved elsewhere while this editor had unsaved changes.
+  let changedElsewhere = $state(false);
+  // A rules-changed event that arrived while the editor was busy; handled once it is idle.
+  let rulesChangePending = false;
+  let syncRequest = 0;
 
   const dirty = $derived(yamlText !== savedText);
   const editorLocked = $derived(!editorLoaded || editorBusy || saveBusy);
@@ -97,13 +103,76 @@
     } catch (error) {
       if (!disposed) { tab = "yaml"; editorError = errorText(error); }
     } finally {
-      if (!disposed) editorBusy = false;
+      if (!disposed) { editorBusy = false; settleRulesChange(); }
     }
+  }
+
+  /**
+   * Compares the saved rules with what this editor last loaded or saved. New rules replace a clean
+   * editor (keeping the tab); with an unsaved draft only a notice is shown unless `discardDraft`.
+   * The check itself does not lock the editor, so typing is never interrupted.
+   */
+  async function syncEditor(discardDraft = false) {
+    if (disposed) return;
+    const request = ++syncRequest;
+    try {
+      const loaded = await api.getUserRules();
+      if (disposed || request !== syncRequest) return;
+      if (editorBusy || saveBusy || renderBusy) { rulesChangePending = true; return; }
+      if (!discardDraft && loaded === savedText) return;
+      if (!discardDraft && dirty) { changedElsewhere = true; return; }
+      await adoptRules(loaded);
+    } catch (error) {
+      if (!disposed && request === syncRequest) editorError = errorText(error);
+    }
+  }
+
+  async function adoptRules(loaded: string) {
+    editorBusy = true;
+    editorError = null;
+    try {
+      yamlText = loaded;
+      savedText = loaded;
+      editorLoaded = true;
+      warnings = [];
+      changedElsewhere = false;
+      if (tab === "table") {
+        const parsed = await api.parseUserRules(loaded);
+        if (!disposed) tablePack = parsed;
+      }
+    } catch (error) {
+      if (!disposed) { tab = "yaml"; editorError = errorText(error); }
+    } finally {
+      if (!disposed) { editorBusy = false; settleRulesChange(); }
+    }
+  }
+
+  // Saved rules changed (this page, a History correction or a learning confirmation): refresh what
+  // depends on them, but never drop an unsaved draft.
+  function rulesChanged() {
+    if (disposed) return;
+    previewRevision++;
+    void refreshBudget();
+    if (editorBusy || saveBusy || renderBusy) { rulesChangePending = true; return; }
+    if (editorLoaded) void syncEditor();
+  }
+
+  function settleRulesChange() {
+    if (!rulesChangePending || editorBusy || saveBusy || renderBusy) return;
+    rulesChangePending = false;
+    rulesChanged();
   }
 
   $effect(() => {
     untrack(() => { void loadPacks(); void loadEditor(); });
-    return () => { disposed = true; };
+    let stopRules: (() => void) | undefined;
+    onRulesChanged(rulesChanged).then((stop) => {
+      if (disposed) stop();
+      else stopRules = stop;
+    }).catch((error: unknown) => {
+      if (!disposed) editorError = errorText(error);
+    });
+    return () => { disposed = true; stopRules?.(); };
   });
 
   async function refreshBudget() {
@@ -188,6 +257,7 @@
     } finally {
       if (!disposed) {
         editorBusy = false;
+        settleRulesChange();
         if (focus) {
           await tick();
           if (!disposed) (tab === "table" ? tableTab : yamlTab)?.focus();
@@ -222,7 +292,7 @@
       if (!disposed) editorError = errorText(error);
     } finally {
       renderPending--;
-      if (!disposed) renderBusy = renderPending > 0;
+      if (!disposed) { renderBusy = renderPending > 0; settleRulesChange(); }
     }
   }
 
@@ -237,18 +307,21 @@
       if (disposed) return;
       warnings = skipped;
       savedText = submitted;
+      changedElsewhere = false;
       previewRevision++;
       toast(t("rules.saved"));
       await refreshBudget();
     } catch (error) {
       if (!disposed) editorError = errorText(error);
     } finally {
-      if (!disposed) saveBusy = false;
+      if (!disposed) { saveBusy = false; settleRulesChange(); }
     }
   }
 
   async function revert() {
     if (editorLocked || renderBusy || disposed) return;
+    // The saved copy here is stale: discard the draft by reading the current rules.
+    if (changedElsewhere) { await syncEditor(true); return; }
     editorBusy = true;
     editorError = null;
     try {
@@ -262,7 +335,7 @@
     } catch (error) {
       if (!disposed) { tab = "yaml"; editorError = errorText(error); }
     } finally {
-      if (!disposed) editorBusy = false;
+      if (!disposed) { editorBusy = false; settleRulesChange(); }
     }
   }
 
@@ -364,10 +437,14 @@
     </div>
     </details>
 
-    <details class="card advanced" open={!!editorError || dirty}>
+    <details class="card advanced" open={!!editorError || dirty || changedElsewhere}>
       <summary>{t("rules.advanced_editor")}</summary>
       <div class="stack advanced-body">
-      {#if dirty}<Banner tone="warning">{t("rules.unsaved")}</Banner>{/if}
+      {#if changedElsewhere}
+        <Banner tone="warning">{t("rules.changed_elsewhere")}
+          {#snippet action()}<Button disabled={editorLocked || renderBusy} onclick={() => void syncEditor(true)}>{t("common.reload")}</Button>{/snippet}
+        </Banner>
+      {:else if dirty}<Banner tone="warning">{t("rules.unsaved")}</Banner>{/if}
       <div class="tabs" role="tablist" aria-label={t("rules.editor")}>
         <button type="button" id="rules-tab-table" role="tab" bind:this={tableTab} aria-selected={tab === "table"}
           aria-controls="rules-panel-table" tabindex={tab === "table" ? 0 : -1} disabled={editorLocked || renderBusy}

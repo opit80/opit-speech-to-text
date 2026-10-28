@@ -12,6 +12,10 @@ use crate::{tray, window};
 pub const STATUS: &str = "dictation-status";
 /// Payload: the new history row id (`number`).
 pub const HISTORY_ADDED: &str = "history-added";
+/// Payload: edited history row id (`number`). No transcript content.
+pub const HISTORY_UPDATED: &str = "history-updated";
+/// Payload: null. Reload personal rules and prompt budget; preserve unsaved drafts.
+pub const RULES_CHANGED: &str = "rules-changed";
 /// Payload: the saved `AppConfig`.
 pub const CONFIG_CHANGED: &str = "config-changed";
 /// Payload: `HotkeyState`. Sent when the shortcut is paused/resumed or re-registered.
