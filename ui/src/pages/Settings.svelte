@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CleanupSettings from "../lib/components/CleanupSettings.svelte";
   import { untrack } from "svelte";
   import { api } from "../lib/api";
   import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
@@ -343,6 +344,11 @@
           !config.history.enabled || !config.history.save_audio,
           (c) => c.history.audio_retention_days, (c, n) => { c.history.audio_retention_days = n; })}
       </div>
+      </details>
+
+      <details class="card settings-group">
+        <summary>{t("cleanup.title")}</summary>
+        <div class="stack group-body"><CleanupSettings /></div>
       </details>
 
       <details class="card settings-group" open={installing !== null || !!errors.update_check}>

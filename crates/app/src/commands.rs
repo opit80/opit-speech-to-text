@@ -55,6 +55,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         save_config,
         set_active_profile,
         profile_presets,
+        cleanup_presets,
+        cleanup_prompts,
+        test_cleanup,
         list_microphones,
         mic_test_start,
         mic_test_stop,
@@ -145,6 +148,29 @@ async fn set_active_profile(app: AppHandle, core: Core<'_>, id: String) -> Resul
 fn profile_presets() -> Vec<Profile> {
     use opit_core::provider::presets;
     vec![presets::groq(), presets::openai(), presets::elevenlabs(), presets::custom("custom", "", "", "")]
+}
+
+#[tauri::command]
+fn cleanup_presets() -> Vec<opit_core::cleanup::CleanupPreset> {
+    opit_core::cleanup::presets()
+}
+
+#[tauri::command]
+fn cleanup_prompts() -> std::collections::BTreeMap<&'static str, &'static str> {
+    [("en", opit_core::cleanup::EN_PROMPT), ("tr", opit_core::cleanup::TR_PROMPT)].into_iter().collect()
+}
+
+#[derive(Serialize)]
+struct CleanupTestResult {
+    before: String,
+    after: String,
+}
+
+#[tauri::command]
+async fn test_cleanup(core: Core<'_>, config: opit_core::cleanup::CleanupConfig) -> Result<CleanupTestResult> {
+    let (client, system, before) = blocking(core.inner().clone(), move |core| core.cleanup_test_client(config)).await?;
+    let after = client.clean(&before, &system).await?;
+    Ok(CleanupTestResult { before, after })
 }
 
 /// Device enumeration can take a moment, so it runs off the main thread.

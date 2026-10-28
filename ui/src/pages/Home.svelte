@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CleanupMarker from "../lib/components/CleanupMarker.svelte";
   import { api } from "../lib/api";
   import { app, errorText, t } from "../lib/app.svelte";
   import { onHistoryAdded } from "../lib/events";
@@ -209,6 +210,7 @@
                     <div class="metadata muted">
                       <time datetime={new Date(item.created_at_ms).toISOString()}>{formatDateTime(item.created_at_ms, app.lang)}</time>
                       <span>{formatSeconds(item.latency_ms, app.lang)}</span>
+              <CleanupMarker status={item.cleanup_status} model={item.cleanup_model} />
                     </div>
                     <p class="transcript" class:muted={item.status !== "ok"}>
                       {#if item.status === "failed"}{t("history.failed")} — {t(`error.kind.${item.error_code ?? "rejected"}`)}{:else}

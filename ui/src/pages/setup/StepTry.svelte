@@ -30,7 +30,7 @@
   let latestRequest = 0;
   let disposed = false;
 
-  const busyState = $derived(app.status.state === "transcribing" || app.status.state === "pasting");
+  const busyState = $derived(app.status.state === "transcribing" || app.status.state === "cleaning" || app.status.state === "pasting");
   const worked = $derived(result?.status === "ok" || finishedWithoutHistory);
 
   $effect(() => {

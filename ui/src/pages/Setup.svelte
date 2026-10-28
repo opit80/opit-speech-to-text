@@ -6,6 +6,7 @@
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import StepLanguage from "./setup/StepLanguage.svelte";
+  import StepCleanup from "./setup/StepCleanup.svelte";
   import StepProvider from "./setup/StepProvider.svelte";
   import StepMicrophone from "./setup/StepMicrophone.svelte";
   import StepShortcut from "./setup/StepShortcut.svelte";
@@ -26,6 +27,7 @@
   const STEPS: { title: MessageKey; component: Component<StepProps, object, "canNext"> }[] = [
     { title: "setup.language.title", component: StepLanguage },
     { title: "setup.provider.title", component: StepProvider },
+    { title: "cleanup.title", component: StepCleanup },
     { title: "setup.mic.title", component: StepMicrophone },
     { title: "setup.shortcut.title", component: StepShortcut },
     { title: "setup.rules.title", component: StepRules },

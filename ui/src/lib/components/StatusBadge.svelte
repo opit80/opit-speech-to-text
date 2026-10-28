@@ -5,7 +5,7 @@
   let { status }: { status: DictationStatus } = $props();
   const keys: Record<DictationState, MessageKey> = {
     idle: "status.idle", recording: "status.recording", transcribing: "status.transcribing",
-    pasting: "status.pasting", cancelled: "status.cancelled", error: "status.error",
+    cleaning: "status.cleaning", pasting: "status.pasting", cancelled: "status.cancelled", error: "status.error",
   };
 </script>
 
@@ -19,7 +19,7 @@
   .idle .dot { background: var(--success); }
   .recording .dot { background: var(--danger); animation: pulse 1.4s ease-in-out infinite; }
   .paused .dot { animation: none; }
-  .transcribing .dot, .pasting .dot { background: var(--accent); }
+  .cleaning .dot, .transcribing .dot, .pasting .dot { background: var(--accent); }
   .error .dot { background: var(--danger); }
   @keyframes pulse { 50% { opacity: 0.4; } }
 </style>

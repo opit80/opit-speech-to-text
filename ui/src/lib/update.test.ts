@@ -83,7 +83,7 @@ describe("statusMessage", () => {
 
 describe("dictationBusy", () => {
   it("is true only while a dictation is in flight", () => {
-    const busy: DictationState[] = ["recording", "transcribing", "pasting"];
+    const busy: DictationState[] = ["recording", "transcribing", "cleaning", "pasting"];
     const free: DictationState[] = ["idle", "cancelled", "error"];
     for (const s of busy) expect(dictationBusy(s), s).toBe(true);
     for (const s of free) expect(dictationBusy(s), s).toBe(false);

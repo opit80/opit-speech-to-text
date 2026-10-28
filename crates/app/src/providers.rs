@@ -4,6 +4,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use opit_core::cleanup::{CleanupClient, CleanupConfig, CleanupError};
+
 use opit_core::provider::{Profile, ProviderClient};
 
 use crate::controller::{Providers, SetupError};
@@ -12,6 +14,7 @@ use crate::platform::SecretStore;
 pub struct HttpProviders {
     secrets: Arc<dyn SecretStore>,
     cache: Mutex<HashMap<String, Cached>>,
+    cleanup: Mutex<Option<CachedCleanup>>,
 }
 
 /// Not `Debug`: it holds an API key.
@@ -21,9 +24,15 @@ struct Cached {
     client: Arc<ProviderClient>,
 }
 
+struct CachedCleanup {
+    config: CleanupConfig,
+    key: Option<String>,
+    client: Arc<CleanupClient>,
+}
+
 impl HttpProviders {
     pub fn new(secrets: Arc<dyn SecretStore>) -> Self {
-        Self { secrets, cache: Mutex::default() }
+        Self { secrets, cache: Mutex::default(), cleanup: Mutex::default() }
     }
 
     fn key_for(&self, profile: &Profile) -> Result<Option<String>, SetupError> {
@@ -52,6 +61,23 @@ impl Providers for HttpProviders {
         let client =
             Arc::new(ProviderClient::new(profile.clone(), key.clone()).map_err(|e| SetupError::Client(e.to_string()))?);
         cache.insert(profile.id.clone(), Cached { profile: profile.clone(), key, client: client.clone() });
+        Ok(client)
+    }
+
+    fn cleanup_client(&self, config: &CleanupConfig) -> Result<Arc<CleanupClient>, CleanupError> {
+        let key = match &config.api_key_ref {
+            Some(key_ref) => self.secrets.get(key_ref).map_err(|_| CleanupError::MissingKey)?,
+            None => None,
+        };
+        let mut cache = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(cached) = &*cache
+            && cached.config == *config
+            && cached.key == key
+        {
+            return Ok(cached.client.clone());
+        }
+        let client = Arc::new(CleanupClient::new(config.clone(), key.clone())?);
+        *cache = Some(CachedCleanup { config: config.clone(), key, client: client.clone() });
         Ok(client)
     }
 
@@ -106,6 +132,30 @@ mod tests {
         local.api_key_ref = None;
         assert!(providers.client(&local).is_ok());
         assert!(matches!(providers.client(&presets::groq()), Err(SetupError::Secret(_))));
+    }
+
+    #[tokio::test]
+    async fn cleanup_clients_reuse_connections_and_refresh_when_key_or_settings_change() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let secrets = Arc::new(FakeSecrets::with("cleanup", "first-key"));
+        let providers = HttpProviders::new(secrets.clone());
+        let mut config = CleanupConfig { base_url: format!("{}/v1", server.uri()), ..CleanupConfig::default() };
+        let first = providers.cleanup_client(&config).unwrap();
+        assert!(Arc::ptr_eq(&first, &providers.cleanup_client(&config).unwrap()));
+        first.warm_up().await;
+        secrets.set("cleanup", "second-key").unwrap();
+        let rekeyed = providers.cleanup_client(&config).unwrap();
+        assert!(!Arc::ptr_eq(&first, &rekeyed));
+        config.model = "unknown-model-is-allowed".into();
+        assert!(!Arc::ptr_eq(&rekeyed, &providers.cleanup_client(&config).unwrap()));
+        secrets.delete("cleanup").unwrap();
+        assert!(matches!(providers.cleanup_client(&config), Err(CleanupError::MissingKey)));
     }
 
     #[tokio::test]

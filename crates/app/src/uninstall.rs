@@ -14,14 +14,15 @@ use crate::startup::Paths;
 /// Command-line flag the uninstaller passes. `run()` in lib.rs handles it before anything starts.
 pub const DELETE_CREDENTIALS_FLAG: &str = "--delete-credentials";
 
-/// Every key ref this app may have stored: the presets' refs plus each profile's `api_key_ref` in
-/// `config.json`. The file is read as plain JSON (no schema, no migration), so a damaged or newer
-/// config still gives up its refs.
+/// Speech and cleanup preset refs, plus saved profile and cleanup `api_key_ref` values.
+/// The file is read as plain JSON (no schema, no migration), so a damaged or newer config
+/// still gives up its refs.
 pub fn credential_refs(config_json: Option<&str>) -> Vec<String> {
     let mut refs: BTreeSet<String> = [presets::groq(), presets::openai(), presets::elevenlabs()]
         .into_iter()
         .filter_map(|profile| profile.api_key_ref)
         .collect();
+    refs.extend(opit_core::cleanup::presets().into_iter().filter_map(|p| p.config.api_key_ref));
     let config = config_json.and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
     let profiles = config.as_ref().and_then(|c| c.get("profiles")).and_then(|p| p.as_array());
     for profile in profiles.into_iter().flatten() {
@@ -29,6 +30,16 @@ pub fn credential_refs(config_json: Option<&str>) -> Vec<String> {
         if let Some(key_ref) = key_ref.filter(|r| !r.is_empty()) {
             refs.insert(key_ref.to_string());
         }
+    }
+    if let Some(key_ref) = config
+        .as_ref()
+        .and_then(|c| c.get("cleanup"))
+        .and_then(|c| c.get("api_key_ref"))
+        .and_then(|r| r.as_str())
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
+        refs.insert(key_ref.into());
     }
     refs.into_iter().collect()
 }
@@ -54,6 +65,27 @@ mod tests {
     use super::*;
     use crate::platform::fake::FakeSecrets;
 
+    fn expected(extra: &[&str]) -> Vec<String> {
+        let mut refs: Vec<String> = [
+            "cleanup",
+            "cleanup-custom",
+            "cleanup-deepseek",
+            "cleanup-google",
+            "cleanup-groq",
+            "cleanup-openai",
+            "cleanup-openrouter",
+            "elevenlabs",
+            "groq",
+            "openai",
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .map(str::to_string)
+        .collect();
+        refs.sort();
+        refs
+    }
+
     #[test]
     fn refs_come_from_the_presets_and_every_profile() {
         let json = r#"{"profiles":[
@@ -62,17 +94,25 @@ mod tests {
             {"id":"local","api_key_ref":null},
             {"id":"blank","api_key_ref":""}
         ]}"#;
-        assert_eq!(credential_refs(Some(json)), ["elevenlabs", "groq", "home-gpu", "openai"]);
+        assert_eq!(credential_refs(Some(json)), expected(&["home-gpu"]));
     }
 
     #[test]
     fn a_missing_or_damaged_config_still_gives_the_preset_refs() {
-        assert_eq!(credential_refs(None), ["elevenlabs", "groq", "openai"]);
-        assert_eq!(credential_refs(Some("{damaged")), ["elevenlabs", "groq", "openai"]);
-        assert_eq!(credential_refs(Some(r#"{"profiles":"nope"}"#)), ["elevenlabs", "groq", "openai"]);
+        assert_eq!(credential_refs(None), expected(&[]));
+        assert_eq!(credential_refs(Some("{damaged")), expected(&[]));
+        assert_eq!(credential_refs(Some(r#"{"profiles":"nope"}"#)), expected(&[]));
         assert_eq!(
             credential_refs(Some(r#"{"schema_version":99,"profiles":[{"api_key_ref":"new"}]}"#)),
-            ["elevenlabs", "groq", "new", "openai"]
+            expected(&["new"])
+        );
+    }
+
+    #[test]
+    fn cleanup_credential_ref_is_read_even_without_profiles() {
+        assert_eq!(
+            credential_refs(Some(r#"{"cleanup":{"api_key_ref":" custom-cleanup "}}"#)),
+            expected(&["custom-cleanup"])
         );
     }
 

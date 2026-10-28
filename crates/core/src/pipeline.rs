@@ -51,6 +51,13 @@ impl TranscriptStatus {
 pub struct Transcript {
     /// Provider output before rules.
     pub raw_text: String,
+    /// Provider detection kept separately when a fixed profile language is used.
+    #[serde(skip)]
+    pub detected_language: Option<String>,
+    pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
+    pub cleanup_model: Option<String>,
+    #[serde(skip)]
+    pub cleanup_error: Option<crate::cleanup::CleanupError>,
     /// ISO 639-1 language, reported by the provider or fixed by the used profile.
     pub language: Option<String>,
     /// Text to paste.
@@ -198,6 +205,7 @@ where
         &profile.language,
         audio.audio_ms,
     );
+    let detected_language = raw.language.clone();
     let language = if profile.language.trim() == "auto" {
         raw.language
     } else {
@@ -205,6 +213,10 @@ where
     };
     Ok(Transcript {
         raw_text: raw.text,
+        detected_language,
+        cleanup_status: Some(crate::cleanup::CleanupStatus::Skipped),
+        cleanup_model: None,
+        cleanup_error: None,
         language,
         text,
         status,

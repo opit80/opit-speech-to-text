@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opit_core::audio::Recording;
 use opit_core::audio::encode::EncodeError;
+use opit_core::cleanup::{self, CleanupClient, CleanupConfig, CleanupError};
 use opit_core::config::HotkeyMode;
 use opit_core::history::NewDictation;
 use opit_core::pipeline::{self, PipelineContext, PipelineError, PreparedAudio, Transcript, TranscriptStatus};
@@ -44,6 +45,10 @@ pub trait Providers: Send + Sync + 'static {
     type Client: Transcriber + Send + Sync + 'static;
 
     fn client(&self, profile: &Profile) -> Result<Self::Client, SetupError>;
+
+    fn cleanup_client(&self, _config: &CleanupConfig) -> Result<Arc<CleanupClient>, CleanupError> {
+        Err(CleanupError::MissingKey)
+    }
 
     /// Best-effort connection warm-up while the user is still speaking.
     fn warm_up(&self, client: &Self::Client);
@@ -115,6 +120,9 @@ pub enum Msg {
         progress: Option<RetryWait>,
     },
     HistoryStored(i64),
+    Cleaning {
+        session: u64,
+    },
     Hotkey(HotkeyEvent),
     Overlay(OverlayAction),
     Shutdown,
@@ -232,6 +240,7 @@ impl ControllerHandle {
 }
 
 struct Clients<C> {
+    cleanup: Option<Result<Arc<CleanupClient>, CleanupError>>,
     primary: C,
     fallback: Option<C>,
 }
@@ -286,6 +295,7 @@ enum Phase {
         task: AbortHandle,
         cancel: watch::Sender<bool>,
         progress: Option<RetryWait>,
+        cleaning: bool,
     },
     Pasting {
         session: u64,
@@ -336,6 +346,15 @@ impl<P: Providers> Controller<P> {
             Msg::Cancel => self.cancel(true),
             Msg::Retry | Msg::Overlay(OverlayAction::Retry) => self.retry(),
             Msg::RetryHistory { id, audio, reply } => self.retry_history(id, audio, reply),
+            Msg::Cleaning { session } => {
+                if let Phase::Transcribing { session: active, cleaning, .. } = &mut self.phase
+                    && *active == session
+                {
+                    *cleaning = true;
+                    self.show_progress();
+                    self.set_state(DictationState::Cleaning);
+                }
+            }
             Msg::HistoryStored(id) => self.env.events.history_added(id),
             Msg::RetryProgress { session, progress } => {
                 if let Phase::Transcribing { session: active, progress: current, .. } = &mut self.phase
@@ -414,7 +433,10 @@ impl<P: Providers> Controller<P> {
                 None
             }
         });
-        Ok(Clients { primary, fallback })
+        let uses_cleanup = profile.apply_cleanup || config.fallback_for(profile).is_some_and(|p| p.apply_cleanup);
+        let cleanup =
+            (config.cleanup.enabled && uses_cleanup).then(|| self.env.providers.cleanup_client(&config.cleanup));
+        Ok(Clients { primary, fallback, cleanup })
     }
 
     /// True (and says so on the overlay) while an update is installing.
@@ -463,6 +485,12 @@ impl<P: Providers> Controller<P> {
             warn!(device = %started.device, "configured microphone unavailable; using the default device");
         }
         self.env.providers.warm_up(&clients.primary);
+        if let Some(Ok(client)) = &clients.cleanup {
+            let client = client.clone();
+            tokio::spawn(async move {
+                client.warm_up().await;
+            });
+        }
 
         let max = Duration::from_secs(u64::from(settings.config.recording.max_seconds));
         let limit = self.arm_limit(session, max);
@@ -569,6 +597,37 @@ impl<P: Providers> Controller<P> {
                 wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
             })
             .await;
+            if let Ok(transcript) = &mut result {
+                let profile = task_settings
+                    .config
+                    .profiles
+                    .iter()
+                    .find(|p| p.id == transcript.profile_id)
+                    .unwrap_or_else(|| clients.primary.profile());
+                let config = &task_settings.config.cleanup;
+                if cleanup::eligible(transcript, config, profile) {
+                    let _ = tx.send(Msg::Cleaning { session });
+                    let ui_language = if task_settings.lang == Lang::Tr { "tr" } else { "en" };
+                    let language = cleanup::prompt_language(
+                        transcript.detected_language.as_deref(),
+                        &profile.language,
+                        ui_language,
+                    );
+                    let system = cleanup::system_prompt(
+                        config,
+                        language,
+                        &task_settings.rules,
+                        &task_settings.config.rules.prompt_context,
+                    );
+                    transcript.cleanup_model = Some(config.model.clone());
+                    let client = match &clients.cleanup {
+                        Some(Ok(client)) => Ok(client.as_ref()),
+                        Some(Err(error)) => Err(*error),
+                        None => Err(CleanupError::MissingKey),
+                    };
+                    cleanup::apply(transcript, client, &system, &task_settings.rules, profile.apply_rules).await;
+                }
+            }
             if task_settings.config.history.enabled && (result.is_err() || history_id.is_some()) {
                 let saved = save_transcription(
                     history,
@@ -600,7 +659,7 @@ impl<P: Providers> Controller<P> {
                 let _ = tx.send(Msg::Transcribed { session, audio: None, result });
             }
         });
-        self.phase = Phase::Transcribing { session, job, task, cancel, progress: None };
+        self.phase = Phase::Transcribing { session, job, task, cancel, progress: None, cleaning: false };
         self.set_state(DictationState::Transcribing);
     }
 
@@ -634,6 +693,7 @@ impl<P: Providers> Controller<P> {
     fn show_progress(&self) {
         let lang = self.env.settings.current().lang;
         let text = match &self.phase {
+            Phase::Transcribing { cleaning: true, .. } => lang.cleaning().into(),
             Phase::Transcribing { progress: Some(progress), .. } => lang.retry_wait(*progress),
             _ => lang.transcribing().into(),
         };
@@ -787,6 +847,10 @@ impl<P: Providers> Controller<P> {
                 );
             }
         }
+        if let Some(error) = transcript.cleanup_error {
+            let message = lang.cleanup_failed(error, matches!(outcome, PasteOutcome::ClipboardOnly));
+            self.show(view(Tone::Warning, message, Some(WARNING_HIDE)));
+        }
         self.set_state(DictationState::Idle);
     }
 
@@ -799,6 +863,8 @@ impl<P: Providers> Controller<P> {
             created_at_ms: now_ms(),
             profile_id: &transcript.profile_id,
             language: transcript.language.as_deref(),
+            cleanup_status: transcript.cleanup_status,
+            cleanup_model: transcript.cleanup_model.as_deref(),
             raw_text: &transcript.raw_text,
             text: &transcript.text,
             status: transcript.status,
@@ -843,10 +909,10 @@ impl<P: Providers> Controller<P> {
                 info!(session, "cancelled after the microphone was lost");
                 settings.lang
             }
-            Phase::Transcribing { session, task, job, cancel, progress } => {
+            Phase::Transcribing { session, task, job, cancel, progress, cleaning } => {
                 if progress.is_some() {
                     let _ = cancel.send(true);
-                    self.phase = Phase::Transcribing { session, task, job, cancel, progress };
+                    self.phase = Phase::Transcribing { session, task, job, cancel, progress, cleaning };
                     return;
                 }
                 task.abort();
@@ -953,6 +1019,7 @@ impl<P: Providers> Controller<P> {
             match self.phase {
                 Phase::Idle => DictationState::Idle,
                 Phase::Salvaging { .. } => DictationState::Transcribing,
+                Phase::Transcribing { cleaning: true, .. } => DictationState::Cleaning,
                 Phase::Transcribing { .. } => DictationState::Transcribing,
                 Phase::Pasting { .. } => DictationState::Pasting,
             }
@@ -1074,6 +1141,8 @@ async fn save_transcription(
             latency_ms: elapsed.as_millis() as u64,
             error_code: failure_code,
             language: transcript.as_ref().and_then(|t| t.language.as_deref()),
+            cleanup_status: transcript.as_ref().and_then(|t| t.cleanup_status),
+            cleanup_model: transcript.as_ref().and_then(|t| t.cleanup_model.as_deref()),
         };
         match history_id {
             Some(id) => {

@@ -51,6 +51,7 @@ pub struct RuleSet {
     casing: PhraseMatcher,
     hallucinations: HallucinationFilter,
     terms: Vec<String>,
+    glossary: Vec<String>,
 }
 
 impl RuleSet {
@@ -69,8 +70,16 @@ impl RuleSet {
         let mut hallucinations = Vec::new();
         let mut terms = Vec::new();
         let mut term_keys = HashSet::new();
+        let mut glossary = Vec::new();
+        let mut glossary_keys = HashSet::new();
 
         for pack in packs {
+            for term in pack.terms.iter().chain(pack.corrections.keys()) {
+                let term = term.trim();
+                if !term.is_empty() && glossary_keys.insert(fold(term)) {
+                    glossary.push(term.to_string());
+                }
+            }
             let turkish = pack.is_turkish();
             let mut new_ref = |kind, index| {
                 refs.push(RuleRef { pack_id: pack.id.clone(), kind, index });
@@ -152,12 +161,23 @@ impl RuleSet {
             casing: PhraseMatcher::new(casing).without_sentence_case(),
             hallucinations: HallucinationFilter::new(hallucinations),
             terms,
+            glossary,
         };
         (rules, warnings)
     }
 
+    /// Restore glossary spellings without repeating replacements or number conversion.
+    pub fn apply_term_casing(&self, text: &str) -> String {
+        self.casing.replace_all(text).0
+    }
+
     pub fn terms(&self) -> &[String] {
         &self.terms
+    }
+
+    /// Cleanup also needs canonical correction targets; speech prompt behavior stays unchanged.
+    pub fn glossary_terms(&self) -> &[String] {
+        &self.glossary
     }
 
     pub fn is_hallucination(&self, text: &str) -> bool {

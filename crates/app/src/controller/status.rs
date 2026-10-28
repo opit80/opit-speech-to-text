@@ -78,6 +78,7 @@ pub enum DictationState {
     Idle,
     Recording,
     Transcribing,
+    Cleaning,
     Pasting,
     /// Transient: emitted once, followed by the current active state or `Idle`.
     Cancelled,

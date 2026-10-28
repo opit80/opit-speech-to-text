@@ -1,4 +1,5 @@
 <script lang="ts">
+  import CleanupMarker from "../lib/components/CleanupMarker.svelte";
   import { api } from "../lib/api";
   import { app, errorText, t } from "../lib/app.svelte";
   import { onHistoryAdded } from "../lib/events";
@@ -14,6 +15,7 @@
   import PageHeader from "../lib/components/PageHeader.svelte";
   import CorrectionDialog from "./CorrectionDialog.svelte";
 
+  let rawIds = $state<number[]>([]);
   let query = $state("");
   let rows = $state<Dictation[]>([]);
   let listBusy = $state(true);
@@ -127,7 +129,7 @@
     copyingId = row.id;
     copyError = null;
     try {
-      await navigator.clipboard.writeText(row.text);
+      await navigator.clipboard.writeText(rawIds.includes(row.id) ? row.raw_text : row.text);
       if (!disposed) toast(t("common.copied"));
     } catch (error) {
       if (!disposed) copyError = errorText(error);
@@ -191,6 +193,7 @@
   }
 
   function addCorrection(row: Dictation, button: HTMLElement) {
+    if (rawIds.includes(row.id)) return;
     const text = button.closest("li")?.querySelector("[data-transcript]");
     const selection = window.getSelection();
     variant = "";
@@ -277,6 +280,7 @@
             <div class="metadata muted">
               <time datetime={new Date(row.created_at_ms).toISOString()}>{formatDateTime(row.created_at_ms, app.lang)}</time>
               <span>{row.profile_id}</span>
+              <CleanupMarker status={row.cleanup_status} model={row.cleanup_model} />
               {#if row.language}<span>{t("history.language", { language: row.language.toUpperCase() })}</span>{/if}
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
               <span>{t("history.audio_length", { duration: formatClock(row.audio_ms) })}</span>
@@ -286,10 +290,10 @@
             {:else}
             <!-- A caret enables keyboard selection; beforeinput keeps the single text node read-only. -->
             <div class="transcript" data-transcript contenteditable="plaintext-only" role="textbox" aria-readonly="true"
-              aria-label={t("history.transcript")} onbeforeinput={(event) => event.preventDefault()}>{row.text}</div>
+              aria-label={t("history.transcript")} onbeforeinput={(event) => event.preventDefault()}>{rawIds.includes(row.id) ? row.raw_text : row.text}</div>
             {#if row.status !== "ok"}<p class="muted">{t(row.status === "empty" ? "dictation.empty" : "dictation.hallucination")}</p>{/if}
             {#if row.raw_text !== row.text}
-              <details><summary>{t("history.show_original")}</summary><p class="transcript">{row.raw_text}</p></details>
+              <Button variant="ghost" aria-pressed={rawIds.includes(row.id)} onclick={() => { rawIds = rawIds.includes(row.id) ? rawIds.filter((id) => id !== row.id) : [...rawIds, row.id]; }}>{t(rawIds.includes(row.id) ? "cleanup.final" : "cleanup.raw")}</Button>
             {/if}
             {/if}
             <div class="row actions">
@@ -305,7 +309,7 @@
                   disabled={mutationBusy} onclick={() => void play(row)}><Icon name="play" /></Button>
               {/if}
               {#if row.status !== "failed"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
-                disabled={mutationBusy} onpointerdown={(event) => event.preventDefault()}
+                disabled={mutationBusy || rawIds.includes(row.id)} onpointerdown={(event) => event.preventDefault()}
                 onclick={(event) => addCorrection(row, event.currentTarget)}><Icon name="wand" /></Button>{/if}
               <Button variant="ghost" title={t("common.delete")} aria-label={t("common.delete")} disabled={mutationBusy}
                 onclick={() => { deleteTarget = row; mutationError = null; deleteOpen = true; }}><Icon name="trash" /></Button>
@@ -354,9 +358,6 @@
   .transcript { white-space: pre-wrap; overflow-wrap: anywhere; }
   .failure { color: var(--danger); }
   .failed-badge { display: inline-block; font-size: var(--text-sm); font-weight: 600; border: 1px solid currentColor; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); margin-right: var(--space-2); }
-  details { margin-top: var(--space-2); }
-  summary { cursor: pointer; color: var(--text-muted); }
-  details p { margin-top: var(--space-2); }
   .actions { justify-content: flex-end; margin-top: var(--space-2); }
   audio { width: 100%; }
 </style>

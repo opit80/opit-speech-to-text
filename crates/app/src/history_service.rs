@@ -147,6 +147,8 @@ mod tests {
             latency_ms: 900,
             error_code: None,
             language: None,
+            cleanup_status: None,
+            cleanup_model: None,
         }
     }
 

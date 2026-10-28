@@ -70,6 +70,21 @@ impl From<ProviderError> for CommandError {
     }
 }
 
+impl From<opit_core::cleanup::CleanupError> for CommandError {
+    fn from(error: opit_core::cleanup::CleanupError) -> Self {
+        use opit_core::cleanup::CleanupError::*;
+        let kind = match error {
+            MissingKey => ErrorKind::MissingKey,
+            InvalidKey => ErrorKind::InvalidKey,
+            Network => ErrorKind::Network,
+            Timeout => ErrorKind::Timeout,
+            Rejected => ErrorKind::Rejected,
+            BadResponse => ErrorKind::BadResponse,
+        };
+        Self { code: "cleanup", message: error.to_string(), kind: Some(kind) }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RulesPreview {
     pub text: String,
@@ -480,6 +495,29 @@ impl AppCore {
         };
         let client = ProviderClient::new(profile, key)?;
         Ok(client.test_connection().await?)
+    }
+
+    /// Resolve credentials and snapshot glossary on a blocking worker before the test request.
+    pub fn cleanup_test_client(
+        &self,
+        config: opit_core::cleanup::CleanupConfig,
+    ) -> Result<(opit_core::cleanup::CleanupClient, String, String), CommandError> {
+        use opit_core::cleanup::{CleanupClient, CleanupError, system_prompt};
+        let settings = self.settings.current();
+        let key = match &config.api_key_ref {
+            Some(key_ref) => {
+                self.platform.secrets.get(key_ref).map_err(|_| CommandError::from(CleanupError::MissingKey))?
+            }
+            None => None,
+        };
+        let language = if settings.lang == crate::i18n::Lang::Tr { "tr" } else { "en" };
+        let system = system_prompt(&config, language, &settings.rules, &settings.config.rules.prompt_context);
+        let sample = if language == "tr" {
+            "ee bugün bugün toplantı var saat üçte başlayacak"
+        } else {
+            "um today today we have a meeting it starts at three"
+        };
+        Ok((CleanupClient::new(config, key)?, system, sample.into()))
     }
 
     // ----- rules -----
@@ -1105,6 +1143,8 @@ mod tests {
             latency_ms: 500,
             error_code: None,
             language: None,
+            cleanup_status: None,
+            cleanup_model: None,
         };
         // Row with an audio file inside paths.audio.
         let inside = history.store().insert(&entry("a")).unwrap();
@@ -1150,6 +1190,8 @@ mod tests {
             latency_ms: 100,
             error_code: Some("timeout"),
             language: None,
+            cleanup_status: None,
+            cleanup_model: None,
         };
         let audio = opit_core::pipeline::PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 };
         let id = history.record(&entry, Some(&audio)).unwrap();
@@ -1224,6 +1266,8 @@ mod tests {
                 latency_ms: 1,
                 error_code: None,
                 language: None,
+                cleanup_status: None,
+                cleanup_model: None,
             };
             history.record(&entry, None).unwrap();
         }

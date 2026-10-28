@@ -25,6 +25,7 @@ struct ProviderState {
     profile_gates: Mutex<HashMap<String, Arc<Semaphore>>>,
     calls: AtomicUsize,
     warmups: AtomicUsize,
+    cleanup: Mutex<Option<Arc<CleanupClient>>>,
 }
 
 impl ProviderState {
@@ -36,6 +37,7 @@ impl ProviderState {
             profile_gates: Mutex::default(),
             calls: AtomicUsize::new(0),
             warmups: AtomicUsize::new(0),
+            cleanup: Mutex::default(),
         }
     }
 
@@ -90,6 +92,10 @@ impl Providers for TestProviders {
         Ok(ScriptedClient { profile: profile.clone(), state: self.0.clone() })
     }
 
+    fn cleanup_client(&self, _config: &CleanupConfig) -> Result<Arc<CleanupClient>, CleanupError> {
+        self.0.cleanup.lock().unwrap().clone().ok_or(CleanupError::MissingKey)
+    }
+
     fn warm_up(&self, _client: &ScriptedClient) {
         self.0.warmups.fetch_add(1, SeqCst);
     }
@@ -101,6 +107,8 @@ impl Providers for TestProviders {
 struct Saved {
     profile_id: String,
     language: Option<String>,
+    cleanup_status: Option<cleanup::CleanupStatus>,
+    cleanup_model: Option<String>,
     raw_text: String,
     text: String,
     status: TranscriptStatus,
@@ -124,6 +132,8 @@ impl HistorySink for FakeHistory {
         saved.push(Saved {
             profile_id: entry.profile_id.into(),
             language: entry.language.map(str::to_string),
+            cleanup_status: entry.cleanup_status,
+            cleanup_model: entry.cleanup_model.map(str::to_string),
             raw_text: entry.raw_text.into(),
             text: entry.text.into(),
             status: entry.status,
@@ -137,6 +147,8 @@ impl HistorySink for FakeHistory {
         let row = saved.get_mut((id - 1) as usize).ok_or("missing history row")?;
         row.profile_id = entry.profile_id.into();
         row.language = entry.language.map(str::to_string);
+        row.cleanup_status = entry.cleanup_status;
+        row.cleanup_model = entry.cleanup_model.map(str::to_string);
         row.raw_text = entry.raw_text.into();
         row.text = entry.text.into();
         row.status = entry.status;
@@ -183,6 +195,90 @@ struct Harness {
 
 fn settings(config: AppConfig) -> Settings {
     Settings::build(config, None, Some("en-US")).0
+}
+
+#[tokio::test]
+async fn cleanup_failure_pastes_rules_applied_text_and_warns() {
+    let mut config = AppConfig::default();
+    config.cleanup.enabled = true;
+    let mut h = harness(config.clone());
+    let pack = opit_core::rules::RulePack::from_yaml("schema: 1\nid: user\nname: Personal\nterms: [Opit]\n").unwrap();
+    h.settings.replace(Settings::build(config, Some(pack), Some("en-US")).0);
+    h.script("groq", vec![Ok("opit bugün açılıyor")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::Toggle);
+    h.expect(&[Transcribing, DictationState::Cleaning, Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["Opit bugün açılıyor "]);
+    let saved = h.history.entries();
+    assert_eq!(saved[0].cleanup_status, Some(cleanup::CleanupStatus::Failed));
+    assert_eq!(saved[0].cleanup_model.as_deref(), Some("deepseek-ai/DeepSeek-V4.1-Flash-Fast"));
+    assert_eq!(saved[0].raw_text, "opit bugün açılıyor");
+    assert_eq!(h.overlay.last().tone, Tone::Warning);
+    assert!(h.overlay.last().text.contains("Cleanup failed"));
+    assert!(!h.overlay.last().text.contains("opit bugün"));
+}
+
+#[tokio::test]
+async fn cleanup_success_is_saved_and_escape_during_cleanup_never_pastes() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    for cancel in [false, true] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(if cancel { 500 } else { 10 }))
+                    .set_body_json(serde_json::json!({"choices":[{"message":{"content":"Today we have a meeting."}}]})),
+            )
+            .mount(&server)
+            .await;
+        let mut config = AppConfig::default();
+        config.cleanup.enabled = true;
+        config.cleanup.base_url = server.uri();
+        config.cleanup.api_key_ref = None;
+        let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+        let mut h = harness(config);
+        *h.providers.cleanup.lock().unwrap() = Some(client);
+        h.script("groq", vec![Ok("um today today we have a meeting")]);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        h.send(Msg::Toggle);
+        h.expect(&[Transcribing, DictationState::Cleaning]).await;
+        if cancel {
+            h.hotkey(HotkeyEvent::Escape);
+            h.expect(&[Cancelled, Idle]).await;
+            tokio::time::sleep(Duration::from_millis(550)).await;
+            assert!(h.paster.texts().is_empty());
+            assert!(h.history.entries().is_empty());
+        } else {
+            h.expect(&[Pasting, Idle]).await;
+            assert_eq!(h.paster.texts(), ["Today we have a meeting. "]);
+            assert_eq!(h.history.entries()[0].cleanup_status, Some(cleanup::CleanupStatus::Ok));
+            assert_eq!(h.history.entries()[0].raw_text, "um today today we have a meeting");
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_cleanup_is_skipped_on_retry_and_by_profile() {
+    for global in [false, true] {
+        let mut config = AppConfig::default();
+        config.cleanup.enabled = global;
+        config.profiles[0].apply_cleanup = !global;
+        let mut h = harness(config);
+        h.script("groq", vec![Err(ProviderError::Unauthorized(401)), Ok("three clear words")]);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        h.send(Msg::Toggle);
+        h.expect(&[Transcribing]).await;
+        h.expect_error(ErrorKind::InvalidKey).await;
+        h.send(Msg::Retry);
+        h.expect(&[Transcribing, Pasting, Idle]).await;
+        assert_eq!(h.history.entries().last().unwrap().cleanup_status, Some(cleanup::CleanupStatus::Skipped));
+        assert_eq!(h.paster.texts(), ["three clear words "]);
+    }
 }
 
 fn harness(config: AppConfig) -> Harness {

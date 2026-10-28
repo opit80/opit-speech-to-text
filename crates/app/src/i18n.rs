@@ -70,6 +70,28 @@ impl Lang {
         self.pick("Listening (default microphone)", "Dinleniyor (varsayılan mikrofon)")
     }
 
+    pub fn cleaning(self) -> &'static str {
+        self.pick("Cleaning text…", "Metin düzenleniyor…")
+    }
+
+    pub fn cleanup_failed(self, error: opit_core::cleanup::CleanupError, clipboard_only: bool) -> String {
+        use opit_core::cleanup::CleanupError::*;
+        let reason = match error {
+            MissingKey => self.error(ErrorKind::MissingKey),
+            InvalidKey => self.error(ErrorKind::InvalidKey),
+            Network => self.error(ErrorKind::Network),
+            Timeout => self.error(ErrorKind::Timeout),
+            Rejected => self.error(ErrorKind::Rejected),
+            BadResponse => self.error(ErrorKind::BadResponse),
+        };
+        let destination = if clipboard_only {
+            self.pick("Original text on clipboard", "Özgün metin panoda")
+        } else {
+            self.pick("Original text pasted", "Özgün metin yapıştırıldı")
+        };
+        format!("{}: {reason}. {destination}", self.pick("Cleanup failed", "Düzenleme başarısız"))
+    }
+
     pub fn transcribing(self) -> &'static str {
         self.pick("Transcribing…", "Çevriliyor…")
     }

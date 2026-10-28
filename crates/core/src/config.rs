@@ -26,6 +26,7 @@ pub struct AppConfig {
     pub paste: PasteConfig,
     pub history: HistoryConfig,
     pub rules: RulesConfig,
+    pub cleanup: crate::cleanup::CleanupConfig,
     pub ui: UiConfig,
 }
 
@@ -41,6 +42,7 @@ impl Default for AppConfig {
             paste: PasteConfig::default(),
             history: HistoryConfig::default(),
             rules: RulesConfig::default(),
+            cleanup: crate::cleanup::CleanupConfig::default(),
             ui: UiConfig::default(),
         }
     }
@@ -229,6 +231,7 @@ impl AppConfig {
 
     /// Repairs values a hand edit or an old version could leave inconsistent.
     pub fn normalize(&mut self) {
+        self.cleanup.timeout_seconds = self.cleanup.timeout_seconds.clamp(1, 120);
         self.schema_version = CONFIG_SCHEMA_VERSION;
         self.recording.max_seconds = self.recording.max_seconds.clamp(MIN_RECORDING_SECONDS, MAX_RECORDING_SECONDS);
         let defaults = RecordingConfig::default();
@@ -283,6 +286,29 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_is_opt_in_and_old_profiles_default_to_applying_it() {
+        let config = AppConfig::from_json("{}").unwrap();
+        assert!(!config.cleanup.enabled);
+        assert_eq!(config.cleanup.base_url, "https://inference.baseten.co/v1");
+        assert_eq!(config.cleanup.model, "deepseek-ai/DeepSeek-V4.1-Flash-Fast");
+        let mut json = serde_json::to_value(config).unwrap();
+        json.as_object_mut().unwrap().remove("cleanup");
+        for profile in json["profiles"].as_array_mut().unwrap() {
+            profile.as_object_mut().unwrap().remove("apply_cleanup");
+        }
+        let mut old = AppConfig::from_json(&json.to_string()).unwrap();
+        assert!(!old.cleanup.enabled);
+        assert!(old.profiles.iter().all(|p| p.apply_cleanup));
+        old.cleanup.enabled = true;
+        old.cleanup.reasoning_effort = Some("none".into());
+        old.profiles[0].apply_cleanup = false;
+        assert_eq!(AppConfig::from_json(&old.to_json()).unwrap(), old);
+        old.cleanup.timeout_seconds = 0;
+        old.normalize();
+        assert_eq!(old.cleanup.timeout_seconds, 1);
+    }
     use crate::provider::presets;
 
     #[test]

@@ -49,6 +49,8 @@ pub struct Profile {
     pub send_keywords: bool,
     /// Apply the client-side rule layer; off when the server applies its own rules.
     pub apply_rules: bool,
+    #[serde(default = "default_apply_cleanup")]
+    pub apply_cleanup: bool,
     #[serde(default)]
     pub fallback_profile_id: Option<String>,
 }
@@ -57,6 +59,10 @@ impl Profile {
     pub fn is_insecure(&self) -> bool {
         self.base_url.trim_start().to_ascii_lowercase().starts_with("http://")
     }
+}
+
+fn default_apply_cleanup() -> bool {
+    true
 }
 
 fn default_language() -> String {
@@ -84,6 +90,7 @@ pub mod presets {
             send_prompt: true,
             send_keywords: false,
             apply_rules: true,
+            apply_cleanup: true,
             fallback_profile_id: None,
         }
     }
@@ -102,6 +109,7 @@ pub mod presets {
             send_prompt: true,
             send_keywords: true,
             apply_rules: true,
+            apply_cleanup: true,
             fallback_profile_id: None,
         }
     }
@@ -120,6 +128,7 @@ pub mod presets {
             send_prompt: false,
             send_keywords: false,
             apply_rules: true,
+            apply_cleanup: true,
             fallback_profile_id: None,
         }
     }
@@ -140,6 +149,7 @@ pub mod presets {
             send_prompt: true,
             send_keywords: false,
             apply_rules: true,
+            apply_cleanup: true,
             fallback_profile_id: None,
         }
     }

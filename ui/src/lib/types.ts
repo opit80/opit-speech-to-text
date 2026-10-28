@@ -7,7 +7,7 @@ export type ErrorKind =
   | "missing_key" | "invalid_key" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
   | "bad_response" | "rejected" | "audio" | "microphone" | "credentials" | "paste" | "cancelled";
 
-export type DictationState = "idle" | "recording" | "transcribing" | "pasting" | "cancelled" | "error";
+export type DictationState = "idle" | "recording" | "transcribing" | "cleaning" | "pasting" | "cancelled" | "error";
 
 export interface DictationStatus {
   state: DictationState;
@@ -38,6 +38,7 @@ export interface Profile {
   send_prompt: boolean;
   send_keywords: boolean;
   apply_rules: boolean;
+  apply_cleanup: boolean;
   fallback_profile_id: string | null;
 }
 
@@ -45,6 +46,7 @@ export type HotkeyMode = "toggle" | "push_to_talk";
 export type OverlayPosition = "right_center" | "top_center" | "bottom_center" | "left_center";
 
 export interface AppConfig {
+  cleanup: CleanupConfig;
   schema_version: number;
   ui_language: string | null;
   active_profile_id: string;
@@ -84,6 +86,8 @@ export interface Dictation {
   id: number;
   created_at_ms: number;
   profile_id: string;
+  cleanup_status: "ok" | "failed" | "skipped" | null;
+  cleanup_model: string | null;
   raw_text: string;
   text: string;
   status: TranscriptStatus;
@@ -194,3 +198,15 @@ export type MicTestEvent = { kind: "level"; value: number } | { kind: "failed"; 
 
 /** Must match `PROMPT_TOKEN_BUDGET` in crates/core/src/rules/prompt.rs. */
 export const PROMPT_TOKEN_BUDGET = 224;
+
+export interface CleanupConfig {
+  enabled: boolean;
+  base_url: string;
+  model: string;
+  api_key_ref: string | null;
+  prompt_override: string;
+  timeout_seconds: number;
+  reasoning_effort: string | null;
+}
+export interface CleanupPreset { id: string; name: string; key_url: string; config: CleanupConfig }
+export interface CleanupTestResult { before: string; after: string }

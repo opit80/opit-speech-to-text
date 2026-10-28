@@ -277,6 +277,7 @@
 
   {#if !scribe}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
   <Switch label={t("profiles.send_keywords")} hint={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />
+  <Switch label={t("cleanup.profile")} hint={t("cleanup.profile_hint")} bind:checked={draft.apply_cleanup} />
   <Switch label={t("profiles.apply_rules")} hint={t("profiles.apply_rules_hint")} bind:checked={draft.apply_rules} />
 
   <Field label={t("profiles.fallback")} hint={t("profiles.fallback_hint")} error={problemFor("fallback_self", "fallback_missing")}>

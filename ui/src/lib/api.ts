@@ -1,7 +1,7 @@
 // Typed wrappers for every Rust command. Argument names are camelCase (Tauri maps them).
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
+  CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
 } from "./types";
 
@@ -26,6 +26,9 @@ export const api = {
   deleteApiKey: (keyRef: string) => invoke<void>("delete_api_key", { keyRef }),
   testConnection: (profile: Profile, apiKey: string | null) =>
     invoke<void>("test_connection", { profile, apiKey }),
+  cleanupPresets: () => invoke<CleanupPreset[]>("cleanup_presets"),
+  cleanupPrompts: () => invoke<Record<"en" | "tr", string>>("cleanup_prompts"),
+  testCleanup: (config: CleanupConfig) => invoke<CleanupTestResult>("test_cleanup", { config }),
   profilePresets: () => invoke<Profile[]>("profile_presets"),
 
   getUserRules: () => invoke<string>("get_user_rules"),
