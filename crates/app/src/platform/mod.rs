@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use opit_core::audio::Recording;
-use opit_core::config::OverlayPosition;
+use opit_core::config::{OverlayPosition, PasteAfter, PasteMethod};
 
 // ---------- Microphone ----------
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -103,27 +103,37 @@ pub trait Hotkey: Send + Sync {
 // ---------- Paster ----------
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteOutcome {
-    /// Ctrl+V was sent.
+    /// All insertion input was delivered to the target.
     Pasted,
-    /// The text is on the clipboard but no Ctrl+V was sent: elevated target (UIPI), or the
+    /// The text is on the clipboard but no insertion input was sent: elevated target (UIPI), or the
     /// foreground is a shell window or one of our own windows.
     ClipboardOnly,
-    /// The clipboard could not be written.
+    /// The clipboard could not be written, or typing was only partially delivered.
     Failed(String),
 }
 
-/// Old clipboard is restored this long after Ctrl+V.
+/// Old clipboard is restored this long after the paste keystroke.
 pub const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(400);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PasteRequest {
+    pub method: PasteMethod,
+    pub after: PasteAfter,
+    pub restore: bool,
+    pub auto_paste: bool,
+}
 
 pub trait Paster: Send + Sync {
     /// Snapshot at recording stop; later focus changes must not enable auto-paste.
     fn can_auto_paste(&self) -> bool {
         true
     }
-    /// Backs up the clipboard, puts `text` on it, sends Ctrl+V, and (when `restore`)
-    /// restores the old clipboard after CLIPBOARD_RESTORE_DELAY before returning.
+    /// Inserts text using the requested method. Successful typing never touches the clipboard.
+    /// Unsafe targets and disabled auto-paste copy to the clipboard instead, without restoring it.
+    /// Sends `after` only after insertion succeeds. Clipboard methods wait for any requested
+    /// restore before returning, preserving queue ordering.
     /// Blocking; call from a blocking thread.
-    fn paste(&self, text: &str, restore: bool, auto_paste: bool) -> PasteOutcome;
+    fn paste(&self, text: &str, request: PasteRequest) -> PasteOutcome;
 }
 
 // ---------- Overlay ----------

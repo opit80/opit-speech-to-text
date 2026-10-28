@@ -68,6 +68,18 @@ export interface Profile {
 export type HotkeyMode = "toggle" | "push_to_talk";
 export type OverlayPosition = "right_center" | "top_center" | "bottom_center" | "left_center";
 
+/** How the text is inserted: clipboard + a paste shortcut, or typed as keystrokes ("type"). */
+export type PasteMethod = "ctrl_v" | "shift_insert" | "ctrl_shift_v" | "type";
+/** Key sent only after the text was actually inserted. */
+export type PasteAfter = "none" | "enter" | "ctrl_enter";
+
+export interface PasteConfig {
+  method: PasteMethod;
+  after: PasteAfter;
+  restore_clipboard: boolean;
+  trailing_space: boolean;
+}
+
 export interface AppConfig {
   local: LocalConfig;
   ask: AskConfig;
@@ -84,7 +96,7 @@ export interface AppConfig {
     noise_margin_db: number;
     min_speech_seconds: number;
   };
-  paste: { restore_clipboard: boolean; trailing_space: boolean };
+  paste: PasteConfig;
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
   rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
   ui: {

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use opit_core::audio::Recording;
 use opit_core::audio::encode::EncodeError;
 use opit_core::cleanup::{self, CleanupClient, CleanupConfig, CleanupError};
-use opit_core::config::HotkeyMode;
+use opit_core::config::{HotkeyMode, PasteConfig};
 use opit_core::history::NewDictation;
 use opit_core::pipeline::{self, PipelineContext, PipelineError, PreparedAudio, Transcript, TranscriptStatus};
 use opit_core::provider::retry::RetryWait;
@@ -27,7 +27,8 @@ pub use status::{DictationState, DictationStatus, ErrorKind};
 use crate::i18n::Lang;
 use crate::platform::{
     Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyEvent, HotkeySink, Microphone, Overlay, OverlayAction,
-    OverlayButton, OverlaySink, OverlayView, PasteOutcome, Paster, RecordingTiming, SecretError, Sound, Sounds, Tone,
+    OverlayButton, OverlaySink, OverlayView, PasteOutcome, PasteRequest, Paster, RecordingTiming, SecretError, Sound,
+    Sounds, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 
@@ -395,6 +396,7 @@ struct Job {
     ask_test: bool,
     text_reply: Option<TextReply>,
     settings: Arc<Settings>,
+    paste: PasteConfig,
     /// When the user stopped recording (or pressed "Try again"); latency is measured from here.
     started: Instant,
     auto_paste: bool,
@@ -414,6 +416,7 @@ struct ActiveRecording<C> {
     session: u64,
     capture: Box<dyn Capture>,
     settings: Arc<Settings>,
+    paste: PasteConfig,
     clients: Clients<C>,
     limit: AbortHandle,
     remaining: Duration,
@@ -429,6 +432,12 @@ struct Pending<C> {
     clients: Option<Clients<C>>,
     input: Input,
     salvage: bool,
+}
+
+/// Resolve once at request/recording start. Foreground-app overrides can be applied here
+/// later without letting config changes affect recordings or queued jobs already in progress.
+fn effective_paste(settings: &Settings) -> PasteConfig {
+    settings.config.paste.clone()
 }
 
 enum Phase {
@@ -691,13 +700,15 @@ impl<P: Providers> Controller<P> {
                 return;
             }
             self.session += 1;
+            let settings = self.env.settings.current();
             self.waiting.push_back(Pending {
                 session: self.session,
                 job: Job {
                     ask: true,
                     ask_test: false,
                     text_reply: reply,
-                    settings: self.env.settings.current(),
+                    paste: effective_paste(&settings),
+                    settings,
                     started: Instant::now(),
                     auto_paste: self.env.paster.can_auto_paste(),
                     history_id: None,
@@ -834,6 +845,7 @@ impl<P: Providers> Controller<P> {
             text_reply: None,
             session,
             capture: started.capture,
+            paste: effective_paste(&settings),
             settings,
             clients,
             limit,
@@ -858,6 +870,7 @@ impl<P: Providers> Controller<P> {
                 text_reply: r.text_reply,
                 ask: r.ask,
                 ask_test: false,
+                paste: r.paste,
                 settings: r.settings,
                 started: Instant::now(),
                 auto_paste,
@@ -895,6 +908,7 @@ impl<P: Providers> Controller<P> {
             ask: false,
             ask_test: false,
             text_reply: None,
+            paste: effective_paste(&settings),
             settings,
             started: Instant::now(),
             auto_paste: self.env.paster.can_auto_paste(),
@@ -1104,6 +1118,7 @@ impl<P: Providers> Controller<P> {
                 ask: false,
                 ask_test: false,
                 text_reply: None,
+                paste: effective_paste(&settings),
                 settings,
                 started: Instant::now(),
                 auto_paste: false,
@@ -1160,6 +1175,7 @@ impl<P: Providers> Controller<P> {
                         ask: false,
                         ask_test: false,
                         text_reply: None,
+                        paste: r.paste,
                         settings: r.settings,
                         started: Instant::now(),
                         auto_paste: false,
@@ -1281,7 +1297,7 @@ impl<P: Providers> Controller<P> {
             return self.finish_info(lang.empty());
         }
 
-        let paste = &job.settings.config.paste;
+        let paste = &job.paste;
         let text =
             if !job.ask && paste.trailing_space { format!("{} ", transcript.text) } else { transcript.text.clone() };
         let restore = job.history_id.is_none()
@@ -1289,10 +1305,11 @@ impl<P: Providers> Controller<P> {
             && (!job.ask || job.settings.config.ask.output == opit_core::ask::Output::Paste);
         let auto_paste =
             job.auto_paste && (!job.ask || job.settings.config.ask.output == opit_core::ask::Output::Paste);
+        let request = PasteRequest { method: paste.method, after: paste.after, restore, auto_paste };
         let paster = self.env.paster.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
-            let outcome = paster.paste(&text, restore, auto_paste);
+            let outcome = paster.paste(&text, request);
             let _ = tx.send(Msg::Pasted { session, outcome });
         });
         self.phase = Phase::Pasting { session, job, transcript, audio };

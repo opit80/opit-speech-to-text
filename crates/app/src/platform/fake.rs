@@ -166,6 +166,10 @@ pub struct FakePaster {
     pub outcome: Mutex<PasteOutcome>,
     pub pasted: Mutex<Vec<(String, bool)>>,
     pub policies: Mutex<Vec<bool>>,
+    pub requests: Mutex<Vec<PasteRequest>>,
+    pub clipboard_writes: Mutex<Vec<String>>,
+    pub typed: Mutex<Vec<String>>,
+    pub after_keys: Mutex<Vec<PasteAfter>>,
     pub allow_auto: Mutex<Option<bool>>,
     pub gate: Mutex<Option<Arc<PasteGate>>>,
 }
@@ -176,6 +180,10 @@ impl Default for FakePaster {
             outcome: Mutex::new(PasteOutcome::Pasted),
             pasted: Mutex::default(),
             policies: Mutex::default(),
+            requests: Mutex::default(),
+            clipboard_writes: Mutex::default(),
+            typed: Mutex::default(),
+            after_keys: Mutex::default(),
             allow_auto: Mutex::default(),
             gate: Mutex::default(),
         }
@@ -192,14 +200,27 @@ impl Paster for FakePaster {
     fn can_auto_paste(&self) -> bool {
         self.allow_auto.lock().unwrap().unwrap_or(true)
     }
-    fn paste(&self, text: &str, restore: bool, auto_paste: bool) -> PasteOutcome {
-        self.policies.lock().unwrap().push(auto_paste);
-        self.pasted.lock().unwrap().push((text.to_string(), restore));
+    fn paste(&self, text: &str, request: PasteRequest) -> PasteOutcome {
+        self.policies.lock().unwrap().push(request.auto_paste);
+        self.requests.lock().unwrap().push(request);
+        self.pasted.lock().unwrap().push((text.to_string(), request.restore));
         let gate = self.gate.lock().unwrap().clone();
         if let Some(gate) = gate {
             let _ = gate.1.wait_timeout_while(gate.0.lock().unwrap(), Duration::from_secs(5), |open| !*open).unwrap();
         }
-        self.outcome.lock().unwrap().clone()
+        let outcome = match self.outcome.lock().unwrap().clone() {
+            PasteOutcome::Pasted if !request.auto_paste => PasteOutcome::ClipboardOnly,
+            outcome => outcome,
+        };
+        if outcome == PasteOutcome::Pasted && request.method == PasteMethod::Type {
+            self.typed.lock().unwrap().push(text.to_string());
+        } else if !matches!(outcome, PasteOutcome::Failed(_)) {
+            self.clipboard_writes.lock().unwrap().push(text.to_string());
+        }
+        if outcome == PasteOutcome::Pasted && request.after != PasteAfter::None {
+            self.after_keys.lock().unwrap().push(request.after);
+        }
+        outcome
     }
 }
 

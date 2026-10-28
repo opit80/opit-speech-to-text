@@ -6,7 +6,7 @@
   import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
-  import type { AppConfig, HotkeyMode, OverlayPosition, Theme } from "../lib/types";
+  import type { AppConfig, HotkeyMode, OverlayPosition, PasteAfter, PasteMethod, Theme } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import Field from "../lib/components/Field.svelte";
@@ -99,6 +99,8 @@
       hotkeyEnabled: c.hotkey.enabled,
       paused: app.hotkey.paused,
       microphone: c.recording.microphone ?? "",
+      pasteMethod: c.paste.method as string,
+      pasteAfter: c.paste.after as string,
       restoreClipboard: c.paste.restore_clipboard,
       trailingSpace: c.paste.trailing_space,
       overlay: c.ui.overlay_position as string,
@@ -217,6 +219,23 @@
   const overlayOptions = $derived(
     (Object.keys(overlayKeys) as OverlayPosition[]).map((value) => ({ value, label: t(overlayKeys[value]) })),
   );
+  const pasteMethodKeys: Record<PasteMethod, MessageKey> = {
+    ctrl_v: "settings.paste_method.ctrl_v",
+    shift_insert: "settings.paste_method.shift_insert",
+    ctrl_shift_v: "settings.paste_method.ctrl_shift_v",
+    type: "settings.paste_method.type",
+  };
+  const pasteMethodOptions = $derived(
+    (Object.keys(pasteMethodKeys) as PasteMethod[]).map((value) => ({ value, label: t(pasteMethodKeys[value]) })),
+  );
+  const pasteAfterKeys: Record<PasteAfter, MessageKey> = {
+    none: "settings.paste_after.none",
+    enter: "settings.paste_after.enter",
+    ctrl_enter: "settings.paste_after.ctrl_enter",
+  };
+  const pasteAfterOptions = $derived(
+    (Object.keys(pasteAfterKeys) as PasteAfter[]).map((value) => ({ value, label: t(pasteAfterKeys[value]) })),
+  );
   const modeOptions = $derived([
     { value: "toggle", label: t("settings.mode_toggle") },
     { value: "push_to_talk", label: t("settings.mode_ptt") },
@@ -324,10 +343,20 @@
         </div>
       </details>
 
-      <details class="card settings-group" open={["restore_clipboard", "trailing_space", "overlay"].some((field) => !!errors[field])}>
+      <details class="card settings-group" open={["paste_method", "paste_after", "restore_clipboard", "trailing_space", "overlay"].some((field) => !!errors[field])}>
         <summary>{t("settings.pasting")}</summary>
         <div class="stack group-body">
-        <Switch label={t("settings.restore_clipboard")} info={t("settings.restore_clipboard_hint")}
+        <Select label={t("settings.paste_method")} options={pasteMethodOptions} value={view.pasteMethod}
+          info={config.paste.method === "type" ? t("settings.paste_method_type_hint") : t("settings.paste_method_hint")}
+          onchange={(v) => void save("paste_method", (c) => { c.paste.method = v as PasteMethod; })} />
+        {@render fieldError("paste_method")}
+        <Select label={t("settings.paste_after")} options={pasteAfterOptions} value={view.pasteAfter}
+          info={t("settings.paste_after_hint")}
+          onchange={(v) => void save("paste_after", (c) => { c.paste.after = v as PasteAfter; })} />
+        {@render fieldError("paste_after")}
+        <Switch label={t("settings.restore_clipboard")}
+          info={config.paste.method === "type" ? t("settings.restore_clipboard_type") : t("settings.restore_clipboard_hint")}
+          disabled={config.paste.method === "type"}
           checked={view.restoreClipboard}
           onchange={(v) => void save("restore_clipboard", (c) => { c.paste.restore_clipboard = v; })} />
         {@render fieldError("restore_clipboard")}

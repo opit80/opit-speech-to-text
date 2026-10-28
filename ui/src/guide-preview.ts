@@ -34,7 +34,7 @@ const config: AppConfig = {
   }],
   hotkey: { ask_keys: [], pause_keys: [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
   recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults },
-  paste: { restore_clipboard: false, trailing_space: true },
+  paste: { method: "ctrl_v", after: "none", restore_clipboard: false, trailing_space: true },
   history: { enabled: true, save_audio: false, audio_retention_days: 7, max_entries: 1000 },
   rules: { enabled_packs: ["tr-core", "tr-tech"], prompt_context: "", numbers_as_words: false },
   ui: { theme: "system", start_in_tray: false, autostart: false, overlay_position: "right_center", sound_feedback: true, setup_done: params.get("setup") !== "true", check_updates: false },

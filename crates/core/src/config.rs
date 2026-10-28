@@ -127,9 +127,30 @@ impl Default for RecordingConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteMethod {
+    #[default]
+    CtrlV,
+    ShiftInsert,
+    CtrlShiftV,
+    Type,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteAfter {
+    #[default]
+    None,
+    Enter,
+    CtrlEnter,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PasteConfig {
+    pub method: PasteMethod,
+    pub after: PasteAfter,
     /// Opt in to restoring the previous clipboard; otherwise keep the latest dictation.
     pub restore_clipboard: bool,
     pub trailing_space: bool,
@@ -137,7 +158,12 @@ pub struct PasteConfig {
 
 impl Default for PasteConfig {
     fn default() -> Self {
-        Self { restore_clipboard: false, trailing_space: true }
+        Self {
+            method: PasteMethod::default(),
+            after: PasteAfter::default(),
+            restore_clipboard: false,
+            trailing_space: true,
+        }
     }
 }
 
@@ -485,6 +511,36 @@ mod tests {
         let c = AppConfig::from_json(r#"{"paste":{"restore_clipboard":true}}"#).unwrap();
         assert!(c.paste.restore_clipboard);
         assert!(AppConfig::from_json(&c.to_json()).unwrap().paste.restore_clipboard);
+    }
+
+    #[test]
+    fn paste_methods_and_after_keys_round_trip_with_legacy_defaults() {
+        let legacy = AppConfig::from_json(r#"{"paste":{"restore_clipboard":true,"trailing_space":false}}"#).unwrap();
+        assert_eq!(legacy.paste.method, PasteMethod::CtrlV);
+        assert_eq!(legacy.paste.after, PasteAfter::None);
+        assert!(legacy.paste.restore_clipboard);
+        assert!(!legacy.paste.trailing_space);
+        assert_eq!(AppConfig::from_json("{}").unwrap().paste, PasteConfig::default());
+        for (name, method) in [
+            ("ctrl_v", PasteMethod::CtrlV),
+            ("shift_insert", PasteMethod::ShiftInsert),
+            ("ctrl_shift_v", PasteMethod::CtrlShiftV),
+            ("type", PasteMethod::Type),
+        ] {
+            for (after_name, after) in
+                [("none", PasteAfter::None), ("enter", PasteAfter::Enter), ("ctrl_enter", PasteAfter::CtrlEnter)]
+            {
+                let json = serde_json::json!({"paste": {"method": name, "after": after_name}}).to_string();
+                let config = AppConfig::from_json(&json).unwrap();
+                assert_eq!(config.paste.method, method);
+                assert_eq!(config.paste.after, after);
+                let saved: Value = serde_json::from_str(&config.to_json()).unwrap();
+                assert_eq!(saved["paste"]["method"], name);
+                assert_eq!(saved["paste"]["after"], after_name);
+            }
+        }
+        assert!(AppConfig::from_json(r#"{"paste":{"method":"unknown"}}"#).is_err());
+        assert!(AppConfig::from_json(r#"{"paste":{"after":"unknown"}}"#).is_err());
     }
 
     #[test]

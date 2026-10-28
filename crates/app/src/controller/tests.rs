@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use opit_core::config::{AppConfig, HotkeyMode};
+use opit_core::config::{AppConfig, HotkeyMode, PasteAfter, PasteMethod};
 use opit_core::history::NewDictation;
 use opit_core::pipeline::{PreparedAudio, TranscriptStatus};
 use opit_core::provider::{Profile, ProviderError, RawTranscript, TranscribeRequest, Transcriber};
@@ -17,6 +17,129 @@ use crate::settings::{Settings, SettingsHandle};
 use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 
 // ---------- scripted providers ----------
+
+#[tokio::test]
+async fn paste_method_and_after_are_snapshotted_at_start_and_type_leaves_clipboard_alone() {
+    for method in [PasteMethod::CtrlV, PasteMethod::ShiftInsert, PasteMethod::CtrlShiftV, PasteMethod::Type] {
+        let mut config = AppConfig::default();
+        config.paste.method = method;
+        config.paste.after = PasteAfter::CtrlEnter;
+        config.paste.restore_clipboard = true;
+        let mut h = harness(config.clone());
+        h.script("groq", vec![Ok("sample")]);
+        h.hotkey(HotkeyEvent::ComboDown);
+        h.expect(&[Recording]).await;
+        config.paste = PasteConfig::default();
+        h.settings.replace(settings(config));
+        h.hotkey(HotkeyEvent::ComboDown);
+        h.expect(&[Transcribing, Pasting, Idle]).await;
+        assert_eq!(
+            *h.paster.requests.lock().unwrap(),
+            [PasteRequest { method, after: PasteAfter::CtrlEnter, restore: true, auto_paste: true }]
+        );
+        assert_eq!(*h.paster.after_keys.lock().unwrap(), [PasteAfter::CtrlEnter]);
+        if method == PasteMethod::Type {
+            assert_eq!(*h.paster.typed.lock().unwrap(), ["sample "]);
+            assert!(h.paster.clipboard_writes.lock().unwrap().is_empty());
+        } else {
+            assert!(h.paster.typed.lock().unwrap().is_empty());
+            assert_eq!(*h.paster.clipboard_writes.lock().unwrap(), ["sample "]);
+        }
+        h.send(Msg::Shutdown);
+    }
+}
+
+#[tokio::test]
+async fn after_keys_only_follow_successful_inserts_for_every_method() {
+    for method in [PasteMethod::CtrlV, PasteMethod::ShiftInsert, PasteMethod::CtrlShiftV, PasteMethod::Type] {
+        for after in [PasteAfter::None, PasteAfter::Enter, PasteAfter::CtrlEnter] {
+            for outcome in
+                [PasteOutcome::Pasted, PasteOutcome::ClipboardOnly, PasteOutcome::Failed("input failed".into())]
+            {
+                let mut config = AppConfig::default();
+                config.paste.method = method;
+                config.paste.after = after;
+                let mut h = harness(config);
+                *h.paster.outcome.lock().unwrap() = outcome.clone();
+                h.script("groq", vec![Ok("sample")]);
+                h.hotkey(HotkeyEvent::ComboDown);
+                h.expect(&[Recording]).await;
+                h.hotkey(HotkeyEvent::ComboDown);
+                h.expect(&[Transcribing, Pasting]).await;
+                if matches!(outcome, PasteOutcome::Failed(_)) {
+                    h.expect_error(ErrorKind::Paste).await;
+                } else {
+                    h.expect(&[Idle]).await;
+                }
+                let expected =
+                    if outcome == PasteOutcome::Pasted && after != PasteAfter::None { vec![after] } else { vec![] };
+                assert_eq!(*h.paster.after_keys.lock().unwrap(), expected);
+                if method == PasteMethod::Type && outcome == PasteOutcome::ClipboardOnly {
+                    assert!(h.paster.typed.lock().unwrap().is_empty());
+                    assert_eq!(*h.paster.clipboard_writes.lock().unwrap(), ["sample "]);
+                }
+                h.send(Msg::Shutdown);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn type_with_auto_paste_disabled_copies_without_typing_or_after_key() {
+    let mut config = AppConfig::default();
+    config.paste.method = PasteMethod::Type;
+    config.paste.after = PasteAfter::Enter;
+    config.paste.trailing_space = false;
+    let mut h = harness(config);
+    h.script("groq", vec![Ok("sample")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::Stop);
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    assert!(h.paster.typed.lock().unwrap().is_empty());
+    assert!(h.paster.after_keys.lock().unwrap().is_empty());
+    assert_eq!(*h.paster.clipboard_writes.lock().unwrap(), ["sample"]);
+}
+
+#[tokio::test]
+async fn queued_jobs_keep_their_own_paste_settings_and_order() {
+    let mut config = AppConfig::default();
+    config.paste.method = PasteMethod::ShiftInsert;
+    config.paste.after = PasteAfter::Enter;
+    let mut h = harness(config.clone());
+    h.script("groq", vec![Ok("first"), Ok("second")]);
+    h.providers.gate.forget_permits(1_000);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.expect(&[Recording, Transcribing]).await;
+    config.paste.method = PasteMethod::Type;
+    config.paste.after = PasteAfter::CtrlEnter;
+    h.settings.replace(settings(config.clone()));
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.expect(&[Recording]).await;
+    h.hotkey(HotkeyEvent::ComboDown);
+    wait_for(&mut h, Transcribing, 1).await;
+    config.paste = PasteConfig::default();
+    h.settings.replace(settings(config));
+    h.providers.gate.add_permits(1_000);
+    wait_for(&mut h, Idle, 0).await;
+    assert_eq!(h.paster.texts(), ["first ", "second "]);
+    assert_eq!(
+        *h.paster.requests.lock().unwrap(),
+        [
+            PasteRequest {
+                method: PasteMethod::ShiftInsert,
+                after: PasteAfter::Enter,
+                restore: false,
+                auto_paste: true
+            },
+            PasteRequest { method: PasteMethod::Type, after: PasteAfter::CtrlEnter, restore: false, auto_paste: true },
+        ]
+    );
+    assert_eq!(*h.paster.clipboard_writes.lock().unwrap(), ["first "]);
+    assert_eq!(*h.paster.typed.lock().unwrap(), ["second "]);
+    assert_eq!(*h.paster.after_keys.lock().unwrap(), [PasteAfter::Enter, PasteAfter::CtrlEnter]);
+}
 
 #[tokio::test]
 async fn cli_controls_are_atomic_and_pause_resume_are_idempotent() {
@@ -556,6 +679,8 @@ async fn history_retry_replaces_the_row_and_copies_once_without_pasting_or_resto
     h.wait_for(|s| s.state == Idle).await;
     let mut config = h.settings.current().config.clone();
     config.paste.restore_clipboard = true;
+    config.paste.method = PasteMethod::Type;
+    config.paste.after = PasteAfter::CtrlEnter;
     config.active_profile_id = "openai".into();
     config.profiles.iter_mut().find(|p| p.id == "openai").unwrap().language = "en".into();
     config.rules.numbers_as_words = true;
@@ -577,6 +702,9 @@ async fn history_retry_replaces_the_row_and_copies_once_without_pasting_or_resto
     assert!(!h.history.entries()[0].has_audio);
     assert_eq!(*h.paster.pasted.lock().unwrap(), [("Twelve items ".into(), false)]);
     assert_eq!(*h.paster.policies.lock().unwrap(), [false]);
+    assert_eq!(*h.paster.clipboard_writes.lock().unwrap(), ["Twelve items "]);
+    assert!(h.paster.typed.lock().unwrap().is_empty());
+    assert!(h.paster.after_keys.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -584,11 +712,11 @@ async fn toggle_records_transcribes_pastes_and_saves() {
     let mut h = harness(AppConfig::default());
     h.script("groq", vec![Ok("cloud code'u aç")]);
 
-    h.send(Msg::Toggle);
+    h.hotkey(HotkeyEvent::ComboDown);
     h.expect(&[Recording]).await;
     assert!(h.hotkey.escape_captured(), "Esc cancels while recording");
     assert_eq!(h.overlay.last().level, Some(0.0));
-    h.send(Msg::Toggle);
+    h.hotkey(HotkeyEvent::ComboDown);
     h.expect(&[Transcribing, Pasting, Idle]).await;
 
     assert_eq!(h.paster.texts(), ["Claude Code'u aç "]);
@@ -1087,8 +1215,8 @@ async fn transcript_text_never_reaches_the_logs() {
     let mut h = harness(with_fallback());
     h.script("groq", vec![Err(ProviderError::Server(503)), Err(ProviderError::Server(503))]);
     h.script("openai", vec![Ok("çok gizli cümle")]);
-    h.send(Msg::Toggle);
-    h.send(Msg::Toggle);
+    h.hotkey(HotkeyEvent::ComboDown);
+    h.hotkey(HotkeyEvent::ComboDown);
     h.expect(&[Recording, Transcribing, Pasting, Idle]).await;
 
     let logs = String::from_utf8_lossy(&logs.lock().unwrap()).into_owned();
@@ -1360,12 +1488,19 @@ async fn ask_text_and_voice_share_the_queue_and_save_request_answer_and_agent() 
         ))
         .mount(&server)
         .await;
-    for voice in [false, true] {
+    for (voice, output) in [
+        (false, opit_core::ask::Output::Copy),
+        (true, opit_core::ask::Output::Copy),
+        (false, opit_core::ask::Output::Paste),
+        (true, opit_core::ask::Output::Paste),
+    ] {
         let mut config = AppConfig::default();
         config.ask.base_url = server.uri();
         config.ask.api_key_ref = None;
-        config.ask.output = opit_core::ask::Output::Copy;
+        config.ask.output = output;
         config.paste.restore_clipboard = true;
+        config.paste.method = PasteMethod::Type;
+        config.paste.after = PasteAfter::Enter;
         let mut h = harness(config);
         let handle = h.handle.clone();
         h.script("groq", vec![Ok("spoken request")]);
@@ -1379,8 +1514,25 @@ async fn ask_text_and_voice_share_the_queue_and_save_request_answer_and_agent() 
         assert_eq!(result.await.unwrap().unwrap(), "agent answer");
         h.wait_for(|s| s.state == Idle).await;
         assert_eq!(h.paster.texts(), ["agent answer"]);
-        assert_eq!(*h.paster.policies.lock().unwrap(), [false]);
-        assert!(!h.paster.pasted.lock().unwrap()[0].1);
+        let inserts = output == opit_core::ask::Output::Paste;
+        assert_eq!(
+            *h.paster.requests.lock().unwrap(),
+            [PasteRequest {
+                method: PasteMethod::Type,
+                after: PasteAfter::Enter,
+                restore: inserts,
+                auto_paste: inserts,
+            }]
+        );
+        if inserts {
+            assert_eq!(*h.paster.typed.lock().unwrap(), ["agent answer"]);
+            assert_eq!(*h.paster.after_keys.lock().unwrap(), [PasteAfter::Enter]);
+            assert!(h.paster.clipboard_writes.lock().unwrap().is_empty());
+        } else {
+            assert_eq!(*h.paster.clipboard_writes.lock().unwrap(), ["agent answer"]);
+            assert!(h.paster.typed.lock().unwrap().is_empty());
+            assert!(h.paster.after_keys.lock().unwrap().is_empty());
+        }
         assert_eq!(h.mic.starts(), usize::from(voice));
         let saved = h.history.entries();
         assert_eq!(saved[0].mode, "ask");
