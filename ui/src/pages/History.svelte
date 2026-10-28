@@ -5,6 +5,7 @@
   import { onHistoryAdded } from "../lib/events";
   import { formatClock, formatDateTime, formatSeconds } from "../lib/format";
   import { expandToWords } from "../lib/selection";
+  import { refreshHistory } from "../lib/history";
   import { toast } from "../lib/toast.svelte";
   import type { Dictation } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
@@ -59,10 +60,12 @@
     listBusy = true;
     listError = null;
     try {
-      const page = search ? await api.historySearch(search, 100) : await api.historyRecent(50, null);
+      const snapshot = live && !search ? await refreshHistory(api.historyRecent, rows.length) : null;
+      const page = snapshot?.rows ?? (search ? await api.historySearch(search, 100) : await api.historyRecent(50, null));
       if (disposed || epoch !== generation || request !== listRequest) return;
-      if (!live || rows.length === 0) hasMore = !search && page.length === 50;
-      rows = live ? merge(page, rows) : page;
+      hasMore = snapshot?.hasMore ?? (!search && page.length === 50);
+      rows = page;
+      if (audioId !== null && !rows.some(row => row.id === audioId)) stopAudio();
     } catch (error) {
       if (!disposed && epoch === generation && request === listRequest) listError = errorText(error);
     } finally {
@@ -109,11 +112,13 @@
   async function loadMore() {
     if (disposed || query || listBusy || moreBusy || mutationBusy || !hasMore || !rows.length) return;
     const epoch = generation;
+    const request = listRequest;
     moreBusy = true;
     moreError = null;
     try {
       const page = await api.historyRecent(50, rows[rows.length - 1].id);
-      if (!disposed && epoch === generation) {
+      // A live refresh meanwhile re-read the window from storage; this older page may be stale.
+      if (!disposed && epoch === generation && request === listRequest) {
         rows = merge(page, rows);
         hasMore = page.length === 50;
       }

@@ -231,12 +231,14 @@ pub fn start(app: AppHandle, core: Arc<AppCore>, mut options: FileOptions) -> Re
         return Err(CommandError::new("file_speakers", ""));
     }
     let jobs = app.state::<Arc<FileJobs>>().inner().clone();
+    let work = core.controller.begin_file_work().ok_or_else(|| CommandError::new("file_busy", ""))?;
     let (path, cancel) = jobs.begin(options.clone())?;
     let initial = jobs.snapshot();
     let handle = tauri::async_runtime::handle();
     let worker_jobs = jobs.clone();
     let worker_app = app.clone();
     let worker = tauri::async_runtime::spawn_blocking(move || {
+        let _work = work;
         transcribe_path(
             &core,
             settings,

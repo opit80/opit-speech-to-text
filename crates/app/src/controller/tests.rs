@@ -987,6 +987,38 @@ async fn history_follows_the_live_config() {
 }
 
 #[tokio::test]
+async fn pending_update_reserves_file_work_and_cancellation_releases_it() {
+    let (handle, _inbox) = channel();
+    let mut hold = Box::pin(handle.hold_for_update());
+    std::future::poll_fn(|cx| {
+        assert!(hold.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert!(handle.begin_file_work().is_none());
+    drop(hold);
+    assert!(handle.begin_file_work().is_some());
+}
+
+#[tokio::test]
+async fn file_work_and_updates_exclude_each_other_in_both_orders() {
+    let h = harness(AppConfig::default());
+    let ui = h.handle.begin_file_work().unwrap();
+    let ipc = h.handle.begin_file_work().unwrap();
+    assert!(h.handle.hold_for_update().await.is_none());
+    drop(ui);
+    assert!(h.handle.hold_for_update().await.is_none());
+    drop(ipc);
+    let update = h.handle.hold_for_update().await.unwrap();
+    assert!(h.handle.begin_file_work().is_none());
+    let second = h.handle.hold_for_update().await.unwrap();
+    drop(update);
+    assert!(h.handle.begin_file_work().is_none());
+    drop(second);
+    assert!(h.handle.begin_file_work().is_some());
+}
+
+#[tokio::test]
 async fn an_update_hold_refuses_new_dictations_until_every_hold_is_released() {
     let mut h = harness(AppConfig::default());
     h.script("groq", vec![Err(ProviderError::BadResponse("invalid response".into())), Ok("sonra")]);

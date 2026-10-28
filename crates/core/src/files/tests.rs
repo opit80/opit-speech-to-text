@@ -232,6 +232,71 @@ async fn cancellation_drops_an_inflight_request_and_never_starts_another_chunk()
 }
 
 #[tokio::test]
+async fn cleanup_never_repeats_replacements_with_or_without_timestamps() {
+    for timed in [false, true] {
+        let server = MockServer::start().await;
+        let segments = if timed {
+            serde_json::json!([{"start":0,"end":1,"text":"alpha foo omega github"}])
+        } else {
+            serde_json::json!([])
+        };
+        Mock::given(path("/v1/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "text":"alpha foo omega github", "segments": segments
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices":[{"message":{"content":format!("[0:{}] alpha foo bar omega github", if timed { 1000 } else { 0 })},"finish_reason":"stop"}]
+            })))
+            .mount(&server).await;
+        let client =
+            OpenAiCompatible::new(presets::custom("file", "file", &format!("{}/v1", server.uri()), "test"), None)
+                .unwrap()
+                .for_file();
+        let cleanup = CleanupClient::new(
+            crate::cleanup::CleanupConfig {
+                base_url: format!("{}/v1", server.uri()),
+                model: "test".into(),
+                api_key_ref: None,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        let pack = crate::rules::RulePack::from_yaml(
+            "schema: 1\nid: test\nname: test\nlanguage: en\nterms: [GitHub]\nreplacements:\n  - { from: foo, to: foo bar }\n"
+        ).unwrap();
+        let rules = RuleSet::compile(&[pack]).0;
+        let ctx = PipelineContext {
+            primary: &client,
+            fallback: None,
+            rules: &rules,
+            prompt_context: "",
+            retry_delay: Duration::ZERO,
+            numbers_as_words: false,
+        };
+        let result = transcribe(
+            &vec![0.4; 16000],
+            &ctx,
+            Some(FileCleanup { client: &cleanup, ui_language: "en" }),
+            &AtomicBool::new(false),
+            16000,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(!result.cleanup_failed);
+        assert_eq!(result.text, "alpha foo bar omega GitHub");
+        assert_eq!(result.timestamps_available, timed);
+        if timed {
+            assert_eq!(result.segments[0].text, result.text);
+        }
+    }
+}
+
+#[tokio::test]
 async fn subtitle_cleanup_http_preserves_markers_and_falls_back_on_shortening() {
     for (answer, failed, expected) in
         [("[100:800] Hello there!", false, "Hello there!"), ("[100:800] Hello", true, "hello there")]

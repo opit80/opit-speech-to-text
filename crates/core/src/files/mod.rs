@@ -173,6 +173,10 @@ pub async fn transcribe<T: Transcriber + Sync>(
             }
         };
         let mut text = apply(&raw.text);
+        // Cleanup receives already processed text. Only restore glossary casing afterwards.
+        let after_cleanup = |text: &str| {
+            if used.profile().apply_rules { ctx.rules.apply_term_casing(text) } else { text.to_string() }
+        };
         for segment in &mut segments {
             segment.text = apply(&segment.text).split_whitespace().collect::<Vec<_>>().join(" ");
             // Diarization identifiers are independent for each provider request.
@@ -191,7 +195,7 @@ pub async fn transcribe<T: Transcriber + Sync>(
                 match cleaned.and_then(|answer| validate_subtitle_cleanup(&segments, &answer)) {
                     Ok(lines) => {
                         for (segment, line) in segments.iter_mut().zip(lines) {
-                            segment.text = apply(&line);
+                            segment.text = after_cleanup(&line);
                         }
                     }
                     Err(_) => result.cleanup_failed = true,
@@ -209,7 +213,7 @@ pub async fn transcribe<T: Transcriber + Sync>(
                 let input = subtitle_lines(std::slice::from_ref(&plain));
                 match cancellable(cleanup.client.clean(&input, &system), cancel).await? {
                     Ok(answer) => match validate_subtitle_cleanup(std::slice::from_ref(&plain), &answer) {
-                        Ok(lines) => text = apply(&lines[0]),
+                        Ok(lines) => text = after_cleanup(&lines[0]),
                         Err(_) => result.cleanup_failed = true,
                     },
                     _ => result.cleanup_failed = true,

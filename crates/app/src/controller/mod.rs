@@ -189,6 +189,31 @@ pub enum Msg {
 pub struct ControllerHandle {
     tx: mpsc::UnboundedSender<Msg>,
     status: Arc<Mutex<DictationStatus>>,
+    work: Arc<Mutex<WorkState>>,
+}
+
+#[derive(Default)]
+struct WorkState {
+    files: usize,
+    updates: usize,
+}
+
+/// Shared by UI/IPC workers and update installation. Held until the worker finishes,
+/// including when its async caller is cancelled.
+pub struct WorkGuard {
+    state: Arc<Mutex<WorkState>>,
+    update: bool,
+}
+
+impl Drop for WorkGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.update {
+            state.updates -= 1;
+        } else {
+            state.files -= 1;
+        }
+    }
 }
 
 pub struct Inbox(mpsc::UnboundedReceiver<Msg>);
@@ -227,6 +252,7 @@ impl Drop for TextReply {
 /// While alive, new dictations and "Try again" are refused; dropping it lifts the hold.
 pub struct UpdateHold {
     tx: mpsc::UnboundedSender<Msg>,
+    _work: WorkGuard,
 }
 
 impl Drop for UpdateHold {
@@ -239,7 +265,7 @@ impl Drop for UpdateHold {
 /// controller that consumes them.
 pub fn channel() -> (ControllerHandle, Inbox) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (ControllerHandle { tx, status: Arc::default() }, Inbox(rx))
+    (ControllerHandle { tx, status: Arc::default(), work: Arc::default() }, Inbox(rx))
 }
 
 /// The actor loop. Spawn it on the app's tokio runtime; it ends after `Msg::Shutdown`.
@@ -305,9 +331,26 @@ impl ControllerHandle {
     /// waiting, transcribing or pasting (or after shutdown). The controller answers in order with its
     /// other messages, so no dictation can slip in between the answer and the hold.
     pub async fn hold_for_update(&self) -> Option<UpdateHold> {
+        let work = {
+            let mut state = self.work.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.files != 0 {
+                return None;
+            }
+            state.updates += 1;
+            WorkGuard { state: self.work.clone(), update: true }
+        };
         let (reply, answer) = oneshot::channel();
         self.send(Msg::HoldForUpdate(reply));
-        answer.await.unwrap_or(false).then(|| UpdateHold { tx: self.tx.clone() })
+        answer.await.unwrap_or(false).then(|| UpdateHold { tx: self.tx.clone(), _work: work })
+    }
+
+    pub fn begin_file_work(&self) -> Option<WorkGuard> {
+        let mut state = self.work.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.updates != 0 {
+            return None;
+        }
+        state.files += 1;
+        Some(WorkGuard { state: self.work.clone(), update: false })
     }
 
     pub fn hotkey_sink(&self) -> HotkeySink {

@@ -188,10 +188,10 @@ impl LocalService {
             let _ = tx.send(true);
         }
     }
-    pub fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<()> {
         self.closed.store(true, Ordering::SeqCst);
         self.cancel();
-        self.session.lock().unwrap_or_else(PoisonError::into_inner).running.take();
+        self.stop().await
     }
     /// Runs on a blocking worker: filesystem and hardware enumeration never block the WebView.
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -312,10 +312,30 @@ impl LocalService {
     async fn stop(&self) -> Result<()> {
         let session = self.session.clone();
         tokio::task::spawn_blocking(move || {
-            *session.lock().unwrap_or_else(PoisonError::into_inner) = Session::default();
+            let old = std::mem::take(&mut *session.lock().unwrap_or_else(PoisonError::into_inner));
+            // Termination waits on the child; never keep the session locked while waiting.
+            drop(old);
         })
         .await
         .map_err(|_| LocalError::Io)
+    }
+
+    /// Slow preparation is independent of session ownership. Closing prevents a late
+    /// initializer from publishing or launching a process after shutdown completes.
+    fn initialize<T>(
+        &self,
+        prepare: impl FnOnce() -> Result<T>,
+        launch: impl FnOnce(T) -> Result<Running>,
+    ) -> Result<(String, bool)> {
+        let prepared = prepare()?;
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(LocalError::Closed);
+        }
+        let running = launch(prepared)?;
+        let endpoint = running.endpoint.clone();
+        session.running = Some(running);
+        Ok((endpoint, true))
     }
     async fn endpoint(self: &Arc<Self>, profile: &Profile) -> Result<String> {
         if self.closed.load(Ordering::SeqCst) {
@@ -327,40 +347,48 @@ impl LocalService {
         let service = self.clone();
         let config2 = config.clone();
         let endpoint = tokio::task::spawn_blocking(move || {
-            let mut session = service.session.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(running) = session.running.as_mut() {
-                if running.model == model.id && running.config == config2 && running.root == root {
-                    if running.process.alive() {
-                        return Ok((running.endpoint.clone(), !running.ready));
+            let previous = {
+                let mut session = service.session.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Some(running) = session.running.as_mut() {
+                    if running.model == model.id && running.config == config2 && running.root == root {
+                        if running.process.alive() {
+                            return Ok((running.endpoint.clone(), !running.ready));
+                        }
+                        session.restarts.crashed()?;
+                    } else {
+                        session.restarts = server::RestartBudget::default();
                     }
-                    session.restarts.crashed()?;
-                } else {
-                    session.restarts = server::RestartBudget::default();
                 }
-            }
-            session.running.take();
-            let exe = download::find_server(&root.join("bin").join(&config2.build))?.ok_or(LocalError::NotInstalled)?;
-            let model_path = root.join("models").join(model.file);
-            if !model_path.is_file() {
-                return Err(LocalError::NotInstalled);
-            }
-            download::verify(&model_path, &model)?;
-            let port = server::free_port()?;
-            let threads = if config2.threads == 0 { service.hardware().physical_cores.max(1) } else { config2.threads };
-            if service.closed.load(Ordering::SeqCst) {
-                return Err(LocalError::Closed);
-            }
-            let process = server::Process::launch(&exe, &model_path, port, threads, config2.gpu)?;
-            let endpoint = format!("http://127.0.0.1:{port}");
-            session.running = Some(Running {
-                ready: false,
-                process,
-                endpoint: endpoint.clone(),
-                model: model.id.into(),
-                config: config2,
-                root,
-            });
-            Ok((endpoint, true))
+                session.running.take()
+            };
+            drop(previous);
+            service.initialize(
+                || {
+                    let exe = download::find_server(&root.join("bin").join(&config2.build))?
+                        .ok_or(LocalError::NotInstalled)?;
+                    let model_path = root.join("models").join(model.file);
+                    if !model_path.is_file() {
+                        return Err(LocalError::NotInstalled);
+                    }
+                    download::verify(&model_path, &model)?;
+                    let port = server::free_port()?;
+                    let threads =
+                        if config2.threads == 0 { service.hardware().physical_cores.max(1) } else { config2.threads };
+                    Ok((exe, model_path, port, threads))
+                },
+                |(exe, model_path, port, threads)| {
+                    let process = server::Process::launch(&exe, &model_path, port, threads, config2.gpu)?;
+                    let endpoint = format!("http://127.0.0.1:{port}");
+                    Ok(Running {
+                        ready: false,
+                        process,
+                        endpoint: endpoint.clone(),
+                        model: model.id.into(),
+                        config: config2.clone(),
+                        root: root.clone(),
+                    })
+                },
+            )
         })
         .await
         .map_err(|_| LocalError::Launch)??;
@@ -620,8 +648,35 @@ mod tests {
         tokio::time::advance(Duration::from_secs(60000)).await;
         service.idle_tick().await;
         assert!(alive.load(Ordering::SeqCst));
-        service.shutdown();
+        service.shutdown().await.unwrap();
         assert!(!alive.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shutdown_finishes_while_initialization_is_blocked_and_prevents_late_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, alive) = fake_service(dir.path(), "http://127.0.0.1:1".into());
+        let (entered, entering) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let initializer = service.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            initializer.initialize(
+                || {
+                    let _ = entered.send(());
+                    blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Ok(())
+                },
+                |()| panic!("shutdown must prevent a late process launch"),
+            )
+        });
+        entering.await.unwrap();
+        let shutdown = tokio::time::timeout(Duration::from_secs(1), service.shutdown()).await;
+        // Always release the blocked worker, including when testing a regression.
+        release.send(()).unwrap();
+        shutdown.expect("initialization must not block shutdown").unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert!(matches!(worker.await.unwrap(), Err(LocalError::Closed)));
+        assert!(service.session.lock().unwrap().running.is_none());
     }
     #[tokio::test]
     async fn shared_local_server_preserves_language_without_keys_and_updates_idle_time() {

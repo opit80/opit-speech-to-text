@@ -28,25 +28,25 @@ impl Lang {
     pub fn ask_cleanup_failed(self) -> &'static str {
         self.pick(
             "Request cleanup failed. The agent received the recognized request.",
-            "?stek d?zenlenemedi. Alg?lanan istek ajana g?nderildi.",
+            "İstek düzenlenemedi. Algılanan istek ajana gönderildi.",
         )
     }
     pub fn ask_invalid(self) -> &'static str {
-        self.pick("Invalid Ask settings or working directory.", "Sorma ayarlar? veya ?al??ma dizini ge?ersiz.")
+        self.pick("Invalid Ask settings or working directory.", "Sorma ayarları veya çalışma dizini geçersiz.")
     }
     pub fn ask_detection_failed(self) -> &'static str {
-        self.pick("Agent detection failed.", "Ajan alg?lama ba?ar?s?z.")
+        self.pick("Agent detection failed.", "Ajan algılama başarısız.")
     }
     pub fn tray_ask(self) -> &'static str {
-        self.pick("Ask?", "Sor?")
+        self.pick("Ask…", "Sor…")
     }
     pub fn new_conversation(self) -> &'static str {
-        self.pick("New conversation", "Yeni konu?ma")
+        self.pick("New conversation", "Yeni konuşma")
     }
     pub fn asking(self, agent: &str, seconds: u64) -> String {
         match self {
-            Self::En => format!("Asking {agent}? {seconds}s"),
-            Self::Tr => format!("{agent} yan?tl?yor? {seconds} sn"),
+            Self::En => format!("Asking {agent}… {seconds}s"),
+            Self::Tr => format!("{agent} yanıtlıyor… {seconds} sn"),
         }
     }
 
@@ -275,6 +275,25 @@ impl Lang {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_strings_preserve_utf8_and_ask_wording() {
+        // Inspect all production literals, including formatted overlay messages.
+        let source = include_str!("i18n.rs").split("#[cfg(test)]").next().unwrap();
+        for line in source.lines() {
+            for literal in line.split('"').skip(1).step_by(2) {
+                assert!(!literal.contains('?'), "unexpected question mark in a native string");
+                for corrupt in ['\u{fffd}', '\u{c3}', '\u{c2}', '\u{c4}', '\u{c5}'] {
+                    assert!(!literal.contains(corrupt), "corrupted UTF-8 in a native string");
+                }
+            }
+        }
+        assert_eq!(Lang::Tr.ask_cleanup_failed(), "İstek düzenlenemedi. Algılanan istek ajana gönderildi.");
+        assert_eq!(Lang::Tr.ask_invalid(), "Sorma ayarları veya çalışma dizini geçersiz.");
+        assert_eq!(Lang::Tr.ask_detection_failed(), "Ajan algılama başarısız.");
+        assert_eq!(Lang::Tr.new_conversation(), "Yeni konuşma");
+        assert_eq!(Lang::Tr.asking("agent", 3), "agent yanıtlıyor… 3 sn");
+    }
 
     #[test]
     fn queue_count_precedes_labels_that_the_overlay_may_truncate() {

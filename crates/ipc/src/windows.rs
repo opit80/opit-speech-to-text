@@ -3,6 +3,7 @@
 
 use std::io;
 use std::mem::size_of;
+use std::os::windows::io::AsRawHandle;
 use std::time::Duration;
 
 use tokio::io::BufReader;
@@ -12,10 +13,12 @@ use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
 };
 use windows::Win32::Security::{
-    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    GetTokenInformation, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER, TokenSessionId, TokenUser,
 };
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken};
+use windows::Win32::System::Pipes::GetNamedPipeServerProcessId;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::core::{PCWSTR, PWSTR};
 
 use crate::{Error, MAX_REQUEST, MAX_RESPONSE, Request, Response, VERSION, read_frame, write_frame};
@@ -42,10 +45,26 @@ impl Drop for LocalAllocation {
     }
 }
 
-fn user_sid() -> io::Result<String> {
+#[derive(Debug, PartialEq, Eq)]
+struct Identity {
+    sid: String,
+    session: u32,
+}
+
+fn process_identity(process: HANDLE) -> io::Result<Identity> {
     unsafe {
         let mut token = Token(HANDLE::default());
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token.0).map_err(win_error)?;
+        OpenProcessToken(process, TOKEN_QUERY, &mut token.0).map_err(win_error)?;
+        let mut session = 0u32;
+        let mut needed = 0;
+        GetTokenInformation(
+            token.0,
+            TokenSessionId,
+            Some((&mut session as *mut u32).cast()),
+            size_of::<u32>() as u32,
+            &mut needed,
+        )
+        .map_err(win_error)?;
         let mut needed = 0;
         let _ = GetTokenInformation(token.0, TokenUser, None, 0, &mut needed);
         if needed == 0 {
@@ -59,17 +78,35 @@ fn user_sid() -> io::Result<String> {
         let mut sid = PWSTR::null();
         ConvertSidToStringSidW(user.User.Sid, &mut sid).map_err(win_error)?;
         let _allocation = LocalAllocation(sid.0.cast());
-        sid.to_string().map_err(|_| io::Error::other("Invalid user SID."))
+        let sid = sid.to_string().map_err(|_| io::Error::other("Invalid user SID."))?;
+        Ok(Identity { sid, session })
     }
 }
 
+fn user_sid() -> io::Result<String> {
+    Ok(process_identity(unsafe { GetCurrentProcess() })?.sid)
+}
+
 pub fn pipe_name() -> io::Result<String> {
-    let sid = user_sid()?;
-    let mut session = 0;
-    unsafe {
-        ProcessIdToSessionId(GetCurrentProcessId(), &mut session).map_err(win_error)?;
-    }
+    let Identity { sid, session } = process_identity(unsafe { GetCurrentProcess() })?;
     Ok(format!(r"\\.\pipe\opit-{sid}-{session}-v1"))
+}
+
+fn server_identity(client: &NamedPipeClient) -> io::Result<Identity> {
+    unsafe {
+        let mut pid = 0;
+        GetNamedPipeServerProcessId(HANDLE(client.as_raw_handle()), &mut pid).map_err(win_error)?;
+        // Keep the process handle alive while querying its token, preventing PID reuse.
+        let process = Token(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).map_err(win_error)?);
+        process_identity(process.0)
+    }
+}
+
+fn authenticate(identity: io::Result<Identity>, expected: &Identity) -> io::Result<()> {
+    if identity? != *expected {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Untrusted local control server."));
+    }
+    Ok(())
 }
 
 fn sddl(sid: &str) -> String {
@@ -118,6 +155,12 @@ pub async fn call(request: &Request) -> Result<Response, Error> {
 }
 
 pub async fn call_at(name: &str, request: &Request) -> Result<Response, Error> {
+    let expected = process_identity(unsafe { GetCurrentProcess() })
+        .map_err(|_| Error::new("transport", "Could not identify the local user session."))?;
+    call_at_for_identity(name, request, &expected).await
+}
+
+async fn call_at_for_identity(name: &str, request: &Request, expected: &Identity) -> Result<Response, Error> {
     request.validate()?;
     let mut client = connect(name).await.map_err(|error| {
         if error.raw_os_error() == Some(2) {
@@ -126,6 +169,8 @@ pub async fn call_at(name: &str, request: &Request) -> Result<Response, Error> {
             Error::new("transport", "Could not connect to Opit Speech to Text.")
         }
     })?;
+    authenticate(server_identity(&client), expected)
+        .map_err(|_| Error::new("untrusted_server", "Could not authenticate the local control server."))?;
     write_frame(&mut client, request, MAX_REQUEST).await?;
     // File jobs may be long. Bound dead peers without retrying mutations.
     let bytes = tokio::time::timeout(Duration::from_secs(7200), read_frame(&mut BufReader::new(client), MAX_RESPONSE))
@@ -142,6 +187,37 @@ pub async fn call_at(name: &str, request: &Request) -> Result<Response, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_identity_verification_errors_fail_closed() {
+        let expected = process_identity(unsafe { GetCurrentProcess() }).unwrap();
+        assert!(authenticate(Err(io::Error::other("token unavailable")), &expected).is_err());
+    }
+
+    #[tokio::test]
+    async fn impostor_server_receives_no_request_for_a_foreign_sid_or_session() {
+        use tokio::io::AsyncReadExt;
+        for foreign_session in [false, true] {
+            let mut expected = process_identity(unsafe { GetCurrentProcess() }).unwrap();
+            if foreign_session {
+                expected.session += 1;
+            } else {
+                expected.sid = "S-1-5-21-0-0-0-1234".into();
+            }
+            let name = format!("{}-impostor-{}-{foreign_session}", pipe_name().unwrap(), std::process::id());
+            let mut server = create_server(&name, true).unwrap();
+            let received = tokio::spawn(async move {
+                server.connect().await.unwrap();
+                let mut bytes = Vec::new();
+                server.read_to_end(&mut bytes).await.unwrap();
+                bytes
+            });
+            let request = Request::new(crate::Command::Ask { text: Some("private request".into()) });
+            let error = call_at_for_identity(&name, &request, &expected).await.err().expect("untrusted server");
+            assert_eq!(error.code, "untrusted_server");
+            assert!(tokio::time::timeout(Duration::from_secs(2), received).await.unwrap().unwrap().is_empty());
+        }
+    }
 
     #[test]
     fn descriptor_grants_only_the_user_and_name_includes_session() {

@@ -77,20 +77,43 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("the Tauri application could not be built");
 
-    app.run(|app, event| match event {
+    let exit_state = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    app.run(move |app, event| match event {
         // `code: None` = the user closed the last window: stay in the tray.
-        // `app.exit(n)` arrives as `Some(n)` and is let through.
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-        RunEvent::Exit => {
+        RunEvent::ExitRequested { code: Some(code), api, .. }
+            if exit_state.load(std::sync::atomic::Ordering::SeqCst) != 2 =>
+        {
+            api.prevent_exit();
+            if exit_state
+                .compare_exchange(0, 1, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+                .is_err()
+            {
+                return;
+            }
             if let Some(jobs) = app.try_state::<Arc<file_jobs::FileJobs>>() {
                 jobs.cancel();
             }
-            if let Some(core) = app.try_state::<Arc<AppCore>>() {
-                core.local.shutdown();
+            let local = app.try_state::<Arc<AppCore>>().map(|core| {
                 core.controller.send(Msg::Shutdown);
-            }
-            info!("exiting");
+                core.local.clone()
+            });
+            let app = app.clone();
+            let exit_state = exit_state.clone();
+            tauri::async_runtime::spawn(async move {
+                // Bounded, so a stuck local server can never keep the app from exiting.
+                let stopped = match local {
+                    Some(local) => tokio::time::timeout(std::time::Duration::from_secs(10), local.shutdown()).await,
+                    None => Ok(Ok(())),
+                };
+                if !matches!(stopped, Ok(Ok(()))) {
+                    warn!("local shutdown did not finish cleanly");
+                }
+                exit_state.store(2, std::sync::atomic::Ordering::SeqCst);
+                app.exit(code);
+            });
         }
+        RunEvent::Exit => info!("exiting"),
         _ => {}
     });
 }
