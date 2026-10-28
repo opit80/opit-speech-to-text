@@ -13,7 +13,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, ErrorKind, FromSample, Host, SampleFormat, SizedSample, Stream, StreamConfig};
 use opit_core::audio::Recording;
 
-use crate::platform::{Capture, CaptureEvent, CaptureSink, MicError, Microphone, Started};
+use crate::platform::{AudioSink, Capture, CaptureEvent, CaptureSink, MicError, Microphone, Started};
 
 /// How long `start` waits for the capture thread to open the device.
 pub const START_TIMEOUT: Duration = Duration::from_secs(3);
@@ -24,6 +24,7 @@ pub const LEVEL_INTERVAL: Duration = Duration::from_millis(50);
 struct SampleBuffer {
     samples: Vec<f32>,
     paused: bool,
+    audio_sink: Option<AudioSink>,
 }
 
 impl SampleBuffer {
@@ -141,6 +142,15 @@ impl CpalCapture {
 }
 
 impl Capture for CpalCapture {
+    fn set_audio_sink(&self, sink: Option<AudioSink>) {
+        let mut buffer = self.buffer.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(sink) = &sink {
+            for chunk in buffer.samples.chunks((self.sample_rate / 5).max(1) as usize) {
+                sink(chunk.to_vec(), self.sample_rate);
+            }
+        }
+        buffer.audio_sink = sink;
+    }
     fn set_paused(&self, paused: bool) {
         self.buffer.lock().unwrap_or_else(PoisonError::into_inner).paused = paused;
     }
@@ -310,6 +320,7 @@ where
     let mut meter = LevelMeter::new(LEVEL_INTERVAL);
     let mut failed = false;
     let channels = usize::from(config.channels.max(1));
+    let sample_rate = config.sample_rate;
 
     device.build_input_stream(
         config,
@@ -319,7 +330,12 @@ where
                 if buf.paused {
                     return;
                 }
-                meter.push(buf.append(data, channels), Instant::now())
+                let sink = buf.audio_sink.clone();
+                let samples = buf.append(data, channels);
+                if let Some(sink) = sink {
+                    sink(samples.to_vec(), sample_rate);
+                }
+                meter.push(samples, Instant::now())
             };
             if let Some(level) = level {
                 data_sink(CaptureEvent::Level(level));

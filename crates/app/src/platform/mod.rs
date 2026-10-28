@@ -81,6 +81,8 @@ pub enum CaptureEvent {
 }
 
 pub type CaptureSink = Arc<dyn Fn(CaptureEvent) + Send + Sync>;
+/// Mono samples at the native device rate. Callback must only enqueue, never block.
+pub type AudioSink = Arc<dyn Fn(Vec<f32>, u32) + Send + Sync>;
 
 pub struct Started {
     pub capture: Box<dyn Capture>,
@@ -100,6 +102,9 @@ pub trait Microphone: Send + Sync {
 }
 
 pub trait Capture: Send {
+    /// Atomically replay captured mono samples then subscribe to new unpaused samples.
+    /// Removing the sink must synchronize with any in-flight callback.
+    fn set_audio_sink(&self, _sink: Option<AudioSink>) {}
     /// The stream remains open; samples captured while paused are discarded.
     fn set_paused(&self, paused: bool);
     /// Stops the stream and returns everything captured. Dropping without calling this cancels.
@@ -230,6 +235,8 @@ impl RecordingTiming {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlayView {
+    /// Private live preview; the native view fits its tail into two lines.
+    pub live_text: Option<String>,
     pub tone: Tone,
     pub text: String,
     /// Some(level 0..1) supplies the latest microphone level for the waveform.

@@ -168,6 +168,23 @@ fn fit_status(value: &str, width: i32, measure: impl Fn(&str) -> i32) -> String 
     lines.join("\n")
 }
 
+/// Keep the most recent words visible using actual font metrics, including long tokens.
+fn fit_live(value: &str, width: i32, measure: impl Fn(&str) -> i32) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut tail = normalized.as_str();
+    let mut shortened = tail.starts_with('…');
+    while !tail.is_empty() {
+        let candidate = if shortened && !tail.starts_with('…') { format!("…{tail}") } else { tail.into() };
+        let fitted = fit_status(&candidate, width, &measure);
+        if fitted.replace('\n', " ") == candidate {
+            return fitted;
+        }
+        tail = &tail[tail.chars().next().unwrap().len_utf8()..];
+        shortened = true;
+    }
+    String::new()
+}
+
 const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF(r as u32 | (g as u32) << 8 | (b as u32) << 16)
 }
@@ -796,12 +813,18 @@ unsafe fn draw(dc: HDC, w: i32, h: i32, frame: &Frame) {
 
         let text_rect = RECT { left: text_left, top: row_top, right: w - pad, bottom: row_top + row * 2 };
         let old_font = SelectObject(dc, frame.text_font.into());
-        let fitted = fit_status(&view.text, (text_rect.right - text_rect.left).max(0), |value| {
+        let measure = |value: &str| {
             let wide: Vec<u16> = value.encode_utf16().collect();
             let mut size = SIZE::default();
             let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
             size.cx
-        });
+        };
+        let width = (text_rect.right - text_rect.left).max(0);
+        let fitted = if let Some(live) = &view.live_text {
+            fit_live(live, width, measure)
+        } else {
+            fit_status(&view.text, width, measure)
+        };
         SelectObject(dc, old_font);
         text(dc, &fitted, text_rect, frame.text_font, frame.palette.fg, DT_LEFT | DT_WORDBREAK);
 
@@ -898,6 +921,20 @@ mod tests {
         );
         assert_eq!(fit_status("Çokuzunbirkayıtadı", 5, measure), "…");
         assert_eq!(fit_status("bir", 0, measure), "");
+    }
+
+    #[test]
+    fn live_preview_keeps_the_latest_words_and_long_unicode_tokens() {
+        let measure = |s: &str| s.chars().count() as i32;
+        let value = fit_live("earlier words followed by the latest words", 16, measure);
+        assert!(value.starts_with('…'));
+        assert!(value.ends_with("latest words"));
+        assert!(value.lines().count() <= 2);
+        let token = fit_live(&"ğ".repeat(60), 10, measure);
+        assert!(token.starts_with('…'));
+        assert!(token.ends_with('ğ'));
+        assert!(token.chars().count() <= 10);
+        assert_eq!(fit_live("ğüş", 20, measure), "ğüş");
     }
 
     #[test]
@@ -1022,6 +1059,7 @@ mod tests {
         for i in 0..30 {
             let level = ((i as f32) * 0.45).sin().abs();
             overlay.show(OverlayView {
+                live_text: None,
                 tone: Tone::Neutral,
                 text: "Listening…".into(),
                 level: Some(level),
@@ -1032,6 +1070,7 @@ mod tests {
             thread::sleep(Duration::from_millis(50));
         }
         overlay.show(OverlayView {
+            live_text: None,
             tone: Tone::Error,
             text: "The API key was rejected by the provider".into(),
             level: None,
@@ -1054,6 +1093,7 @@ mod tests {
     fn overlay_auto_hide() {
         let overlay = WinOverlay::new(OverlayPosition::TopCenter, Arc::new(|_| {})).unwrap();
         overlay.show(OverlayView {
+            live_text: None,
             tone: Tone::Success,
             text: "Pasted".into(),
             level: None,
@@ -1094,6 +1134,7 @@ mod tests {
         )
         .unwrap();
         let view = |button: Option<OverlayButton>| OverlayView {
+            live_text: None,
             tone: Tone::Warning,
             text: "Nothing was heard".into(),
             level: None,

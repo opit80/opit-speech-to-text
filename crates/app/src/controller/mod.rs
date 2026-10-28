@@ -1,6 +1,7 @@
 //! Opit dictation: capture independently of a bounded FIFO. Transcription and paste
 //! run serially, including clipboard restore. Waiting items continue after Escape.
 
+mod live;
 mod status;
 #[cfg(test)]
 mod tests;
@@ -47,6 +48,16 @@ pub trait Providers: Send + Sync + 'static {
     type Client: Transcriber + Send + Sync + 'static;
 
     fn client(&self, profile: &Profile) -> Result<Self::Client, SetupError>;
+
+    fn connect_live(
+        &self,
+        _profile: Profile,
+        _terms: Vec<String>,
+    ) -> impl Future<
+        Output = Result<Box<dyn opit_core::provider::streaming::LiveSession>, opit_core::provider::ProviderError>,
+    > + Send {
+        async { Err(opit_core::provider::ProviderError::Network("streaming unavailable".into())) }
+    }
 
     fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
         None
@@ -114,6 +125,10 @@ pub struct Env<P: Providers> {
 /// Controller input. Deliberately not `Debug`: `Transcribed` carries transcript text,
 /// which must never reach a log line.
 pub enum Msg {
+    LiveText {
+        session: u64,
+        text: String,
+    },
     VoiceReady(u64),
     StyleChanged(CleanupStyle),
     Ask {
@@ -462,11 +477,13 @@ struct Job {
 
 enum Input {
     Text(String),
-    Raw(Recording),
+    Raw(Recording, Option<live::LiveResult>),
     Prepared(Arc<PreparedAudio>),
 }
 
 struct ActiveRecording<C> {
+    live: Option<live::LiveRecording>,
+    live_text: String,
     voice: Option<VoiceContext>,
     ask: bool,
     text_reply: Option<TextReply>,
@@ -573,6 +590,12 @@ impl<P: Providers> Controller<P> {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
+            Msg::LiveText { session, text } => {
+                if let Some(recording) = self.recording.as_mut().filter(|r| r.session == session && !r.paused) {
+                    recording.live_text = live::tail(&text);
+                    self.show_recording();
+                }
+            }
             Msg::VoiceReady(_) => {} // handled by the async actor loop
             Msg::StyleChanged(style) => self.style_changed(style),
             Msg::TestAsk { config, reply } => {
@@ -1115,7 +1138,25 @@ impl<P: Providers> Controller<P> {
         self.env.hotkey.set_capture_escape(true);
         self.play(Sound::Start);
         info!(session, device = %started.device, profile = %settings.config.active_profile_id, "recording started");
+        let live = settings
+            .config
+            .active_profile()
+            .filter(|p| settings.config.recording.live_text && p.supports_streaming())
+            .map(|profile| {
+                let terms = opit_core::rules::prompt::keywords(settings.rules.terms());
+                let live = live::LiveRecording::start(
+                    self.env.providers.clone(),
+                    profile.clone(),
+                    terms,
+                    session,
+                    self.tx.clone(),
+                );
+                started.capture.set_audio_sink(Some(live.sink()));
+                live
+            });
         self.recording = Some(ActiveRecording {
+            live,
+            live_text: String::new(),
             voice,
             media,
             ask: false,
@@ -1156,6 +1197,7 @@ impl<P: Providers> Controller<P> {
         r.limit.abort();
         let auto_paste = auto_paste && self.env.paster.can_auto_paste();
         let recording = r.capture.finish();
+        let live = r.live.map(live::LiveRecording::stop);
         drop(r.media);
         self.waiting.push_back(Pending {
             session: r.session,
@@ -1173,7 +1215,7 @@ impl<P: Providers> Controller<P> {
                 reply: None,
             },
             clients: Some(r.clients),
-            input: Input::Raw(recording),
+            input: Input::Raw(recording, live),
             salvage: false,
         });
     }
@@ -1259,10 +1301,12 @@ impl<P: Providers> Controller<P> {
                 ),
                 input => {
                     let clients = clients.as_ref().expect("audio jobs have speech clients");
+                    let mut live = None;
                     let audio = match input {
                         Input::Text(_) => unreachable!(),
                         Input::Prepared(audio) => audio,
-                        Input::Raw(recording) => {
+                        Input::Raw(recording, streaming) => {
+                            live = streaming;
                             match prepare_off_thread(recording, task_settings.config.recording.clone()).await {
                                 Ok(audio) => Arc::new(audio),
                                 Err(err) => {
@@ -1280,10 +1324,29 @@ impl<P: Providers> Controller<P> {
                         retry_delay,
                         numbers_as_words: task_settings.config.rules.numbers_as_words,
                     };
-                    let mut result = pipeline::transcribe_with_wait(&audio, &ctx, |progress, delay| {
-                        wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
-                    })
-                    .await;
+                    let streamed = if let Some(live) = live {
+                        match live.resolve().await {
+                            Ok(raw) => Some(pipeline::from_raw(raw, &audio, &ctx)),
+                            Err(error) => {
+                                warn!(
+                                    session,
+                                    reason = error.code(),
+                                    "live transcription failed; using recorded audio"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let mut result = if let Some(result) = streamed {
+                        result
+                    } else {
+                        pipeline::transcribe_with_wait(&audio, &ctx, |progress, delay| {
+                            wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
+                        })
+                        .await
+                    };
                     let use_cleanup = !is_voice && (!is_ask || task_settings.config.ask.cleanup_request);
                     if use_cleanup && let Ok(transcript) = &mut result {
                         let profile = task_settings
@@ -1560,7 +1623,7 @@ impl<P: Providers> Controller<P> {
                         reply: None,
                     },
                     clients: Some(r.clients),
-                    input: Input::Raw(recording),
+                    input: Input::Raw(recording, None),
                     salvage: true,
                 });
             }
@@ -1849,6 +1912,7 @@ impl<P: Providers> Controller<P> {
         };
         let hide_after = if button.is_some() { ERROR_WITH_BUTTON_HIDE } else { ERROR_HIDE };
         self.show(OverlayView {
+            live_text: None,
             tone: Tone::Error,
             text: message.clone(),
             level: None,
@@ -1905,7 +1969,7 @@ impl<P: Providers> Controller<P> {
             && let Some(p) = self.waiting.pop_front()
         {
             if p.salvage {
-                let Input::Raw(recording) = p.input else { unreachable!() };
+                let Input::Raw(recording, _) = p.input else { unreachable!() };
                 let session = p.session;
                 let tx = self.tx.clone();
                 let recording_config = p.job.settings.config.recording.clone();
@@ -1963,6 +2027,9 @@ impl<P: Providers> Controller<P> {
                 format!("{} - {}", label, r.settings.lang.style_name(&r.cleanup_style))
             };
             let mut view = listening(&r.settings.lang.with_waiting(&label, self.waiting.len()), r.level);
+            if !r.live_text.is_empty() {
+                view.live_text = Some(r.live_text.clone());
+            }
             view.recording = Some(RecordingTiming {
                 session: r.session,
                 elapsed: max.saturating_sub(remaining),
@@ -2109,11 +2176,12 @@ async fn prepare_off_thread(
 }
 
 fn view(tone: Tone, text: impl Into<String>, hide_after: Option<Duration>) -> OverlayView {
-    OverlayView { tone, text: text.into(), level: None, recording: None, button: None, hide_after }
+    OverlayView { live_text: None, tone, text: text.into(), level: None, recording: None, button: None, hide_after }
 }
 
 fn listening(label: &str, rms: f32) -> OverlayView {
     OverlayView {
+        live_text: None,
         tone: Tone::Busy,
         text: label.into(),
         level: Some(meter(rms)),

@@ -269,6 +269,9 @@ fn client(core: &AppCore, mut profile: Profile, options: &FileOptions) -> Result
             .map(|c| ProviderClient::Elevenlabs(c.with_file_options(options.speakers)))
             .map_err(CommandError::from),
         ProviderKind::LocalWhisper => unreachable!(),
+        ProviderKind::Deepgram => opit_core::provider::deepgram::Deepgram::new(profile, key)
+            .map(ProviderClient::Deepgram)
+            .map_err(CommandError::from),
     }?;
     Ok(crate::providers::AppProvider::Cloud(client))
 }

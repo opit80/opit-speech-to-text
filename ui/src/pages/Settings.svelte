@@ -104,6 +104,7 @@
       hotkeyEnabled: c.hotkey.enabled,
       paused: app.hotkey.paused,
       microphone: c.recording.microphone ?? "",
+      liveText: c.recording.live_text,
       pasteMethod: c.paste.method as string,
       pasteAfter: c.paste.after as string,
       restoreClipboard: c.paste.restore_clipboard,
@@ -219,6 +220,27 @@
       options.push({ value: configured, label: t("settings.mic_missing", { name: configured }) });
     }
     return options;
+  });
+
+  // ---- Live text: whether the active profile can stream; null until known (no note before that).
+  let activeStreams = $state<boolean | null>(null);
+  let streamRequest = 0;
+
+  // Memoized, so other settings saves do not re-run the check.
+  const streamKey = $derived(JSON.stringify([app.config?.active_profile_id ?? null, app.config?.profiles ?? []]));
+
+  // Re-checked when the active profile or the profiles change; a failed check shows no note.
+  $effect(() => {
+    void streamKey;
+    const id = untrack(() => app.config?.active_profile_id ?? null);
+    const request = ++streamRequest;
+    untrack(() => {
+      activeStreams = null;
+      if (!id) return;
+      api.streamingSupported(id)
+        .then((supported) => { if (!disposed && request === streamRequest) activeStreams = supported; })
+        .catch(() => {});
+    });
   });
 
   // ---- Number inputs: keep the typed text while focused, save on change, then show what Rust stored.
@@ -405,6 +427,12 @@
         <MicLevelTest device={config.recording.microphone} />
         {@render numberInput("max_seconds", t("settings.max_seconds"), t("settings.max_seconds_hint"), 10, 600, 10, false,
           (c) => c.recording.max_seconds, (c, n) => { c.recording.max_seconds = n; })}
+        <Switch label={t("settings.live_text")} info={t("settings.live_text_hint")} checked={view.liveText}
+          onchange={(v) => void save("live_text", (c) => { c.recording.live_text = v; })} />
+        {#if config.recording.live_text && activeStreams === false}
+          <p class="muted note" role="status">{t("settings.live_text_unsupported")}</p>
+        {/if}
+        {@render fieldError("live_text")}
       </section>
 
       <details class="card settings-group" open={["media_enabled", "media_mode", "duck_volume"].some((field) => !!errors[field])}>
@@ -574,6 +602,7 @@
   .mic-row { display: flex; align-items: flex-end; gap: var(--space-2); }
   .grow { flex: 1; min-width: 0; }
   .number { width: 120px; }
+  .note { font-size: var(--text-sm); }
   .translate-model { border-top: 1px solid var(--border); padding-top: var(--space-4); }
   .translate-model input { width: 100%; }
   .paths { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; }

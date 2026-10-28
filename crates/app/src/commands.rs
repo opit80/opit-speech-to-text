@@ -59,6 +59,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         set_active_style,
         cleanup_style_defaults,
         profile_presets,
+        streaming_supported,
         local_state,
         local_download,
         local_cancel,
@@ -253,7 +254,7 @@ fn cleanup_style_defaults() -> Vec<opit_core::cleanup::styles::StyleDefaults> {
     opit_core::cleanup::styles::defaults()
 }
 
-/// Groq, OpenAI, ElevenLabs, and a blank custom template (the UI fills in id, name, URL and model).
+/// Provider presets and a blank custom template (the UI fills in id, name, URL and model).
 #[tauri::command]
 fn profile_presets() -> Vec<Profile> {
     use opit_core::provider::presets;
@@ -261,9 +262,21 @@ fn profile_presets() -> Vec<Profile> {
         presets::groq(),
         presets::openai(),
         presets::elevenlabs(),
+        presets::deepgram(),
         presets::local(),
         presets::custom("custom", "", "", ""),
     ]
+}
+
+#[tauri::command]
+async fn streaming_supported(core: Core<'_>, profile_id: String) -> Result<bool> {
+    blocking(core.inner().clone(), move |core| {
+        core.config()
+            .profile(&profile_id)
+            .map(Profile::supports_streaming)
+            .ok_or_else(|| CommandError::new("invalid_input", "unknown profile"))
+    })
+    .await
 }
 
 #[tauri::command]

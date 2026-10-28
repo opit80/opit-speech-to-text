@@ -18,7 +18,7 @@ pub const DELETE_CREDENTIALS_FLAG: &str = "--delete-credentials";
 /// The file is read as plain JSON (no schema, no migration), so a damaged or newer config
 /// still gives up its refs.
 pub fn credential_refs(config_json: Option<&str>) -> Vec<String> {
-    let mut refs: BTreeSet<String> = [presets::groq(), presets::openai(), presets::elevenlabs()]
+    let mut refs: BTreeSet<String> = [presets::groq(), presets::openai(), presets::elevenlabs(), presets::deepgram()]
         .into_iter()
         .filter_map(|profile| profile.api_key_ref)
         .collect();
@@ -114,6 +114,7 @@ mod tests {
             "cleanup-groq",
             "cleanup-openai",
             "cleanup-openrouter",
+            "deepgram",
             "elevenlabs",
             "groq",
             "openai",

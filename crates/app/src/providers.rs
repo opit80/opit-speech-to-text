@@ -93,6 +93,21 @@ impl HttpProviders {
 impl Providers for HttpProviders {
     type Client = Arc<AppProvider>;
 
+    async fn connect_live(
+        &self,
+        profile: Profile,
+        terms: Vec<String>,
+    ) -> Result<Box<dyn opit_core::provider::streaming::LiveSession>, ProviderError> {
+        let secrets = self.secrets.clone();
+        let key_ref = profile.api_key_ref.clone();
+        let key =
+            tokio::task::spawn_blocking(move || key_ref.map(|key| secrets.get(&key)).transpose().map(Option::flatten))
+                .await
+                .map_err(|_| ProviderError::Network("credential worker unavailable".into()))?
+                .map_err(|_| ProviderError::Unauthorized(401))?;
+        opit_core::provider::streaming::WebSocketSession::connect(profile, key, &terms).await
+    }
+
     fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
         Some(self.ask.clone())
     }

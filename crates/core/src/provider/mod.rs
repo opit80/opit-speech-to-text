@@ -2,12 +2,14 @@
 
 use crate::audio::encode::EncodedAudio;
 
+pub mod deepgram;
 pub mod elevenlabs;
 pub mod language;
 pub mod local;
 pub mod openai;
 pub mod profile;
 pub mod retry;
+pub mod streaming;
 
 pub use openai::OpenAiCompatible;
 pub use profile::{Profile, ProviderKind, ResponseFormat, presets};
@@ -15,6 +17,7 @@ pub use profile::{Profile, ProviderKind, ResponseFormat, presets};
 pub enum ProviderClient {
     OpenaiCompatible(OpenAiCompatible),
     Elevenlabs(elevenlabs::ElevenLabs),
+    Deepgram(deepgram::Deepgram),
     LocalWhisper(local::LocalWhisper),
 }
 
@@ -23,6 +26,7 @@ impl ProviderClient {
         match profile.provider {
             ProviderKind::OpenaiCompatible => OpenAiCompatible::new(profile, api_key).map(Self::OpenaiCompatible),
             ProviderKind::Elevenlabs => elevenlabs::ElevenLabs::new(profile, api_key).map(Self::Elevenlabs),
+            ProviderKind::Deepgram => deepgram::Deepgram::new(profile, api_key).map(Self::Deepgram),
             ProviderKind::LocalWhisper => local::LocalWhisper::new(profile).map(Self::LocalWhisper),
         }
     }
@@ -31,6 +35,7 @@ impl ProviderClient {
         match self {
             Self::OpenaiCompatible(client) => client.test_connection().await,
             Self::Elevenlabs(client) => client.test_connection().await,
+            Self::Deepgram(client) => client.test_connection().await,
             Self::LocalWhisper(client) => client.test_connection().await,
         }
     }
@@ -39,6 +44,7 @@ impl ProviderClient {
         match self {
             Self::OpenaiCompatible(client) => client.warm_up().await,
             Self::Elevenlabs(client) => client.warm_up().await,
+            Self::Deepgram(_) => {}
             Self::LocalWhisper(_) => {}
         }
     }
@@ -49,6 +55,7 @@ impl Transcriber for ProviderClient {
         match self {
             Self::OpenaiCompatible(client) => client.profile(),
             Self::Elevenlabs(client) => client.profile(),
+            Self::Deepgram(client) => client.profile(),
             Self::LocalWhisper(client) => client.profile(),
         }
     }
@@ -57,6 +64,7 @@ impl Transcriber for ProviderClient {
         match self {
             Self::OpenaiCompatible(client) => client.transcribe(request).await,
             Self::Elevenlabs(client) => client.transcribe(request).await,
+            Self::Deepgram(client) => client.transcribe(request).await,
             Self::LocalWhisper(client) => client.transcribe(request).await,
         }
     }

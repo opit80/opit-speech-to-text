@@ -1,4 +1,28 @@
-import type { Profile } from "./types";
+import type { MessageKey } from "./i18n";
+import type { AudioFormat, Profile, ProviderKind } from "./types";
+
+/** How each provider kind is named in the profile form. */
+export const PROVIDER_KEYS: Record<ProviderKind, MessageKey> = {
+  openai_compatible: "profiles.provider.openai",
+  elevenlabs: "profiles.provider.elevenlabs",
+  local_whisper: "profiles.preset.local",
+  deepgram: "profiles.provider.deepgram",
+};
+
+/** Providers that can show live text while recording (mirrors `streaming_supported`, for unsaved drafts). */
+export function supportsLiveText(provider: ProviderKind): boolean {
+  return provider === "elevenlabs" || provider === "deepgram";
+}
+
+/** Whether the upload format is chosen by the provider adapter rather than the user. */
+export function fixedAudioFormat(provider: ProviderKind): boolean {
+  return provider !== "openai_compatible";
+}
+
+/** The audio format Rust stores for a profile: Deepgram always uses WAV. */
+export function storedAudioFormat(provider: ProviderKind, format: AudioFormat): AudioFormat {
+  return provider === "deepgram" ? "wav" : format;
+}
 
 const TURKISH: Record<string, string> = { ç: "c", ğ: "g", ı: "i", i̇: "i", ö: "o", ş: "s", ü: "u" };
 

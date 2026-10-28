@@ -12,6 +12,8 @@ if (!import.meta.env.DEV) throw new Error("Guide preview is only available in th
 const params = new URLSearchParams(location.search);
 // Synthetic local installation state for browser review; no download or process is started.
 const localPreset: Profile = { provider:"local_whisper",id:"local",name:"Local (offline)",base_url:"http://127.0.0.1:1",model:"ggml-large-v3-turbo-q5_0.bin",api_key_ref:null,language:"tr",audio_format:"wav",response_format:"verbose_json",send_prompt:true,send_keywords:false,apply_rules:true,apply_cleanup:false,fallback_profile_id:null };
+// Mirrors the Rust Deepgram Nova-3 preset (docs/live-text.md).
+const deepgramPreset: Profile = { provider:"deepgram",id:"deepgram",name:"Deepgram",base_url:"https://api.deepgram.com/v1",model:"nova-3",api_key_ref:"deepgram",language:"tr",audio_format:"wav",response_format:"json",send_prompt:false,send_keywords:false,apply_rules:true,apply_cleanup:true,fallback_profile_id:null };
 const localPreview: LocalState = {
   builds:[{ id:"blas",file:"preview.zip",url:"",sha256:"",size:21715607 },{ id:"cuda12",file:"preview.zip",url:"",sha256:"",size:684913404 }],
   models:[{ id:"ggml-tiny-q5_1.bin",file:"ggml-tiny-q5_1.bin",url:"",sha256:"",size:32152673 },{ id:localPreset.model,file:localPreset.model,url:"",sha256:"",size:574041195 }],
@@ -42,7 +44,7 @@ const config: AppConfig = {
     send_prompt: true, send_keywords: false, apply_rules: true, apply_cleanup: true, fallback_profile_id: null,
   }],
   hotkey: { ask_keys: [], pause_keys: [], style_cycle_keys: [], edit_keys: params.get("voice") === "true" ? ["F18"] : [], translate_keys: params.get("voice") === "true" ? ["F19"] : [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
-  recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults },
+  recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults, live_text: params.get("live") === "true" },
   paste: { method: "ctrl_v", after: "none", restore_clipboard: false, trailing_space: true },
   translate: { target_language: "en", model: null },
   media: { enabled: true, mode: "pause", duck_volume_percent: 20 },
@@ -247,7 +249,12 @@ mockIPC(async (command, payload) => {
     case "take_startup_notices":
     case "list_microphones":
       return [];
-    case "profile_presets": return [localPreset];
+    case "profile_presets": return [deepgramPreset, localPreset];
+    case "streaming_supported": {
+      const profile = config.profiles.find((p) => p.id === (payload as {profileId:string}).profileId);
+      if (!profile) throw {code:"invalid_input",message:"unknown profile",kind:null};
+      return profile.provider === "elevenlabs" || profile.provider === "deepgram";
+    }
     case "local_state": return structuredClone(localPreview);
     case "local_download": {
       const id = (payload as {id:string}).id;

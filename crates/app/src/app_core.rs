@@ -235,6 +235,7 @@ impl AppCore {
             return None;
         };
         Some(OverlayView {
+            live_text: None,
             tone: Tone::Warning,
             text: text.into(),
             level: None,

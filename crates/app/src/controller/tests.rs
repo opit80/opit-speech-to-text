@@ -17,6 +17,8 @@ use crate::settings::{Settings, SettingsHandle};
 use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 
 // ---------- scripted providers ----------
+#[path = "live_tests.rs"]
+mod live_tests;
 
 #[tokio::test]
 async fn app_rule_overrides_are_private_start_snapshots_with_the_selected_profiles_fallback() {
@@ -548,6 +550,7 @@ async fn cli_completion_preserves_a_new_recordings_overlay() {
 }
 
 struct ProviderState {
+    live: Arc<FakeStreaming>,
     scripts: Mutex<HashMap<String, VecDeque<Result<String, ProviderError>>>>,
     missing_keys: Mutex<HashSet<String>>,
     gate: Arc<Semaphore>,
@@ -562,6 +565,7 @@ struct ProviderState {
 impl ProviderState {
     fn new() -> Self {
         Self {
+            live: Arc::default(),
             scripts: Mutex::default(),
             missing_keys: Mutex::default(),
             gate: Arc::new(Semaphore::new(1_000)),
@@ -618,6 +622,18 @@ impl Transcriber for ScriptedClient {
 
 impl Providers for TestProviders {
     type Client = ScriptedClient;
+    async fn connect_live(
+        &self,
+        _profile: Profile,
+        _terms: Vec<String>,
+    ) -> Result<Box<dyn opit_core::provider::streaming::LiveSession>, ProviderError> {
+        self.0.live.connections.fetch_add(1, SeqCst);
+        let _permit = self.0.live.connect_gate.acquire().await.unwrap();
+        if let Some(error) = self.0.live.connect_error.lock().unwrap().clone() {
+            return Err(error);
+        }
+        Ok(Box::new(FakeLiveSession(self.0.live.clone())))
+    }
     fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
         Some(self.0.ask.clone())
     }

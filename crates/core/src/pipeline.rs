@@ -212,6 +212,15 @@ where
     Ok((result?, used, used_fallback))
 }
 
+/// Apply exactly the batch postprocessing to a streaming final after the speech gate passes.
+pub fn from_raw<T: Transcriber>(
+    raw: RawTranscript,
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'_, T>,
+) -> Result<Transcript, PipelineError> {
+    finish(raw, ctx.primary, false, audio, ctx, Instant::now())
+}
+
 fn finish<T: Transcriber>(
     raw: RawTranscript,
     used: &T,
@@ -230,7 +239,7 @@ fn finish<T: Transcriber>(
         audio.audio_ms,
     );
     let detected_language = raw.language.clone();
-    let language = if profile.language.trim() == "auto" {
+    let language = if matches!(profile.language.trim(), "auto" | "multi" | "") {
         raw.language
     } else {
         crate::provider::language::normalize(&profile.language)

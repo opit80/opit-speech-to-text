@@ -24,7 +24,7 @@ export interface DictationStatus {
 
 export type AudioFormat = "flac" | "wav";
 export type ResponseFormat = "verbose_json" | "json";
-export type ProviderKind = "openai_compatible" | "elevenlabs" | "local_whisper";
+export type ProviderKind = "openai_compatible" | "elevenlabs" | "local_whisper" | "deepgram";
 
 export interface LocalConfig {
   build: string;
@@ -160,6 +160,8 @@ export interface AppConfig {
     speech_floor_db: number;
     noise_margin_db: number;
     min_speech_seconds: number;
+    /** Preview partial text in the native overlay when the effective profile can stream; nothing is typed early. */
+    live_text: boolean;
   };
   paste: PasteConfig;
   translate: TranslateConfig;

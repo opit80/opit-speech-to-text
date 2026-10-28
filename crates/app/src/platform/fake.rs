@@ -1,13 +1,102 @@
 //! In-memory platform doubles for controller and app-state tests.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use opit_core::audio::Recording;
 use opit_core::config::OverlayPosition;
 
 use super::*;
+
+/// Streaming test double shared by controller tests. No real socket or credentials.
+pub struct FakeStreaming {
+    pub connections: AtomicUsize,
+    pub dropped: AtomicUsize,
+    pub finishes: AtomicUsize,
+    pub audio: Mutex<Vec<i16>>,
+    pub updates: Mutex<
+        std::collections::VecDeque<
+            Result<opit_core::provider::streaming::LiveUpdate, opit_core::provider::ProviderError>,
+        >,
+    >,
+    pub result: Mutex<Result<opit_core::provider::RawTranscript, opit_core::provider::ProviderError>>,
+    pub connect_error: Mutex<Option<opit_core::provider::ProviderError>>,
+    pub send_error: Mutex<Option<opit_core::provider::ProviderError>>,
+    pub connect_gate: tokio::sync::Semaphore,
+    pub hang_finish: AtomicBool,
+    pub keepalives: AtomicUsize,
+}
+
+impl Default for FakeStreaming {
+    fn default() -> Self {
+        Self {
+            connections: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+            finishes: AtomicUsize::new(0),
+            audio: Mutex::default(),
+            updates: Mutex::new([Ok(opit_core::provider::streaming::LiveUpdate { text: "live draft".into() })].into()),
+            result: Mutex::new(Ok(opit_core::provider::RawTranscript {
+                text: "stream final words".into(),
+                language: Some("tr".into()),
+                dropped_segments: 0,
+                segments: Vec::new(),
+            })),
+            connect_error: Mutex::default(),
+            send_error: Mutex::default(),
+            connect_gate: tokio::sync::Semaphore::new(1000),
+            hang_finish: AtomicBool::new(false),
+            keepalives: AtomicUsize::new(0),
+        }
+    }
+}
+
+pub struct FakeLiveSession(pub Arc<FakeStreaming>);
+impl Drop for FakeLiveSession {
+    fn drop(&mut self) {
+        self.0.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl opit_core::provider::streaming::LiveSession for FakeLiveSession {
+    fn send_audio<'a>(&'a mut self, samples: &'a [i16]) -> opit_core::provider::streaming::LiveFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(error) = self.0.send_error.lock().unwrap().clone() {
+                return Err(error);
+            }
+            self.0.audio.lock().unwrap().extend_from_slice(samples);
+            Ok(())
+        })
+    }
+    fn next_update(
+        &mut self,
+    ) -> opit_core::provider::streaming::LiveFuture<'_, Option<opit_core::provider::streaming::LiveUpdate>> {
+        Box::pin(async move {
+            let update = self.0.updates.lock().unwrap().pop_front();
+            match update {
+                Some(update) => update.map(Some),
+                None => std::future::pending().await,
+            }
+        })
+    }
+    fn keep_alive(&mut self) -> opit_core::provider::streaming::LiveFuture<'_, ()> {
+        Box::pin(async {
+            self.0.keepalives.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+    fn finish(
+        self: Box<Self>,
+    ) -> opit_core::provider::streaming::LiveFuture<'static, opit_core::provider::RawTranscript> {
+        Box::pin(async move {
+            self.0.finishes.fetch_add(1, Ordering::SeqCst);
+            if self.0.hang_finish.load(Ordering::SeqCst) {
+                return std::future::pending().await;
+            }
+            self.0.result.lock().unwrap().clone()
+        })
+    }
+}
 
 #[derive(Default)]
 pub struct FakeForegroundApp {
@@ -77,6 +166,7 @@ pub fn silent_recording() -> Recording {
 
 #[derive(Default)]
 pub struct FakeMic {
+    pub audio_sink: Arc<Mutex<Option<AudioSink>>>,
     pub recording: Mutex<Option<Recording>>,
     pub fail_start: Mutex<Option<MicError>>,
     pub fell_back: Mutex<bool>,
@@ -95,6 +185,11 @@ impl FakeMic {
     pub fn append_samples(&self, samples: &[f32]) {
         if !*self.paused.lock().unwrap() {
             self.samples.lock().unwrap().extend_from_slice(samples);
+            if let Some(sink) = self.audio_sink.lock().unwrap().as_ref() {
+                let mono: Vec<_> =
+                    samples.chunks(2).map(|frame| frame.iter().sum::<f32>() / frame.len() as f32).collect();
+                sink(mono, 48_000);
+            }
         }
     }
     pub fn starts(&self) -> usize {
@@ -124,6 +219,7 @@ impl Microphone for FakeMic {
         self.samples.lock().unwrap().clear();
         let started = Started {
             capture: Box::new(FakeCapture {
+                audio_sink: self.audio_sink.clone(),
                 recording: Some(recording),
                 finished: self.finished.clone(),
                 dropped: self.dropped.clone(),
@@ -143,6 +239,7 @@ impl Microphone for FakeMic {
 }
 
 struct FakeCapture {
+    audio_sink: Arc<Mutex<Option<AudioSink>>>,
     recording: Option<Recording>,
     finished: Arc<AtomicUsize>,
     dropped: Arc<AtomicUsize>,
@@ -152,6 +249,17 @@ struct FakeCapture {
 }
 
 impl Capture for FakeCapture {
+    fn set_audio_sink(&self, sink: Option<AudioSink>) {
+        let mut current = self.audio_sink.lock().unwrap();
+        if let Some(sink) = &sink {
+            let recording = self.recording.as_ref().unwrap();
+            let mono = opit_core::audio::downmix(&recording.samples, recording.channels);
+            for chunk in mono.chunks((recording.sample_rate / 5).max(1) as usize) {
+                sink(chunk.to_vec(), recording.sample_rate);
+            }
+        }
+        *current = sink;
+    }
     fn set_paused(&self, paused: bool) {
         *self.paused.lock().unwrap() = paused;
     }
@@ -166,6 +274,7 @@ impl Capture for FakeCapture {
 
 impl Drop for FakeCapture {
     fn drop(&mut self) {
+        self.audio_sink.lock().unwrap().take();
         if self.recording.is_some() {
             self.dropped.fetch_add(1, Ordering::SeqCst);
         }

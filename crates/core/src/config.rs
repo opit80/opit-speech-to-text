@@ -141,6 +141,9 @@ impl Default for HotkeyConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RecordingConfig {
+    /// Show streaming transcription in the native overlay for supported providers.
+    #[serde(default)]
+    pub live_text: bool,
     /// Device name; `None` = system default.
     pub microphone: Option<String>,
     pub max_seconds: u32,
@@ -155,6 +158,7 @@ impl Default for RecordingConfig {
     fn default() -> Self {
         Self {
             microphone: None,
+            live_text: false,
             max_seconds: 180,
             speech_floor_db: -41.938200260161125,
             noise_margin_db: 6.020599913279624,
@@ -357,6 +361,9 @@ impl AppConfig {
             self.active_profile_id = self.profiles[0].id.clone();
         }
         for profile in &mut self.profiles {
+            if profile.provider == crate::provider::ProviderKind::Deepgram {
+                profile.audio_format = crate::audio::encode::AudioFormat::Wav;
+            }
             if profile.provider == crate::provider::ProviderKind::LocalWhisper {
                 profile.api_key_ref = None;
                 profile.audio_format = crate::audio::encode::AudioFormat::Wav;
@@ -608,6 +615,22 @@ mod tests {
         assert_eq!(old.cleanup.timeout_seconds, 1);
     }
     use crate::provider::presets;
+
+    #[test]
+    fn live_text_is_opt_in_in_legacy_configs_and_deepgram_always_uses_wav() {
+        let legacy = AppConfig::from_json(r#"{"recording":{"max_seconds":60}}"#).unwrap();
+        assert!(!legacy.recording.live_text);
+        let enabled = AppConfig::from_json(r#"{"recording":{"live_text":true}}"#).unwrap();
+        assert!(enabled.recording.live_text);
+        assert_eq!(AppConfig::from_json(&enabled.to_json()).unwrap(), enabled);
+        let mut profile = presets::deepgram();
+        profile.audio_format = crate::audio::encode::AudioFormat::Flac;
+        let mut config = legacy;
+        config.profiles.push(profile);
+        config.normalize();
+        assert_eq!(config.profile("deepgram").unwrap().audio_format, crate::audio::encode::AudioFormat::Wav);
+        assert_eq!(config.profile("deepgram").unwrap().api_key_ref.as_deref(), Some("deepgram"));
+    }
 
     #[test]
     fn speech_detection_defaults_load_legacy_configs_and_validate_ranges() {

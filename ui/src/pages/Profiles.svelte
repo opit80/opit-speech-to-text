@@ -3,7 +3,7 @@
   import { api } from "../lib/api";
   import { app, errorText, saveConfig, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
-  import { uniqueProfileId } from "../lib/profiles";
+  import { supportsLiveText, uniqueProfileId } from "../lib/profiles";
   import { toast } from "../lib/toast.svelte";
   import type { Profile } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
@@ -19,7 +19,7 @@
     session: number;
   }
 
-  const presetKeys: Record<string, MessageKey> = { groq: "profiles.preset.groq", openai: "profiles.preset.openai", elevenlabs: "profiles.preset.elevenlabs", local: "profiles.preset.local" };
+  const presetKeys: Record<string, MessageKey> = { groq: "profiles.preset.groq", openai: "profiles.preset.openai", elevenlabs: "profiles.preset.elevenlabs", deepgram: "profiles.preset.deepgram", local: "profiles.preset.local" };
   let presets = $state<Profile[]>([]);
   let presetsBusy = $state(true);
   let presetsError = $state<string | null>(null);
@@ -40,6 +40,8 @@
 
   const profiles = $derived(app.config?.profiles ?? []);
   const activeId = $derived(app.config?.active_profile_id ?? "");
+  // The marker matters only while live text is switched on.
+  const liveText = $derived(app.config?.recording.live_text ?? false);
 
   async function loadPresets() {
     presetsBusy = true;
@@ -235,6 +237,7 @@
               <h2>{profile.name}</h2>
               <div class="badges">
                 {#if active}<span class="badge success">{t("profiles.active")}</span>{/if}
+                {#if liveText && supportsLiveText(profile.provider)}<span class="badge">{t("profiles.live_badge")}</span>{/if}
                 {#if profile.api_key_ref && keyState[profile.api_key_ref] === false}
                   <span class="badge warning"><Icon name="key" size={12} />{t("profiles.no_key")}</span>
                 {/if}

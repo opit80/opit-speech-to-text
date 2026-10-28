@@ -55,6 +55,8 @@ export const api = {
   /** Supported translation target languages with English and Turkish names; no I/O. */
   translateLanguages: () => invoke<TranslateLanguage[]>("translate_languages"),
   profilePresets: () => invoke<Profile[]>("profile_presets"),
+  /** Whether a saved profile can show live text (ElevenLabs, Deepgram); no network or credentials. */
+  streamingSupported: (profileId: string) => invoke<boolean>("streaming_supported", { profileId }),
 
   getUserRules: () => invoke<string>("get_user_rules"),
   saveUserRules: (yaml: string) => invoke<RuleWarning[]>("save_user_rules", { yaml }),

@@ -10,6 +10,7 @@ pub enum ProviderKind {
     #[default]
     OpenaiCompatible,
     Elevenlabs,
+    Deepgram,
     LocalWhisper,
 }
 
@@ -57,6 +58,10 @@ pub struct Profile {
 }
 
 impl Profile {
+    pub fn supports_streaming(&self) -> bool {
+        matches!(self.provider, ProviderKind::Elevenlabs | ProviderKind::Deepgram)
+    }
+
     pub fn is_insecure(&self) -> bool {
         self.base_url.trim_start().to_ascii_lowercase().starts_with("http://")
     }
@@ -76,6 +81,26 @@ pub mod presets {
     pub const GROQ_ID: &str = "groq";
     pub const OPENAI_ID: &str = "openai";
     pub const ELEVENLABS_ID: &str = "elevenlabs";
+    pub const DEEPGRAM_ID: &str = "deepgram";
+
+    pub fn deepgram() -> Profile {
+        Profile {
+            provider: ProviderKind::Deepgram,
+            id: DEEPGRAM_ID.into(),
+            name: "Deepgram".into(),
+            base_url: "https://api.deepgram.com/v1".into(),
+            model: "nova-3".into(),
+            api_key_ref: Some(DEEPGRAM_ID.into()),
+            language: "tr".into(),
+            audio_format: AudioFormat::Wav,
+            response_format: ResponseFormat::Json,
+            send_prompt: false,
+            send_keywords: false,
+            apply_rules: true,
+            apply_cleanup: true,
+            fallback_profile_id: None,
+        }
+    }
 
     pub fn local() -> Profile {
         Profile {

@@ -20,19 +20,21 @@
   }
   let { onnext, canNext = $bindable(false), form }: Props = $props();
 
-  type Choice = "groq" | "openai" | "elevenlabs" | "local" | "custom";
+  type Choice = "groq" | "openai" | "elevenlabs" | "deepgram" | "local" | "custom";
   type FieldProblem = "name" | "base_url" | "model";
 
-  const PRESET_IDS: string[] = ["groq", "openai", "elevenlabs", "local"];
-  const KEY_URLS: Record<"groq" | "openai" | "elevenlabs", string> = {
+  const PRESET_IDS: string[] = ["groq", "openai", "elevenlabs", "deepgram", "local"];
+  const KEY_URLS: Record<"groq" | "openai" | "elevenlabs" | "deepgram", string> = {
     groq: "https://console.groq.com/keys",
     openai: "https://platform.openai.com/api-keys",
     elevenlabs: "https://elevenlabs.io/app/settings/api-keys",
+    deepgram: "https://console.deepgram.com",
   };
   const CHOICES: { value: Choice; title: MessageKey }[] = [
     { value: "groq", title: "profiles.preset.groq" },
     { value: "openai", title: "profiles.preset.openai" },
     { value: "elevenlabs", title: "profiles.preset.elevenlabs" },
+    { value: "deepgram", title: "profiles.preset.deepgram" },
     { value: "local", title: "profiles.preset.local" },
     { value: "custom", title: "profiles.preset.custom" },
   ];
@@ -55,6 +57,7 @@
     if (startProfile?.provider === "local_whisper") return "local";
     if (editingCustom) return "custom";
     if (startProfile?.id === "elevenlabs") return "elevenlabs";
+    if (startProfile?.id === "deepgram") return "deepgram";
     if (startProfile?.id === "openai") return "openai";
     return "groq";
   }

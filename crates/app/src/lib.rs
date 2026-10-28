@@ -225,6 +225,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
             return;
         }
         loading_overlay.show(crate::platform::OverlayView {
+            live_text: None,
             tone: crate::platform::Tone::Busy,
             text: if loading {
                 loading_settings.current().lang.loading_local()

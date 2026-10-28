@@ -14,7 +14,9 @@
   import { api } from "../lib/api";
   import { app, errorText, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
-  import { LANGUAGES, profileProblems, uniqueProfileId, type ProfileProblem } from "../lib/profiles";
+  import {
+    LANGUAGES, PROVIDER_KEYS, fixedAudioFormat, profileProblems, storedAudioFormat, uniqueProfileId, type ProfileProblem,
+  } from "../lib/profiles";
   import type { Profile } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
@@ -67,6 +69,9 @@
   const needsKey = $derived(draft.api_key_ref !== null);
   const scribe = $derived(draft.provider === "elevenlabs");
   const local = $derived(draft.provider === "local_whisper");
+  const deepgram = $derived(draft.provider === "deepgram");
+  /** Native adapters ignore prompt context and the response format. */
+  const native = $derived(scribe || deepgram);
   const insecure = $derived(draft.base_url.trim().toLowerCase().startsWith("http://"));
   const live = $derived(app.config?.profiles.find((p) => p.id === original.id) ?? null);
   const changedElsewhere = $derived(!isNew && !saveBusy && live !== null && canonical(live) !== canonical(original));
@@ -116,6 +121,7 @@
     p.name = p.name.trim();
     p.base_url = p.base_url.trim();
     p.model = p.model.trim();
+    p.audio_format = storedAudioFormat(p.provider, p.audio_format);
     if (derivesId) {
       const otherIds = all.map((other) => other.id);
       p.id = uniqueProfileId(p.name, otherIds);
@@ -263,21 +269,21 @@
   <div class="grid">
     <Select label={t("profiles.language")} options={languageOptions}
       bind:value={() => draft.language, (value) => { draft.language = value; }} />
-    <Select label={t("profiles.audio_format")} disabled={scribe || local}
+    <Select label={t("profiles.audio_format")} disabled={fixedAudioFormat(draft.provider)}
       options={[{ value: "flac", label: "FLAC" }, { value: "wav", label: "WAV" }]}
-      bind:value={() => draft.audio_format, (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
+      bind:value={() => storedAudioFormat(draft.provider, draft.audio_format), (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
   </div>
-  <Field label={t("profiles.provider")} info={scribe ? t("profiles.scribe_hint") : undefined}>
+  <Field label={t("profiles.provider")} info={scribe ? t("profiles.scribe_hint") : deepgram ? t("profiles.deepgram_hint") : undefined}>
     {#snippet children(id, describedBy)}
-      <input {id} type="text" readonly aria-describedby={describedBy} value={t(local ? "profiles.preset.local" : scribe ? "profiles.provider.elevenlabs" : "profiles.provider.openai")} />
+      <input {id} type="text" readonly aria-describedby={describedBy} value={t(PROVIDER_KEYS[draft.provider])} />
     {/snippet}
   </Field>
-  <Select label={t("profiles.response_format")} info={t("profiles.response_format_hint")} disabled={scribe}
+  <Select label={t("profiles.response_format")} info={t("profiles.response_format_hint")} disabled={native}
     options={[{ value: "verbose_json", label: "verbose_json" }, { value: "json", label: "json" }]}
     bind:value={() => draft.response_format, (value) => { draft.response_format = value === "verbose_json" ? "verbose_json" : "json"; }} />
 
-  {#if !scribe}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
-  {#if !local}<Switch label={t("profiles.send_keywords")} info={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
+  {#if !native}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
+  {#if !local}<Switch label={t("profiles.send_keywords")} info={t(scribe ? "profiles.scribe_keywords_hint" : deepgram ? "profiles.deepgram_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
   <Switch label={t("cleanup.profile")} bind:checked={draft.apply_cleanup} />
   <Switch label={t("profiles.apply_rules")} bind:checked={draft.apply_rules} />
 
