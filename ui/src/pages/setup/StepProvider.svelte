@@ -11,6 +11,7 @@
   import Field from "../../lib/components/Field.svelte";
   import Icon from "../../lib/components/Icon.svelte";
   import Switch from "../../lib/components/Switch.svelte";
+  import LocalSettings from "../../lib/components/LocalSettings.svelte";
 
   interface Props {
     onnext: () => void;
@@ -19,10 +20,10 @@
   }
   let { onnext, canNext = $bindable(false), form }: Props = $props();
 
-  type Choice = "groq" | "openai" | "elevenlabs" | "custom";
+  type Choice = "groq" | "openai" | "elevenlabs" | "local" | "custom";
   type FieldProblem = "name" | "base_url" | "model";
 
-  const PRESET_IDS: string[] = ["groq", "openai", "elevenlabs"];
+  const PRESET_IDS: string[] = ["groq", "openai", "elevenlabs", "local"];
   const KEY_URLS: Record<"groq" | "openai" | "elevenlabs", string> = {
     groq: "https://console.groq.com/keys",
     openai: "https://platform.openai.com/api-keys",
@@ -32,6 +33,7 @@
     { value: "groq", title: "profiles.preset.groq", hint: "setup.provider.groq_hint" },
     { value: "openai", title: "profiles.preset.openai", hint: "setup.provider.openai_hint" },
     { value: "elevenlabs", title: "profiles.preset.elevenlabs", hint: "setup.provider.elevenlabs_hint" },
+    { value: "local", title: "profiles.preset.local", hint: "local.hint" },
     { value: "custom", title: "profiles.preset.custom", hint: "setup.provider.custom_hint" },
   ];
   const PROBLEM_KEYS: Record<FieldProblem, MessageKey> = {
@@ -50,6 +52,7 @@
   const editingCustom = startProfile && !PRESET_IDS.includes(startProfile.id) ? startProfile : null;
 
   function initialChoice(): Choice {
+    if (startProfile?.provider === "local_whisper") return "local";
     if (editingCustom) return "custom";
     if (startProfile?.id === "elevenlabs") return "elevenlabs";
     if (startProfile?.id === "openai") return "openai";
@@ -57,6 +60,7 @@
   }
 
   let choice = $state<Choice>(initialChoice());
+  let localModel = $state(startProfile?.provider === "local_whisper" ? startProfile.model : "ggml-large-v3-turbo-q5_0.bin");
   let presets = $state<Profile[]>([]);
   let presetsBusy = $state(true);
   let presetsError = $state<string | null>(null);
@@ -82,8 +86,8 @@
   const profile = $derived.by((): Profile | null => {
     if (choice !== "custom") {
       // An existing Groq/OpenAI profile is used as it is; only a missing one is added from the preset.
-      const chosen = presetProfile(choice, presets, app.config?.profiles ?? []);
-      return chosen ? ($state.snapshot(chosen) as Profile) : null;
+      const chosen = choice === "local" && startProfile?.provider === "local_whisper" ? startProfile : presetProfile(choice, presets, app.config?.profiles ?? []);
+      return chosen ? { ...($state.snapshot(chosen) as Profile), ...(choice === "local" ? {model:localModel,api_key_ref:null} : {}) } : null;
     }
     const template = editingCustom ?? presets.find((p) => !PRESET_IDS.includes(p.id));
     if (!template) return null;
@@ -109,7 +113,7 @@
     );
   });
   // An existing Groq/OpenAI profile may have been set up without a key; it is kept that way.
-  const needsKeyNow = $derived(choice !== "custom" ? profile?.api_key_ref !== null : needsKey);
+  const needsKeyNow = $derived(choice === "local" ? false : choice !== "custom" ? profile?.api_key_ref !== null : needsKey);
   // A new custom profile has no stored key yet, so only presets and an edited profile are checked.
   const keyRef = $derived(choice !== "custom" || editingCustom ? (profile?.api_key_ref ?? null) : null);
   const ready = $derived(
@@ -222,7 +226,7 @@
     const chosen: Profile = $state.snapshot(profile);
     const key = chosen.api_key_ref !== null && keyInput ? keyInput : null;
     // Only the custom form edits a profile; a chosen Groq/OpenAI profile that exists stays untouched.
-    const edited = choice === "custom";
+    const edited = choice === "custom" || choice === "local";
     saving = true;
     saveError = null;
     try {
@@ -269,6 +273,7 @@
   {/each}
 </fieldset>
 
+{#if choice === "local"}<LocalSettings bind:model={localModel} />{/if}
 {#if choice === "custom"}
   <div class="stack custom">
     <Field label={t("profiles.name")} error={problemFor("name")}>
@@ -297,7 +302,7 @@
 {/if}
 
 {#if needsKeyNow}
-  {#if choice !== "custom"}
+  {#if choice !== "custom" && choice !== "local"}
     {@const url = KEY_URLS[choice]}
     <div class="get-key">
       <p class="selectable">{t("setup.provider.get_key", { url })}</p>

@@ -101,11 +101,15 @@ fn build_command(executable: PathBuf, args: Vec<String>) -> Result<Command, Erro
 }
 
 #[cfg(windows)]
-struct Tree(windows::Win32::Foundation::HANDLE);
+pub(crate) struct Tree(windows::Win32::Foundation::HANDLE);
+
+// The owned job handle has no thread affinity and is accessed through exclusive ownership.
+#[cfg(windows)]
+unsafe impl Send for Tree {}
 
 #[cfg(windows)]
 impl Tree {
-    fn new() -> Result<Self, ErrorKind> {
+    pub(crate) fn new() -> Result<Self, ErrorKind> {
         use windows::Win32::System::JobObjects::*;
         unsafe {
             let handle = CreateJobObjectW(None, None).map_err(|_| ErrorKind::Rejected)?;
@@ -122,7 +126,7 @@ impl Tree {
             Ok(tree)
         }
     }
-    fn attach(&mut self, child: &std::process::Child) -> Result<(), ErrorKind> {
+    pub(crate) fn attach(&mut self, child: &std::process::Child) -> Result<(), ErrorKind> {
         use std::os::windows::io::AsRawHandle;
         use windows::Win32::Foundation::{CloseHandle, HANDLE};
         use windows::Win32::System::{Diagnostics::ToolHelp::*, JobObjects::AssignProcessToJobObject, Threading::*};
@@ -146,7 +150,7 @@ impl Tree {
             if resumed { Ok(()) } else { Err(ErrorKind::Rejected) }
         }
     }
-    fn stop(&mut self) {
+    pub(crate) fn stop(&mut self) {
         unsafe {
             let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1);
         }
@@ -162,16 +166,16 @@ impl Drop for Tree {
 }
 
 #[cfg(not(windows))]
-struct Tree;
+pub(crate) struct Tree;
 #[cfg(not(windows))]
 impl Tree {
-    fn new() -> Result<Self, ErrorKind> {
+    pub(crate) fn new() -> Result<Self, ErrorKind> {
         Err(ErrorKind::Rejected)
     }
-    fn attach(&mut self, _: &std::process::Child) -> Result<(), ErrorKind> {
+    pub(crate) fn attach(&mut self, _: &std::process::Child) -> Result<(), ErrorKind> {
         Err(ErrorKind::Rejected)
     }
-    fn stop(&mut self) {}
+    pub(crate) fn stop(&mut self) {}
 }
 
 #[cfg(all(test, windows))]

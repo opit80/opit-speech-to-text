@@ -2,6 +2,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppConfig, DictationStatus, HotkeyState, MicTestEvent, UpdateState } from "./types";
 import type { FileEvent } from "./types";
+import type { LocalProgress } from "./types";
 
 function on<T>(event: string, handler: (payload: T) => void): Promise<UnlistenFn> {
   return listen<T>(event, (e) => handler(e.payload));
@@ -15,4 +16,5 @@ export const onHotkeyState = (h: (s: HotkeyState) => void) => on("hotkey-state",
 export const onMicTest = (h: (e: MicTestEvent) => void) => on("mic-test", h);
 export const onUpdateState = (h: (s: UpdateState) => void) => on("update-state", h);
 export const onFileProgress = (h: (s: FileEvent) => void) => on("file-progress", h);
+export const onLocalProgress = (h: (s: LocalProgress) => void) => on("local-progress", h);
 export type { UnlistenFn };

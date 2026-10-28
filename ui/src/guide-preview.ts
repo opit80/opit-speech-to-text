@@ -4,13 +4,23 @@ import BrowserPreview from "./BrowserPreview.svelte";
 import "./app.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { AppConfig, Dictation, DictationStatus, FileOptions, FileState } from "./lib/types";
+import type { AppConfig, Dictation, DictationStatus, FileOptions, FileState, LocalState, Profile } from "./lib/types";
 import { speechDetectionDefaults } from "./lib/speech-detection";
 
 if (!import.meta.env.DEV) throw new Error("Guide preview is only available in the development server");
 
 const params = new URLSearchParams(location.search);
+// Synthetic local installation state for browser review; no download or process is started.
+const localPreset: Profile = { provider:"local_whisper",id:"local",name:"Local (offline)",base_url:"http://127.0.0.1:1",model:"ggml-large-v3-turbo-q5_0.bin",api_key_ref:null,language:"tr",audio_format:"wav",response_format:"verbose_json",send_prompt:true,send_keywords:false,apply_rules:true,apply_cleanup:false,fallback_profile_id:null };
+const localPreview: LocalState = {
+  builds:[{ id:"blas",file:"preview.zip",url:"",sha256:"",size:21715607 },{ id:"cuda12",file:"preview.zip",url:"",sha256:"",size:684913404 }],
+  models:[{ id:"ggml-tiny-q5_1.bin",file:"ggml-tiny-q5_1.bin",url:"",sha256:"",size:32152673 },{ id:localPreset.model,file:localPreset.model,url:"",sha256:"",size:574041195 }],
+  installed:[],progress:null,running_model:null,running_build:null,recommended:localPreset.model,
+  hardware:{ram_bytes:16*1024**3,vram_mb:8192,nvidia:true,physical_cores:8},folder:"C:\\Preview\\local",
+};
+let localCancelled = false;
 const config: AppConfig = {
+  local: { build: "blas", threads: 0, gpu: false, idle_minutes: 10, preload: false, models_folder: null },
   ask: { agent: "chat", base_url: "https://api.openai.com/v1", chat_model: "gpt-4.1-mini", api_key_ref: "ask", claude_model: "sonnet", codex_model: "", permission: "restricted", working_dir: "", timeout_seconds: 180, output: "paste", continue_minutes: 10, cleanup_request: false },
   cleanup: { enabled: false, base_url: "https://inference.baseten.co/v1", model: "deepseek-ai/DeepSeek-V4.1-Flash-Fast", api_key_ref: "cleanup", prompt_override: "", timeout_seconds: 15, reasoning_effort: null },
   schema_version: 1,
@@ -150,7 +160,33 @@ mockIPC(async (command, payload) => {
     case "get_update_state": return { kind: "idle" };
     case "take_startup_notices":
     case "list_microphones":
-    case "profile_presets": return [];
+      return [];
+    case "profile_presets": return [localPreset];
+    case "local_state": return structuredClone(localPreview);
+    case "local_download": {
+      const id = (payload as {id:string}).id;
+      const artifact = [...localPreview.builds,...localPreview.models].find(a => a.id === id);
+      if (!artifact) throw {code:"local",message:"Preview artifact missing",kind:null};
+      localCancelled = false;
+      for (let n=0;n<=10;n++) {
+        if (localCancelled) { localPreview.progress=null; throw {code:"local_cancelled",message:"",kind:null}; }
+        localPreview.progress={id,received:Math.round(artifact.size*n/10),total:artifact.size};
+        await emit("local-progress",localPreview.progress);
+        await new Promise(resolve => setTimeout(resolve,150));
+      }
+      if (!localPreview.installed.includes(id)) localPreview.installed.push(id);
+      localPreview.progress=null;
+      return;
+    }
+    case "local_cancel": localCancelled=true; return;
+    case "local_delete": localPreview.installed=localPreview.installed.filter(id => id !== (payload as {id:string}).id); return;
+    case "test_connection": {
+      const profile = (payload as {profile:Profile}).profile;
+      if (profile.provider !== "local_whisper") throw {code:"unavailable",message:"Read-only browser preview",kind:null};
+      if (!localPreview.installed.includes(profile.model) || !localPreview.installed.includes(config.local.build)) throw {code:"local_not_installed",message:"",kind:null};
+      localPreview.running_model=profile.model; localPreview.running_build=config.local.build;
+      return;
+    }
     case "prompt_budget": return { prompt: null, included_terms: [], dropped_terms: [], estimated_tokens: 0 };
     case "get_user_rules": return "schema: 1\nid: user\nname: User rules\nlanguage: tr\n";
     default: throw { code: "unavailable", message: "Read-only browser preview", kind: null };

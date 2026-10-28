@@ -20,6 +20,7 @@ pub struct Paths {
     pub history_db: PathBuf,
     pub audio: PathBuf,
     pub logs: PathBuf,
+    pub local: PathBuf,
 }
 
 impl Paths {
@@ -30,6 +31,7 @@ impl Paths {
             history_db: root.join("history.db"),
             audio: root.join("audio"),
             logs: root.join("logs"),
+            local: root.join("local"),
             root,
         }
     }
@@ -39,7 +41,9 @@ impl Paths {
         if let Some(dir) = std::env::var_os(DATA_DIR_ENV).filter(|v| !v.is_empty()) {
             return Some(Self::under(PathBuf::from(dir)));
         }
-        dirs::config_dir().map(|dir| Self::under(dir.join(APP_DIR_NAME)))
+        let mut paths = Self::under(dirs::config_dir()?.join(APP_DIR_NAME));
+        paths.local = dirs::data_local_dir()?.join(APP_DIR_NAME).join("local");
+        Some(paths)
     }
 }
 

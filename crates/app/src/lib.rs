@@ -9,6 +9,7 @@ pub mod file_jobs;
 pub mod history_service;
 pub mod i18n;
 pub mod ipc;
+pub mod local;
 pub mod logging;
 pub mod platform;
 pub mod providers;
@@ -85,6 +86,7 @@ pub fn run() {
                 jobs.cancel();
             }
             if let Some(core) = app.try_state::<Arc<AppCore>>() {
+                core.local.shutdown();
                 core.controller.send(Msg::Shutdown);
             }
             info!("exiting");
@@ -160,9 +162,54 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         None => Arc::new(DisabledHistory),
     };
 
+    let notices = loaded.notice.into_iter().chain(rules_notice).collect();
+    let platform = Platform {
+        secrets: secrets.clone(),
+        hotkey: hotkey.clone(),
+        mic: mic.clone(),
+        overlay: overlay.clone(),
+        autostart,
+    };
+    let core = Arc::new(AppCore::new(
+        paths,
+        settings.clone(),
+        controller.clone(),
+        history,
+        platform,
+        user_pack,
+        locale,
+        notices,
+    ));
+    let loading_overlay = overlay.clone();
+    let loading_settings = settings.clone();
+    let loading_controller = controller.clone();
+    core.local.set_loading(Arc::new(move |loading| {
+        if loading_controller.status().state != controller::DictationState::Transcribing
+            || !loading_settings
+                .current()
+                .config
+                .active_profile()
+                .is_some_and(|p| p.provider == opit_core::provider::ProviderKind::LocalWhisper)
+        {
+            return;
+        }
+        loading_overlay.show(crate::platform::OverlayView {
+            tone: crate::platform::Tone::Busy,
+            text: if loading {
+                loading_settings.current().lang.loading_local()
+            } else {
+                loading_settings.current().lang.transcribing()
+            }
+            .into(),
+            level: None,
+            recording: None,
+            button: None,
+            hide_after: None,
+        });
+    }));
     let env = Env {
         settings: settings.clone(),
-        providers: HttpProviders::new(secrets.clone()),
+        providers: HttpProviders::new(secrets.clone()).with_local(core.local.clone()),
         mic: mic.clone(),
         hotkey: hotkey.clone(),
         paster: Arc::new(WinPaster::new()),
@@ -174,9 +221,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     };
     tauri::async_runtime::spawn(controller::run(&controller, inbox, env));
 
-    let notices = loaded.notice.into_iter().chain(rules_notice).collect();
-    let platform = Platform { secrets, hotkey, mic, overlay: overlay.clone(), autostart };
-    let core = Arc::new(AppCore::new(paths, settings, controller, history, platform, user_pack, locale, notices));
+    core.local.start_background();
     core.apply_hotkey(&config);
     core.apply_autostart(app_core::autostart_wanted(&config));
     if let Some(view) = core.startup_overlay() {

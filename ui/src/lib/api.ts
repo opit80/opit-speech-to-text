@@ -3,10 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
-  FileOptions, FileState, FileOutputFormat,
+  FileOptions, FileState, FileOutputFormat, LocalState,
 } from "./types";
 
 export const api = {
+  localState: () => invoke<LocalState>("local_state"),
+  localDownload: (id: string) => invoke<void>("local_download", { id }),
+  localCancel: () => invoke<void>("local_cancel"),
+  localDelete: (id: string) => invoke<void>("local_delete", { id }),
   askStatus: () => invoke<AgentStatus[]>("ask_status"),
   testAsk: (config: AskConfig) => invoke<string>("test_ask", { config }),
   filePick: () => invoke<FileState>("file_pick"),

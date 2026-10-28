@@ -57,6 +57,7 @@ fn the_hooks_target_the_apps_data_folder_and_cleanup_flag() {
     // "$INSTDIR\${MAINBINARYNAME}.exe" --delete-credentials
     let cleanup = format!("\"$INSTDIR\\${{MAINBINARYNAME}}.exe\" {}", opit_app::uninstall::DELETE_CREDENTIALS_FLAG);
     assert!(HOOKS.contains(&data), "missing: {data}");
+    assert!(HOOKS.contains("RmDir /r \"$LOCALAPPDATA\\opit-speech-to-text\\local\""));
     assert!(HOOKS.contains(&cleanup), "missing: {cleanup}");
 }
 

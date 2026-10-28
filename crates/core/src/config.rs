@@ -14,6 +14,24 @@ pub const MIN_RECORDING_SECONDS: u32 = 10;
 pub const MAX_RECORDING_SECONDS: u32 = 600;
 pub const MAX_HISTORY_ENTRIES: u32 = 100_000;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalConfig {
+    pub build: String,
+    pub threads: u16,
+    pub gpu: bool,
+    pub idle_minutes: u16,
+    pub preload: bool,
+    /// An ASCII absolute folder. Only the app's own child directory is managed.
+    pub models_folder: Option<String>,
+}
+
+impl Default for LocalConfig {
+    fn default() -> Self {
+        Self { build: "blas".into(), threads: 0, gpu: false, idle_minutes: 10, preload: false, models_folder: None }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -29,6 +47,7 @@ pub struct AppConfig {
     pub rules: RulesConfig,
     pub ask: crate::ask::AskConfig,
     pub cleanup: crate::cleanup::CleanupConfig,
+    pub local: LocalConfig,
     pub ui: UiConfig,
 }
 
@@ -46,6 +65,7 @@ impl Default for AppConfig {
             rules: RulesConfig::default(),
             ask: crate::ask::AskConfig::default(),
             cleanup: crate::cleanup::CleanupConfig::default(),
+            local: LocalConfig::default(),
             ui: UiConfig::default(),
         }
     }
@@ -271,6 +291,11 @@ impl AppConfig {
             self.active_profile_id = self.profiles[0].id.clone();
         }
         for profile in &mut self.profiles {
+            if profile.provider == crate::provider::ProviderKind::LocalWhisper {
+                profile.api_key_ref = None;
+                profile.audio_format = crate::audio::encode::AudioFormat::Wav;
+                profile.send_keywords = false;
+            }
             let valid = profile.fallback_profile_id.as_ref().is_some_and(|f| f != &profile.id && seen.contains(f));
             if !valid {
                 profile.fallback_profile_id = None;
@@ -339,6 +364,29 @@ mod tests {
         config.ask.permission = crate::ask::Permission::Workspace;
         config.hotkey.ask_keys = vec!["F15".into()];
         assert_eq!(AppConfig::from_json(&serde_json::to_string(&config).unwrap()).unwrap(), config);
+    }
+
+    #[test]
+    fn local_settings_migrate_without_changing_old_cloud_profiles() {
+        let old = AppConfig::from_json("{}").unwrap();
+        assert_eq!(old.local, LocalConfig::default());
+        assert_eq!(old.profiles, vec![presets::groq(), presets::openai()]);
+        let mut config = old;
+        let mut local = presets::local();
+        local.api_key_ref = Some("unwanted".into());
+        local.audio_format = crate::audio::encode::AudioFormat::Flac;
+        config.profiles.push(local);
+        config.profiles[0].fallback_profile_id = Some("local".into());
+        config.profiles[2].fallback_profile_id = Some("groq".into());
+        config.normalize();
+        let local = &config.profiles[2];
+        assert_eq!(local.api_key_ref, None);
+        assert_eq!(local.audio_format, crate::audio::encode::AudioFormat::Wav);
+        assert_eq!(config.fallback_for(local).unwrap().id, "groq");
+        assert_eq!(config.fallback_for(&config.profiles[0]).unwrap().id, "local");
+        let value = serde_json::to_value(local).unwrap();
+        assert_eq!(value["provider"], "local_whisper");
+        assert_eq!(AppConfig::from_json(&config.to_json()).unwrap(), config);
     }
 
     #[test]

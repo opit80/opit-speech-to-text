@@ -1,6 +1,6 @@
 //! Local Ask orchestration. Request and answer buffers never implement Debug or enter logs.
 mod cli;
-mod process;
+pub(crate) mod process;
 
 use std::sync::{
     Arc,

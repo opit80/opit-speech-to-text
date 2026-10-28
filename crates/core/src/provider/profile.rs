@@ -10,6 +10,7 @@ pub enum ProviderKind {
     #[default]
     OpenaiCompatible,
     Elevenlabs,
+    LocalWhisper,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +76,25 @@ pub mod presets {
     pub const GROQ_ID: &str = "groq";
     pub const OPENAI_ID: &str = "openai";
     pub const ELEVENLABS_ID: &str = "elevenlabs";
+
+    pub fn local() -> Profile {
+        Profile {
+            provider: ProviderKind::LocalWhisper,
+            id: "local".into(),
+            name: "Local (offline)".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            model: "ggml-large-v3-turbo-q5_0.bin".into(),
+            api_key_ref: None,
+            language: "tr".into(),
+            audio_format: AudioFormat::Wav,
+            response_format: ResponseFormat::VerboseJson,
+            send_prompt: true,
+            send_keywords: false,
+            apply_rules: true,
+            apply_cleanup: false,
+            fallback_profile_id: None,
+        }
+    }
 
     pub fn groq() -> Profile {
         Profile {

@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use opit_core::cleanup::{CleanupClient, CleanupConfig, CleanupError};
 
-use opit_core::provider::{Profile, ProviderClient};
+use opit_core::provider::{
+    Profile, ProviderClient, ProviderError, ProviderKind, RawTranscript, TranscribeRequest, Transcriber,
+};
 
 use crate::controller::{Providers, SetupError};
 use crate::platform::SecretStore;
@@ -16,13 +18,40 @@ pub struct HttpProviders {
     cache: Mutex<HashMap<String, Cached>>,
     cleanup: Mutex<Option<CachedCleanup>>,
     ask: Arc<crate::ask::AskService>,
+    local: Option<Arc<crate::local::LocalService>>,
+}
+
+pub enum AppProvider {
+    Cloud(ProviderClient),
+    Local { profile: Profile, service: Arc<crate::local::LocalService> },
+}
+impl AppProvider {
+    pub async fn warm_up(&self) {
+        if let Self::Cloud(client) = self {
+            client.warm_up().await;
+        }
+    }
+}
+impl Transcriber for AppProvider {
+    fn profile(&self) -> &Profile {
+        match self {
+            Self::Cloud(c) => c.profile(),
+            Self::Local { profile, .. } => profile,
+        }
+    }
+    async fn transcribe(&self, request: &TranscribeRequest<'_>) -> Result<RawTranscript, ProviderError> {
+        match self {
+            Self::Cloud(c) => c.transcribe(request).await,
+            Self::Local { profile, service } => service.transcribe(profile, request).await,
+        }
+    }
 }
 
 /// Not `Debug`: it holds an API key.
 struct Cached {
     profile: Profile,
     key: Option<String>,
-    client: Arc<ProviderClient>,
+    client: Arc<AppProvider>,
 }
 
 struct CachedCleanup {
@@ -38,10 +67,19 @@ impl HttpProviders {
             secrets,
             cache: Mutex::default(),
             cleanup: Mutex::default(),
+            local: None,
         }
     }
 
+    pub fn with_local(mut self, local: Arc<crate::local::LocalService>) -> Self {
+        self.local = Some(local);
+        self
+    }
+
     fn key_for(&self, profile: &Profile) -> Result<Option<String>, SetupError> {
+        if profile.provider == ProviderKind::LocalWhisper {
+            return Ok(None);
+        }
         let Some(key_ref) = &profile.api_key_ref else {
             return Ok(None);
         };
@@ -53,7 +91,7 @@ impl HttpProviders {
 }
 
 impl Providers for HttpProviders {
-    type Client = Arc<ProviderClient>;
+    type Client = Arc<AppProvider>;
 
     fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
         Some(self.ask.clone())
@@ -68,8 +106,16 @@ impl Providers for HttpProviders {
         {
             return Ok(cached.client.clone());
         }
-        let client =
-            Arc::new(ProviderClient::new(profile.clone(), key.clone()).map_err(|e| SetupError::Client(e.to_string()))?);
+        let client = Arc::new(if profile.provider == ProviderKind::LocalWhisper {
+            AppProvider::Local {
+                profile: profile.clone(),
+                service: self.local.clone().ok_or_else(|| SetupError::Client("local supervisor unavailable".into()))?,
+            }
+        } else {
+            AppProvider::Cloud(
+                ProviderClient::new(profile.clone(), key.clone()).map_err(|e| SetupError::Client(e.to_string()))?,
+            )
+        });
         cache.insert(profile.id.clone(), Cached { profile: profile.clone(), key, client: client.clone() });
         Ok(client)
     }

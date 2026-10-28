@@ -133,6 +133,7 @@ pub struct Platform {
 }
 
 pub struct AppCore {
+    pub local: Arc<crate::local::LocalService>,
     pub paths: Paths,
     pub settings: SettingsHandle,
     pub controller: ControllerHandle,
@@ -176,6 +177,7 @@ impl AppCore {
     ) -> Self {
         let bad_config_kept = notices.iter().any(|n| matches!(n, StartupNotice::ConfigReset { backup: None, .. }));
         Self {
+            local: crate::local::LocalService::new(paths.local.clone(), settings.clone()),
             paths,
             settings,
             controller,
@@ -243,6 +245,7 @@ impl AppCore {
 
     /// Validates, saves and applies a config from the UI; returns what was stored.
     pub fn save_config(&self, config: AppConfig) -> Result<AppConfig, CommandError> {
+        crate::local::validate_config(&config.local)?;
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
         self.save_locked(config)
     }
@@ -500,6 +503,9 @@ impl AppCore {
 
     /// Tests `profile` with `api_key`, or with the stored key when `api_key` is `None`.
     pub async fn test_connection(&self, profile: Profile, api_key: Option<String>) -> Result<(), CommandError> {
+        if profile.provider == opit_core::provider::ProviderKind::LocalWhisper {
+            return Ok(self.local.test(&profile).await?);
+        }
         let key = match api_key {
             Some(key) => Some(key),
             None => match &profile.api_key_ref {

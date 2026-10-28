@@ -23,6 +23,7 @@
   import Icon from "../lib/components/Icon.svelte";
   import Select from "../lib/components/Select.svelte";
   import Switch from "../lib/components/Switch.svelte";
+  import LocalSettings from "../lib/components/LocalSettings.svelte";
 
   interface Props {
     profile: Profile;
@@ -65,6 +66,7 @@
   const problems = $derived(profileProblems(draft, all));
   const needsKey = $derived(draft.api_key_ref !== null);
   const scribe = $derived(draft.provider === "elevenlabs");
+  const local = $derived(draft.provider === "local_whisper");
   const insecure = $derived(draft.base_url.trim().toLowerCase().startsWith("http://"));
   const live = $derived(app.config?.profiles.find((p) => p.id === original.id) ?? null);
   const changedElsewhere = $derived(!isNew && !saveBusy && live !== null && canonical(live) !== canonical(original));
@@ -239,7 +241,7 @@
     {/snippet}
   </Field>
 
-  <Field label={t("profiles.base_url")} error={problemFor("base_url")}>
+  {#if !local}<Field label={t("profiles.base_url")} error={problemFor("base_url")}>
     {#snippet children(id)}
       <input {id} type="url" class="mono" bind:value={draft.base_url} onblur={() => touch("base_url")}
         autocomplete="off" spellcheck="false" aria-invalid={!!problemFor("base_url")}
@@ -248,26 +250,26 @@
         <p id={`${id}-warning`} class="warning"><Icon name="warning" />{t("profiles.insecure_warning")}</p>
       {/if}
     {/snippet}
-  </Field>
+  </Field>{/if}
 
-  <Field label={t("profiles.model")} error={problemFor("model")}>
+  {#if local}<LocalSettings bind:model={draft.model} />{:else}<Field label={t("profiles.model")} error={problemFor("model")}>
     {#snippet children(id)}
       <input {id} type="text" class="mono" bind:value={draft.model} onblur={() => touch("model")}
         autocomplete="off" spellcheck="false" aria-invalid={!!problemFor("model")}
         aria-describedby={problemFor("model") ? `${id}-description` : undefined} />
     {/snippet}
-  </Field>
+  </Field>{/if}
 
   <div class="grid">
     <Select label={t("profiles.language")} options={languageOptions}
       bind:value={() => draft.language, (value) => { draft.language = value; }} />
-    <Select label={t("profiles.audio_format")} disabled={scribe}
+    <Select label={t("profiles.audio_format")} disabled={scribe || local}
       options={[{ value: "flac", label: "FLAC" }, { value: "wav", label: "WAV" }]}
       bind:value={() => draft.audio_format, (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
   </div>
   <Field label={t("profiles.provider")}>
     {#snippet children(id)}
-      <input {id} type="text" readonly value={t(scribe ? "profiles.provider.elevenlabs" : "profiles.provider.openai")} />
+      <input {id} type="text" readonly value={t(local ? "profiles.preset.local" : scribe ? "profiles.provider.elevenlabs" : "profiles.provider.openai")} />
     {/snippet}
   </Field>
   {#if scribe}<Banner tone="info">{t("profiles.scribe_hint")}</Banner>{/if}
@@ -276,7 +278,7 @@
     bind:value={() => draft.response_format, (value) => { draft.response_format = value === "verbose_json" ? "verbose_json" : "json"; }} />
 
   {#if !scribe}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
-  <Switch label={t("profiles.send_keywords")} hint={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />
+  {#if !local}<Switch label={t("profiles.send_keywords")} hint={t(scribe ? "profiles.scribe_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
   <Switch label={t("cleanup.profile")} hint={t("cleanup.profile_hint")} bind:checked={draft.apply_cleanup} />
   <Switch label={t("profiles.apply_rules")} hint={t("profiles.apply_rules_hint")} bind:checked={draft.apply_rules} />
 
@@ -289,7 +291,7 @@
     {/snippet}
   </Field>
 
-  <section class="key stack" aria-labelledby="profile-key-title">
+  {#if !local}<section class="key stack" aria-labelledby="profile-key-title">
     <h3 id="profile-key-title" class="visually-hidden">{t("profiles.key")}</h3>
     <Switch label={t("profiles.needs_key")} bind:checked={() => needsKey, setNeedsKey} />
     {#if needsKey}
@@ -304,7 +306,7 @@
         <div><button type="button" class="link" onclick={() => { removeError = null; removeOpen = true; }}>{t("profiles.remove_key")}</button></div>
       {/if}
     {/if}
-  </section>
+  </section>{/if}
 
   <div class="row">
     <Button busy={testBusy} disabled={saveBusy} onclick={() => void testConnection()}>{t("profiles.test")}</Button>

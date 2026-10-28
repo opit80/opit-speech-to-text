@@ -56,6 +56,10 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         save_config,
         set_active_profile,
         profile_presets,
+        local_state,
+        local_download,
+        local_cancel,
+        local_delete,
         cleanup_presets,
         cleanup_prompts,
         test_cleanup,
@@ -212,7 +216,32 @@ async fn set_active_profile(app: AppHandle, core: Core<'_>, id: String) -> Resul
 #[tauri::command]
 fn profile_presets() -> Vec<Profile> {
     use opit_core::provider::presets;
-    vec![presets::groq(), presets::openai(), presets::elevenlabs(), presets::custom("custom", "", "", "")]
+    vec![
+        presets::groq(),
+        presets::openai(),
+        presets::elevenlabs(),
+        presets::local(),
+        presets::custom("custom", "", "", ""),
+    ]
+}
+
+#[tauri::command]
+async fn local_state(core: Core<'_>) -> Result<crate::local::Snapshot> {
+    blocking(core.inner().clone(), |core| Ok(core.local.snapshot()?)).await
+}
+#[tauri::command]
+async fn local_download(app: AppHandle, core: Core<'_>, id: String) -> Result<()> {
+    let service = core.local.clone();
+    service.install(id, Arc::new(move |progress| events::emit(&app, "local-progress", progress))).await?;
+    Ok(())
+}
+#[tauri::command]
+fn local_cancel(core: Core<'_>) {
+    core.local.cancel();
+}
+#[tauri::command]
+async fn local_delete(core: Core<'_>, id: String) -> Result<()> {
+    Ok(core.local.delete(id).await?)
 }
 
 #[tauri::command]

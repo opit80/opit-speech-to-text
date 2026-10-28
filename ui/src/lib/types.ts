@@ -24,7 +24,29 @@ export interface DictationStatus {
 
 export type AudioFormat = "flac" | "wav";
 export type ResponseFormat = "verbose_json" | "json";
-export type ProviderKind = "openai_compatible" | "elevenlabs";
+export type ProviderKind = "openai_compatible" | "elevenlabs" | "local_whisper";
+
+export interface LocalConfig {
+  build: string;
+  threads: number;
+  gpu: boolean;
+  idle_minutes: number;
+  preload: boolean;
+  models_folder: string | null;
+}
+export interface LocalArtifact { id: string; file: string; url: string; size: number; sha256: string }
+export interface LocalProgress { id: string; received: number; total: number }
+export interface LocalState {
+  builds: LocalArtifact[];
+  models: LocalArtifact[];
+  installed: string[];
+  progress: LocalProgress | null;
+  running_model: string | null;
+  running_build: string | null;
+  recommended: string;
+  hardware: { ram_bytes: number; vram_mb: number; nvidia: boolean; physical_cores: number };
+  folder: string;
+}
 
 export interface Profile {
   provider: ProviderKind;
@@ -47,6 +69,7 @@ export type HotkeyMode = "toggle" | "push_to_talk";
 export type OverlayPosition = "right_center" | "top_center" | "bottom_center" | "left_center";
 
 export interface AppConfig {
+  local: LocalConfig;
   ask: AskConfig;
   cleanup: CleanupConfig;
   schema_version: number;

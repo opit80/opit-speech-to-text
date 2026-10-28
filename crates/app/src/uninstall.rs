@@ -65,16 +65,44 @@ pub fn delete_credentials(store: &dyn SecretStore, refs: &[String]) -> usize {
 pub fn run() -> i32 {
     let config = Paths::from_system().and_then(|paths| std::fs::read_to_string(paths.config).ok());
     let refs = credential_refs(config.as_deref());
+    // The override manages only this app's dedicated child, never the selected parent folder.
+    let redirected = std::env::var_os(crate::startup::DATA_DIR_ENV).is_some_and(|v| !v.is_empty());
+    if let Some(path) = custom_local_folder(config.as_deref(), redirected) {
+        let _ = std::fs::remove_dir_all(path);
+    }
     match KeyringStore::new() {
         Ok(store) if delete_credentials(&store, &refs) == 0 => 0,
         _ => 1,
     }
 }
 
+fn custom_local_folder(config: Option<&str>, redirected: bool) -> Option<std::path::PathBuf> {
+    if redirected {
+        return None;
+    }
+    let config: serde_json::Value = serde_json::from_str(config?).ok()?;
+    let folder = config.get("local")?.get("models_folder")?.as_str()?;
+    let path = std::path::Path::new(folder);
+    if !folder.is_ascii() || !path.is_absolute() {
+        return None;
+    }
+    Some(path.join("opit-speech-to-text-local"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::platform::fake::FakeSecrets;
+
+    #[test]
+    fn local_cleanup_is_scoped_and_test_redirect_never_removes_custom_storage() {
+        let parent = std::env::current_dir().unwrap().join("model-storage");
+        let json = serde_json::json!({"local":{"models_folder":parent}}).to_string();
+        assert_eq!(custom_local_folder(Some(&json), false), Some(parent.join("opit-speech-to-text-local")));
+        assert_eq!(custom_local_folder(Some(&json), true), None);
+        assert_eq!(custom_local_folder(Some(r#"{"local":{"models_folder":"relative"}}"#), false), None);
+        assert_eq!(custom_local_folder(Some("broken"), false), None);
+    }
 
     fn expected(extra: &[&str]) -> Vec<String> {
         let mut refs: Vec<String> = [

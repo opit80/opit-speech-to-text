@@ -22,6 +22,13 @@ describe("translate", () => {
 });
 
 describe("message tables", () => {
+  it("local transcription messages preserve Turkish characters", () => {
+    expect(tr["profiles.preset.local"]).toBe("Yerel (çevrimdışı)");
+    expect(tr["local.running"]).toBe("Çalışıyor");
+    for (const [key,value] of Object.entries(tr)) {
+      if (key.startsWith("local.") || key.startsWith("error.code.local")) expect(value,key).not.toContain("?");
+    }
+  });
   it("tr has exactly the en keys", () => {
     expect(Object.keys(tr).sort()).toEqual(Object.keys(en).sort());
   });

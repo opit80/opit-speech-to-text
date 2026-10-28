@@ -19,7 +19,7 @@
     session: number;
   }
 
-  const presetKeys: Record<string, MessageKey> = { groq: "profiles.preset.groq", openai: "profiles.preset.openai", elevenlabs: "profiles.preset.elevenlabs" };
+  const presetKeys: Record<string, MessageKey> = { groq: "profiles.preset.groq", openai: "profiles.preset.openai", elevenlabs: "profiles.preset.elevenlabs", local: "profiles.preset.local" };
   let presets = $state<Profile[]>([]);
   let presetsBusy = $state(true);
   let presetsError = $state<string | null>(null);
@@ -107,7 +107,7 @@
     } else if (ids.includes(draft.id)) {
       // A second account of the same provider gets its own id and key.
       draft.id = uniqueProfileId(draft.name, ids);
-      draft.api_key_ref = draft.id;
+      draft.api_key_ref = draft.provider === "local_whisper" ? null : draft.id;
     }
     editing = { profile: draft, isNew: true, session: ++sessions };
   }
@@ -238,14 +238,14 @@
                 {#if profile.api_key_ref && keyState[profile.api_key_ref] === false}
                   <span class="badge warning"><Icon name="key" size={12} />{t("profiles.no_key")}</span>
                 {/if}
-                {#if profile.base_url.trim().toLowerCase().startsWith("http://")}
+                {#if profile.provider !== "local_whisper" && profile.base_url.trim().toLowerCase().startsWith("http://")}
                   <span class="badge warning"><Icon name="warning" size={12} />{t("profiles.insecure")}</span>
                 {/if}
                 {#if fallback}<span class="badge">{t("profiles.fallback_badge", { name: fallback.name })}</span>{/if}
               </div>
             </div>
             <div class="details">
-              <p class="mono muted url">{profile.base_url}</p>
+              {#if profile.provider !== "local_whisper"}<p class="mono muted url">{profile.base_url}</p>{/if}
               <p class="mono">{profile.model}</p>
             </div>
             <div class="row">

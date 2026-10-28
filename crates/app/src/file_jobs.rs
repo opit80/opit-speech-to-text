@@ -185,10 +185,14 @@ pub async fn pick(app: AppHandle) -> Result<FileState> {
     Ok(inner.state.clone())
 }
 
-fn client(core: &AppCore, mut profile: Profile, options: &FileOptions) -> Result<ProviderClient> {
+fn client(core: &AppCore, mut profile: Profile, options: &FileOptions) -> Result<crate::providers::AppProvider> {
     profile.response_format = ResponseFormat::VerboseJson;
     if let Some(language) = &options.language {
         profile.language = language.clone();
+    }
+    if profile.provider == ProviderKind::LocalWhisper {
+        profile.api_key_ref = None;
+        return Ok(crate::providers::AppProvider::Local { profile, service: core.local.clone() });
     }
     let key = profile.api_key_ref.as_deref().map(|key| core.platform.secrets.get(key)).transpose()?.flatten();
     if profile.api_key_ref.is_some() && key.as_deref().is_none_or(|k| k.trim().is_empty()) {
@@ -198,14 +202,16 @@ fn client(core: &AppCore, mut profile: Profile, options: &FileOptions) -> Result
             kind: Some(crate::controller::ErrorKind::MissingKey),
         });
     }
-    match profile.provider {
+    let client = match profile.provider {
         ProviderKind::OpenaiCompatible => opit_core::provider::OpenAiCompatible::new(profile, key)
             .map(|c| ProviderClient::OpenaiCompatible(c.for_file()))
-            .map_err(Into::into),
+            .map_err(CommandError::from),
         ProviderKind::Elevenlabs => opit_core::provider::elevenlabs::ElevenLabs::new(profile, key)
             .map(|c| ProviderClient::Elevenlabs(c.with_file_options(options.speakers)))
-            .map_err(Into::into),
-    }
+            .map_err(CommandError::from),
+        ProviderKind::LocalWhisper => unreachable!(),
+    }?;
+    Ok(crate::providers::AppProvider::Cloud(client))
 }
 
 /// Reusable app hook, independent of invoke commands. Jobs snapshot active settings at start.

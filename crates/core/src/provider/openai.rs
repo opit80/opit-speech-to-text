@@ -213,7 +213,7 @@ fn describe(err: &serde_json::Error) -> String {
     format!("invalid JSON ({kind} error at line {}, column {})", err.line(), err.column())
 }
 
-fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
+pub(super) fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
     let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(describe(&e)))?;
     let language = if verbose { response.language.as_deref().and_then(super::language::normalize) } else { None };
     let segments = if verbose { response.segments.unwrap_or_default() } else { Vec::new() };

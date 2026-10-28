@@ -22,6 +22,9 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn loading_local(self) -> &'static str {
+        self.pick("Loading local model…", "Yerel model yükleniyor…")
+    }
     pub fn ask_cleanup_failed(self) -> &'static str {
         self.pick(
             "Request cleanup failed. The agent received the recognized request.",
