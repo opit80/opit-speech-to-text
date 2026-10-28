@@ -95,6 +95,8 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         return;
     };
     match tray_menu::parse(event.id().as_ref()) {
+        Some(TrayCommand::Ask) => core.controller.send(Msg::Ask { text: None, reply: None }),
+        Some(TrayCommand::NewConversation) => core.controller.send(Msg::NewConversation),
         Some(TrayCommand::Open) => window::show_main(app, None),
         Some(TrayCommand::Profile(id)) => {
             let app = app.clone();

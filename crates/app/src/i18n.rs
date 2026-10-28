@@ -22,6 +22,31 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn ask_cleanup_failed(self) -> &'static str {
+        self.pick(
+            "Request cleanup failed. The agent received the recognized request.",
+            "?stek d?zenlenemedi. Alg?lanan istek ajana g?nderildi.",
+        )
+    }
+    pub fn ask_invalid(self) -> &'static str {
+        self.pick("Invalid Ask settings or working directory.", "Sorma ayarlar? veya ?al??ma dizini ge?ersiz.")
+    }
+    pub fn ask_detection_failed(self) -> &'static str {
+        self.pick("Agent detection failed.", "Ajan alg?lama ba?ar?s?z.")
+    }
+    pub fn tray_ask(self) -> &'static str {
+        self.pick("Ask?", "Sor?")
+    }
+    pub fn new_conversation(self) -> &'static str {
+        self.pick("New conversation", "Yeni konu?ma")
+    }
+    pub fn asking(self, agent: &str, seconds: u64) -> String {
+        match self {
+            Self::En => format!("Asking {agent}? {seconds}s"),
+            Self::Tr => format!("{agent} yan?tl?yor? {seconds} sn"),
+        }
+    }
+
     pub fn file_media_filter(self) -> &'static str {
         self.pick("Audio / video", "Ses / video")
     }
@@ -50,7 +75,7 @@ impl Lang {
         }
     }
     pub fn shortcut_collision(self) -> &'static str {
-        self.pick("The recording and pause shortcuts overlap", "Kayıt ve duraklatma kısayolları çakışıyor")
+        self.pick("The shortcuts overlap", "Kayıt ve duraklatma kısayolları çakışıyor")
     }
 
     pub fn pause_escape_reserved(self) -> &'static str {

@@ -52,6 +52,10 @@ pub async fn dispatch(core: Arc<AppCore>, request: Request) -> Result<Value, Err
         return value(core.controller.control(action).await.map_err(controller_error)?);
     }
     match request.command {
+        Command::Ask { text } => {
+            let text = core.controller.ask(text).await.map_err(controller_error)?;
+            Ok(json!({"text": text}))
+        }
         Command::Status => value(core.status()),
         Command::Version => Ok(json!({"version":env!("CARGO_PKG_VERSION")})),
         Command::Record { seconds } => {

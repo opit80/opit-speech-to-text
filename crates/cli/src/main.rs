@@ -19,6 +19,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Verb {
+    /// Ask the configured agent; omit --text to record until opit stop.
+    Ask {
+        #[arg(long)]
+        text: Option<String>,
+    },
     Status,
     Toggle,
     Start,
@@ -94,6 +99,7 @@ enum Profile {
 impl Args {
     fn request(&self) -> Result<Request, Error> {
         let command = match &self.verb {
+            Verb::Ask { text } => Command::Ask { text: text.clone() },
             Verb::Status => Command::Status,
             Verb::Toggle => Command::Toggle,
             Verb::Start => Command::Start,
@@ -237,6 +243,7 @@ mod tests {
             "toggle",
             "start",
             "stop",
+            "ask",
             "cancel",
             "pause",
             "resume",
@@ -251,6 +258,18 @@ mod tests {
         ] {
             let words: Vec<_> = std::iter::once("opit").chain(command.split_whitespace()).chain(["--json"]).collect();
             assert!(Args::try_parse_from(words).unwrap().json);
+        }
+    }
+
+    #[test]
+    fn ask_preserves_text_and_defaults_to_microphone_capture() {
+        let args = Args::try_parse_from(["opit", "ask"]).unwrap();
+        assert!(matches!(args.request().unwrap().command, Command::Ask { text: None }));
+        let text = "request with quotes \" & --danger";
+        let args = Args::try_parse_from(["opit", "ask", "--text", text]).unwrap();
+        match args.request().unwrap().command {
+            Command::Ask { text: Some(request) } => assert_eq!(request, text),
+            _ => panic!("expected text request"),
         }
     }
 

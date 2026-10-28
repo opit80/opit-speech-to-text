@@ -119,6 +119,15 @@ pub fn parse_combo(names: &[String]) -> Result<Vec<u32>, HotkeyError> {
     Ok(combo)
 }
 
+pub fn validate_all_shortcuts(main: &[String], pause: &[String], ask: &[String]) -> Result<(), HotkeyError> {
+    validate_shortcuts(main, pause)?;
+    validate_shortcuts(main, ask)?;
+    if !pause.is_empty() {
+        validate_shortcuts(pause, ask)?;
+    }
+    Ok(())
+}
+
 fn is_ctrl(vk: u32) -> bool {
     matches!(vk, VK_CONTROL | VK_LCONTROL | VK_RCONTROL)
 }
@@ -262,6 +271,17 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn ask_shortcut_is_optional_and_cannot_overlap_either_existing_combo() {
+        let main = names(&["F13"]);
+        let pause = names(&["F14"]);
+        assert!(validate_all_shortcuts(&main, &pause, &[]).is_ok());
+        assert!(validate_all_shortcuts(&main, &pause, &names(&["F15"])).is_ok());
+        for ask in [names(&["F13"]), names(&["F14"]), names(&["LeftCtrl", "F13"]), names(&["Escape"])] {
+            assert!(validate_all_shortcuts(&main, &pause, &ask).is_err());
+        }
     }
 
     #[test]

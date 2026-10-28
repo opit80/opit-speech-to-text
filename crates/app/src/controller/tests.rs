@@ -99,6 +99,7 @@ struct ProviderState {
     calls: AtomicUsize,
     warmups: AtomicUsize,
     cleanup: Mutex<Option<Arc<CleanupClient>>>,
+    ask: Arc<crate::ask::AskService>,
 }
 
 impl ProviderState {
@@ -111,6 +112,7 @@ impl ProviderState {
             calls: AtomicUsize::new(0),
             warmups: AtomicUsize::new(0),
             cleanup: Mutex::default(),
+            ask: Arc::new(crate::ask::AskService::new(Arc::new(FakeSecrets::default()))),
         }
     }
 
@@ -158,6 +160,9 @@ impl Transcriber for ScriptedClient {
 
 impl Providers for TestProviders {
     type Client = ScriptedClient;
+    fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
+        Some(self.0.ask.clone())
+    }
 
     fn client(&self, profile: &Profile) -> Result<ScriptedClient, SetupError> {
         if self.0.missing_keys.lock().unwrap().contains(&profile.id) {
@@ -179,6 +184,8 @@ impl Providers for TestProviders {
 
 #[derive(Debug, Clone, PartialEq)]
 struct Saved {
+    mode: String,
+    agent: Option<String>,
     profile_id: String,
     language: Option<String>,
     cleanup_status: Option<cleanup::CleanupStatus>,
@@ -209,6 +216,8 @@ impl HistorySink for FakeHistory {
     ) -> Result<i64, String> {
         let mut saved = self.saved.lock().unwrap();
         saved.push(Saved {
+            mode: entry.mode.into(),
+            agent: entry.agent.map(str::to_owned),
             profile_id: entry.profile_id.into(),
             language: entry.language.map(str::to_string),
             cleanup_status: entry.cleanup_status,
@@ -1306,4 +1315,166 @@ async fn recording_continues_while_paste_and_restore_are_blocked() {
     wait_for(&mut h, Idle, 0).await;
     assert_eq!(h.paster.texts(), ["first ", "second "]);
     assert_eq!(h.history.entries().len(), 2);
+}
+
+#[tokio::test]
+async fn ask_text_and_voice_share_the_queue_and_save_request_answer_and_agent() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"choices":[{"message":{"content":"agent answer"},"finish_reason":"stop"}]}),
+        ))
+        .mount(&server)
+        .await;
+    for voice in [false, true] {
+        let mut config = AppConfig::default();
+        config.ask.base_url = server.uri();
+        config.ask.api_key_ref = None;
+        config.ask.output = opit_core::ask::Output::Copy;
+        config.paste.restore_clipboard = true;
+        let mut h = harness(config);
+        let handle = h.handle.clone();
+        h.script("groq", vec![Ok("spoken request")]);
+        let result =
+            tokio::spawn(async move { handle.ask(if voice { None } else { Some("typed request".into()) }).await });
+        if voice {
+            h.wait_for(|s| s.state == Recording).await;
+            h.hotkey(HotkeyEvent::ComboDown);
+        }
+        h.wait_for(|s| s.state == DictationState::Asking).await;
+        assert_eq!(result.await.unwrap().unwrap(), "agent answer");
+        h.wait_for(|s| s.state == Idle).await;
+        assert_eq!(h.paster.texts(), ["agent answer"]);
+        assert_eq!(*h.paster.policies.lock().unwrap(), [false]);
+        assert!(!h.paster.pasted.lock().unwrap()[0].1);
+        assert_eq!(h.mic.starts(), usize::from(voice));
+        let saved = h.history.entries();
+        assert_eq!(saved[0].mode, "ask");
+        assert_eq!(saved[0].agent.as_deref(), Some("OpenAI-compatible chat"));
+        assert_eq!(saved[0].raw_text, if voice { "spoken request" } else { "typed request" });
+        assert_eq!(saved[0].text, "agent answer");
+        h.send(Msg::Shutdown);
+    }
+}
+
+#[tokio::test]
+async fn escape_during_ask_cancels_without_paste_or_dictation_retry() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(10)))
+        .mount(&server)
+        .await;
+    let mut config = AppConfig::default();
+    config.ask.base_url = server.uri();
+    config.ask.api_key_ref = None;
+    let mut h = harness(config);
+    let handle = h.handle.clone();
+    let result = tokio::spawn(async move { handle.ask(Some("request".into())).await });
+    h.wait_for(|s| s.state == DictationState::Asking).await;
+    h.hotkey(HotkeyEvent::Escape);
+    assert_eq!(result.await.unwrap(), Err(ErrorKind::Cancelled));
+    h.wait_for(|s| s.state == Idle).await;
+    assert!(h.paster.texts().is_empty());
+    assert!(!h.handle.status().can_retry);
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn ask_test_uses_fixed_request_without_paste_history_or_conversation_changes() {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"choices":[{"message":{"content":"OK"},"finish_reason":"stop"}]})),
+        )
+        .mount(&server)
+        .await;
+    let mut config = AppConfig::default();
+    config.ask.base_url = server.uri();
+    config.ask.api_key_ref = None;
+    let mut h = harness(config.clone());
+    assert_eq!(h.handle.test_ask(config.ask).await.unwrap(), "OK");
+    h.wait_for(|s| s.state == Idle).await;
+    assert!(h.paster.texts().is_empty());
+    assert!(h.history.entries().is_empty());
+    assert_eq!(h.mic.starts(), 0);
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    assert_eq!(body["messages"][1]["content"], opit_core::ask::TEST_REQUEST);
+    h.handle.ask(Some("next request".into())).await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests[1].body_json::<serde_json::Value>().unwrap()["messages"].as_array().unwrap().len(), 2);
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn ask_hotkey_stops_and_microphone_failure_never_becomes_plain_dictation_retry() {
+    let mut h = harness(AppConfig::default());
+    h.hotkey(HotkeyEvent::Ask);
+    h.wait_for(|s| s.state == Recording).await;
+    h.mic.emit(CaptureEvent::Failed("fake mic lost".into()));
+    h.wait_for(|s| matches!(s.state, DictationState::Error { kind: ErrorKind::Microphone, .. })).await;
+    h.wait_for(|s| s.state == Idle).await;
+    assert!(!h.handle.status().can_retry);
+    assert!(h.paster.texts().is_empty());
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn ask_request_cleanup_is_separate_from_dictation_cleanup_and_keeps_original_history() {
+    use wiremock::matchers::{body_partial_json, method};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(serde_json::json!({"model":"cleanup-test"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"choices":[{"message":{"content":"cleaned request"},"finish_reason":"stop"}]}),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(body_partial_json(serde_json::json!({"model":"ask-test"})))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"choices":[{"message":{"content":"answer"},"finish_reason":"stop"}]}),
+            ),
+        )
+        .mount(&server)
+        .await;
+    let mut config = AppConfig::default();
+    config.cleanup.enabled = false;
+    config.cleanup.base_url = server.uri();
+    config.cleanup.api_key_ref = None;
+    config.cleanup.model = "cleanup-test".into();
+    config.profiles[0].apply_cleanup = false;
+    config.ask.base_url = server.uri();
+    config.ask.api_key_ref = None;
+    config.ask.chat_model = "ask-test".into();
+    config.ask.cleanup_request = true;
+    let cleanup = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(cleanup);
+    h.script("groq", vec![Ok("original spoken request")]);
+    let handle = h.handle.clone();
+    let result = tokio::spawn(async move { handle.ask(None).await });
+    h.wait_for(|s| s.state == Recording).await;
+    h.send(Msg::Stop);
+    assert_eq!(result.await.unwrap().unwrap(), "answer");
+    h.wait_for(|s| s.state == Idle).await;
+    let saved = h.history.entries();
+    assert_eq!((saved[0].raw_text.as_str(), saved[0].text.as_str()), ("original spoken request", "answer"));
+    assert_eq!(saved[0].cleanup_status, Some(cleanup::CleanupStatus::Ok));
+    let requests = server.received_requests().await.unwrap();
+    let request = requests
+        .iter()
+        .find(|r| r.body_json::<serde_json::Value>().ok().is_some_and(|v| v["model"] == "ask-test"))
+        .unwrap();
+    assert_eq!(request.body_json::<serde_json::Value>().unwrap()["messages"][1]["content"], "cleaned request");
+    h.send(Msg::Shutdown);
 }

@@ -59,6 +59,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         cleanup_presets,
         cleanup_prompts,
         test_cleanup,
+        ask_status,
+        test_ask,
         list_microphones,
         mic_test_start,
         mic_test_stop,
@@ -234,6 +236,22 @@ async fn test_cleanup(core: Core<'_>, config: opit_core::cleanup::CleanupConfig)
     let (client, system, before) = blocking(core.inner().clone(), move |core| core.cleanup_test_client(config)).await?;
     let after = client.clean(&before, &system).await?;
     Ok(CleanupTestResult { before, after })
+}
+
+#[tauri::command]
+async fn ask_status(core: Core<'_>) -> Result<Vec<crate::ask::AgentStatus>> {
+    tauri::async_runtime::spawn_blocking(crate::ask::statuses)
+        .await
+        .map_err(|_| CommandError::new("unavailable", core.settings.current().lang.ask_detection_failed()))
+}
+
+#[tauri::command]
+async fn test_ask(core: Core<'_>, config: opit_core::ask::AskConfig) -> Result<String> {
+    core.controller.test_ask(config).await.map_err(|kind| CommandError {
+        code: "ask",
+        message: core.settings.current().lang.error(kind).into(),
+        kind: Some(kind),
+    })
 }
 
 /// Device enumeration can take a moment, so it runs off the main thread.

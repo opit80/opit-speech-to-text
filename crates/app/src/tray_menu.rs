@@ -15,6 +15,8 @@ pub enum TrayItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayCommand {
+    Ask,
+    NewConversation,
     Open,
     Profile(String),
     TogglePause,
@@ -43,6 +45,8 @@ pub fn build(config: &AppConfig, lang: Lang, paused: bool, status: &DictationSta
         TrayItem::Check { id: "pause".into(), label: lang.tray_pause_hotkey().into(), checked: paused },
         action("retry", lang.retry(), status.can_retry),
         action("pause-recording", lang.tray_recording_pause(status.paused), status.state == DictationState::Recording),
+        action("ask", lang.tray_ask(), true),
+        action("new-conversation", lang.new_conversation(), true),
         TrayItem::Separator,
         action("quit", lang.tray_quit(), true),
     ]
@@ -50,6 +54,8 @@ pub fn build(config: &AppConfig, lang: Lang, paused: bool, status: &DictationSta
 
 pub fn parse(id: &str) -> Option<TrayCommand> {
     match id {
+        "ask" => Some(TrayCommand::Ask),
+        "new-conversation" => Some(TrayCommand::NewConversation),
         "open" => Some(TrayCommand::Open),
         "pause" => Some(TrayCommand::TogglePause),
         "pause-recording" => Some(TrayCommand::PauseRecording),
@@ -73,7 +79,7 @@ mod tests {
         assert_eq!(items[0], TrayItem::Action { id: "open".into(), label: "Aç".into(), enabled: true });
         assert_eq!(items[2], TrayItem::Check { id: "pause".into(), label: "Kısayolu duraklat".into(), checked: true });
         assert_eq!(items[3], TrayItem::Action { id: "retry".into(), label: "Tekrar dene".into(), enabled: false });
-        assert_eq!(items[6], TrayItem::Action { id: "quit".into(), label: "Çıkış".into(), enabled: true });
+        assert_eq!(items[8], TrayItem::Action { id: "quit".into(), label: "Çıkış".into(), enabled: true });
     }
 
     #[test]

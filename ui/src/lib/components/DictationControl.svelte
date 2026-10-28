@@ -22,10 +22,10 @@
   }
   let { status, busy, disabled, profileName, shortcut, shortcutEnabled, mode, ontoggle, oncancel, feedback, feedbackVisible = false }: Props = $props();
   const recording = $derived(status.state === "recording");
-  const working = $derived(status.state === "transcribing" || status.state === "cleaning" || status.state === "pasting");
+  const working = $derived(status.state === "transcribing" || status.state === "cleaning" || status.state === "asking" || status.state === "pasting");
   const titles: Record<DictationState, MessageKey> = {
     idle: "home.control.ready_title", recording: "home.control.recording_title", transcribing: "home.control.processing_title",
-    cleaning: "status.cleaning", pasting: "status.pasting", cancelled: "status.cancelled", error: "status.error",
+    asking: "status.asking", cleaning: "status.cleaning", pasting: "status.pasting", cancelled: "status.cancelled", error: "status.error",
   };
   const bodyKey = $derived(recording ? "home.control.recording_body" : working ? "home.control.processing_body" : "home.control.ready_body");
   const actionKey = $derived(busy ? "home.working" : recording ? "home.stop" : "home.start");

@@ -8,7 +8,7 @@ export type ErrorKind =
   | "missing_key" | "invalid_key" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
   | "bad_response" | "rejected" | "audio" | "microphone" | "credentials" | "paste" | "cancelled";
 
-export type DictationState = "idle" | "recording" | "transcribing" | "cleaning" | "pasting" | "cancelled" | "error";
+export type DictationState = "idle" | "recording" | "transcribing" | "cleaning" | "asking" | "pasting" | "cancelled" | "error";
 
 export interface DictationStatus {
   state: DictationState;
@@ -47,12 +47,13 @@ export type HotkeyMode = "toggle" | "push_to_talk";
 export type OverlayPosition = "right_center" | "top_center" | "bottom_center" | "left_center";
 
 export interface AppConfig {
+  ask: AskConfig;
   cleanup: CleanupConfig;
   schema_version: number;
   ui_language: string | null;
   active_profile_id: string;
   profiles: Profile[];
-  hotkey: { keys: string[]; pause_keys: string[]; mode: HotkeyMode; enabled: boolean };
+  hotkey: { keys: string[]; pause_keys: string[]; ask_keys: string[]; mode: HotkeyMode; enabled: boolean };
   recording: {
     microphone: string | null;
     max_seconds: number;
@@ -86,6 +87,8 @@ export interface AppInfo {
 export type TranscriptStatus = "ok" | "empty" | "hallucination" | "failed";
 
 export interface Dictation {
+  mode: "dictation" | "ask";
+  agent: string | null;
   id: number;
   created_at_ms: number;
   profile_id: string;
@@ -227,3 +230,20 @@ export interface FileState {
 }
 export type FileEvent = Pick<FileState, "revision" | "phase" | "progress">;
 export type FileOutputFormat = "txt" | "srt";
+
+export type AskAgent = "chat" | "claude" | "codex";
+export interface AskConfig {
+  agent: AskAgent;
+  base_url: string;
+  chat_model: string;
+  api_key_ref: string | null;
+  claude_model: string;
+  codex_model: string;
+  permission: "restricted" | "workspace";
+  working_dir: string;
+  timeout_seconds: number;
+  output: "paste" | "copy";
+  continue_minutes: number;
+  cleanup_request: boolean;
+}
+export interface AgentStatus { agent: AskAgent; installed: boolean; }

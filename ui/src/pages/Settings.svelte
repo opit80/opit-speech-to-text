@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AskSettings from "../lib/components/AskSettings.svelte";
   import CleanupSettings from "../lib/components/CleanupSettings.svelte";
   import { untrack } from "svelte";
   import { api } from "../lib/api";
@@ -356,6 +357,11 @@
           !config.history.enabled || !config.history.save_audio,
           (c) => c.history.audio_retention_days, (c, n) => { c.history.audio_retention_days = n; })}
       </div>
+      </details>
+
+      <details class="card settings-group">
+        <summary>{t("ask.title")}</summary>
+        <div class="stack group-body"><AskSettings /></div>
       </details>
 
       <details class="card settings-group">

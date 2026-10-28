@@ -12,7 +12,7 @@ pub use audio_store::AudioStore;
 use crate::pipeline::TranscriptStatus;
 use crate::text::{fold, is_word_char};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS dictations (
@@ -51,7 +51,7 @@ CREATE TRIGGER IF NOT EXISTS dictations_au AFTER UPDATE OF search_text, search_r
 END;
 ";
 
-const COLUMNS: &str = "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code, language, cleanup_status, cleanup_model";
+const COLUMNS: &str = "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code, language, cleanup_status, cleanup_model, mode, agent";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
@@ -76,6 +76,8 @@ pub struct Dictation {
     pub language: Option<String>,
     pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
     pub cleanup_model: Option<String>,
+    pub mode: String,
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +93,8 @@ pub struct NewDictation<'a> {
     pub language: Option<&'a str>,
     pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
     pub cleanup_model: Option<&'a str>,
+    pub mode: &'a str,
+    pub agent: Option<&'a str>,
 }
 
 pub struct HistoryStore {
@@ -152,7 +156,10 @@ impl HistoryStore {
                     DROP TABLE dictations_v1;")?;
                 }
             }
-            tx.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT; ALTER TABLE dictations ADD COLUMN cleanup_model TEXT;")?;
+            if version < 4 {
+                tx.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT; ALTER TABLE dictations ADD COLUMN cleanup_model TEXT;")?;
+            }
+            tx.execute_batch("ALTER TABLE dictations ADD COLUMN mode TEXT NOT NULL DEFAULT 'dictation'; ALTER TABLE dictations ADD COLUMN agent TEXT;")?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
@@ -163,8 +170,8 @@ impl HistoryStore {
         let (raw_text, text) = if d.status == TranscriptStatus::Failed { ("", "") } else { (d.raw_text, d.text) };
         self.conn.execute(
             "INSERT INTO dictations
-               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code, language, cleanup_status, cleanup_model)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code, language, cleanup_status, cleanup_model, mode, agent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 d.created_at_ms,
                 d.profile_id,
@@ -178,7 +185,9 @@ impl HistoryStore {
                 safe_error_code(d.error_code),
                 d.language,
                 d.cleanup_status.map(|s| s.as_str()),
-                d.cleanup_model
+                d.cleanup_model,
+                d.mode,
+                d.agent
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -196,7 +205,7 @@ impl HistoryStore {
         Ok(self.conn.execute(
             "UPDATE dictations SET profile_id=?2, raw_text=?3, text=?4, status=?5, audio_ms=?6,
              latency_ms=?7, search_text=?8, search_raw=?9, error_code=?10,
-             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END, language=?12, cleanup_status=?13, cleanup_model=?14 WHERE id=?1",
+             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END, language=?12, cleanup_status=?13, cleanup_model=?14, mode=?15, agent=?16 WHERE id=?1",
             params![
                 id,
                 d.profile_id,
@@ -211,7 +220,9 @@ impl HistoryStore {
                 keep_audio,
                 d.language,
                 d.cleanup_status.map(|s| s.as_str()),
-                d.cleanup_model
+                d.cleanup_model,
+                d.mode,
+                d.agent
             ],
         )? != 0)
     }
@@ -344,6 +355,8 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Dictation> {
         language: row.get(10)?,
         cleanup_status: row.get::<_, Option<String>>(11)?.as_deref().and_then(crate::cleanup::CleanupStatus::parse),
         cleanup_model: row.get(12)?,
+        mode: row.get(13)?,
+        agent: row.get(14)?,
     })
 }
 
@@ -366,6 +379,33 @@ pub fn fts_query(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_four_migration_preserves_dictations_and_round_trips_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v4.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT; ALTER TABLE dictations ADD COLUMN cleanup_model TEXT; PRAGMA user_version=4;").unwrap();
+        conn.execute("INSERT INTO dictations (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw) VALUES (1, 'old', 'original', 'retained', 'ok', 100, 10, 'retained', 'original')", []).unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(1).unwrap().unwrap();
+        assert_eq!((row.mode.as_str(), row.agent), ("dictation", None));
+        assert_eq!(row.text, "retained");
+        let mut ask = entry("answer", "request", 2);
+        ask.mode = "ask";
+        ask.agent = Some("Codex");
+        let id = store.insert(&ask).unwrap();
+        let row = store.get(id).unwrap().unwrap();
+        assert_eq!(
+            (row.raw_text.as_str(), row.text.as_str(), row.mode.as_str(), row.agent.as_deref()),
+            ("request", "answer", "ask", Some("Codex"))
+        );
+        assert_eq!(store.search("request", 10).unwrap().len(), 1);
+        drop(store);
+        assert_eq!(HistoryStore::open(&path).unwrap().recent(10, None).unwrap().len(), 2);
+    }
 
     #[test]
     fn cap_removes_oldest_dates_then_ids_including_failed_audio_and_fts() {
@@ -534,6 +574,8 @@ mod tests {
 
     fn entry<'a>(text: &'a str, raw_text: &'a str, created_at_ms: i64) -> NewDictation<'a> {
         NewDictation {
+            mode: "dictation",
+            agent: None,
             created_at_ms,
             profile_id: "groq",
             raw_text,

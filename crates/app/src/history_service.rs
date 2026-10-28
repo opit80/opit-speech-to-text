@@ -155,6 +155,8 @@ mod tests {
 
     fn entry(created_at_ms: i64) -> NewDictation<'static> {
         NewDictation {
+            mode: "dictation",
+            agent: None,
             created_at_ms,
             profile_id: "groq",
             raw_text: "merhaba",

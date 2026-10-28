@@ -27,6 +27,7 @@ pub struct AppConfig {
     pub paste: PasteConfig,
     pub history: HistoryConfig,
     pub rules: RulesConfig,
+    pub ask: crate::ask::AskConfig,
     pub cleanup: crate::cleanup::CleanupConfig,
     pub ui: UiConfig,
 }
@@ -43,6 +44,7 @@ impl Default for AppConfig {
             paste: PasteConfig::default(),
             history: HistoryConfig::default(),
             rules: RulesConfig::default(),
+            ask: crate::ask::AskConfig::default(),
             cleanup: crate::cleanup::CleanupConfig::default(),
             ui: UiConfig::default(),
         }
@@ -63,6 +65,7 @@ pub struct HotkeyConfig {
     pub keys: Vec<String>,
     /// Empty disables the optional recording pause shortcut.
     pub pause_keys: Vec<String>,
+    pub ask_keys: Vec<String>,
     pub mode: HotkeyMode,
     pub enabled: bool,
 }
@@ -72,6 +75,7 @@ impl Default for HotkeyConfig {
         Self {
             keys: vec!["RightCtrl".into(), "RightShift".into()],
             pause_keys: Vec::new(),
+            ask_keys: Vec::new(),
             mode: HotkeyMode::Toggle,
             enabled: true,
         }
@@ -321,6 +325,20 @@ mod tests {
         }
         assert!(AppConfig::from_json(r#"{"ui":{"theme":"unknown"}}"#).is_err());
         assert!(AppConfig::from_json(r#"{"history":{"max_entries":-1}}"#).is_err());
+    }
+
+    #[test]
+    fn ask_defaults_are_optional_and_existing_config_files_remain_compatible() {
+        let config = AppConfig::from_json("{}").unwrap();
+        assert!(config.hotkey.ask_keys.is_empty());
+        assert_eq!(config.ask, crate::ask::AskConfig::default());
+        assert_eq!(config.ask.timeout_seconds, 180);
+        assert_eq!(config.ask.continue_minutes, 10);
+        let mut config = config;
+        config.ask.agent = crate::ask::Agent::Claude;
+        config.ask.permission = crate::ask::Permission::Workspace;
+        config.hotkey.ask_keys = vec!["F15".into()];
+        assert_eq!(AppConfig::from_json(&serde_json::to_string(&config).unwrap()).unwrap(), config);
     }
 
     #[test]

@@ -26,6 +26,7 @@ use crate::platform::{Hotkey, HotkeyError, HotkeyEvent, HotkeySink};
 struct HookState {
     tracker: KeyTracker,
     pause_tracker: Option<KeyTracker>,
+    ask_tracker: Option<KeyTracker>,
     sink: HotkeySink,
 }
 
@@ -88,6 +89,14 @@ impl Drop for WinHotkey {
 }
 
 impl Hotkey for WinHotkey {
+    fn register_ask(&self, keys: &[String]) -> Result<(), HotkeyError> {
+        let combo = if keys.is_empty() { None } else { Some(parse_combo(keys)?) };
+        if let Some(st) = state().as_mut() {
+            st.ask_tracker = combo.map(KeyTracker::new);
+        }
+        Ok(())
+    }
+
     fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError> {
         let combo = if keys.is_empty() { None } else { Some(parse_combo(keys)?) };
         if let Some(st) = state().as_mut() {
@@ -112,7 +121,14 @@ impl Hotkey for WinHotkey {
                     s.tracker.retarget(combo);
                     s.sink = sink;
                 }
-                None => *st = Some(HookState { tracker: KeyTracker::new(combo), pause_tracker: None, sink }),
+                None => {
+                    *st = Some(HookState {
+                        tracker: KeyTracker::new(combo),
+                        pause_tracker: None,
+                        ask_tracker: None,
+                        sink,
+                    })
+                }
             }
         }
         if first {
@@ -248,7 +264,21 @@ fn handle_key(vk: u32, down: bool) -> bool {
         let Some(st) = guard.as_mut() else {
             return false;
         };
-        (track_shortcuts(&mut st.tracker, st.pause_tracker.as_mut(), vk, down, key_is_down), st.sink.clone())
+        let ask_events = st.ask_tracker.as_mut().map(|tracker| track(tracker, vk, down, key_is_down));
+        let ask_handled = ask_events.is_some_and(|events| {
+            events.iter().flatten().any(|e| matches!(e, HotkeyEvent::ComboDown | HotkeyEvent::ComboUp))
+        });
+        let ask =
+            ask_events.is_some_and(|events| events.contains(&Some(HotkeyEvent::ComboDown))).then_some(HotkeyEvent::Ask);
+        let mut events = track_shortcuts(&mut st.tracker, st.pause_tracker.as_mut(), vk, down, key_is_down);
+        if ask_handled {
+            for event in &mut events {
+                if matches!(event, Some(HotkeyEvent::LoneCtrl | HotkeyEvent::Escape)) {
+                    *event = None;
+                }
+            }
+        }
+        ([events[0], events[1], events[2], ask], st.sink.clone())
     };
     let paused = PAUSED.load(Ordering::Relaxed);
     if !paused {

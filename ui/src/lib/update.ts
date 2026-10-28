@@ -45,7 +45,7 @@ export function statusMessage(state: UpdateState): { key: MessageKey; params?: P
 
 /** Installing closes the app, so it waits while a dictation is recording, transcribing or pasting. */
 export function dictationBusy(state: DictationState): boolean {
-  return state === "recording" || state === "transcribing" || state === "cleaning" || state === "pasting";
+  return state === "recording" || state === "transcribing" || state === "cleaning" || state === "asking" || state === "pasting";
 }
 
 /**

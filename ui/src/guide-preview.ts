@@ -11,6 +11,7 @@ if (!import.meta.env.DEV) throw new Error("Guide preview is only available in th
 
 const params = new URLSearchParams(location.search);
 const config: AppConfig = {
+  ask: { agent: "chat", base_url: "https://api.openai.com/v1", chat_model: "gpt-4.1-mini", api_key_ref: "ask", claude_model: "sonnet", codex_model: "", permission: "restricted", working_dir: "", timeout_seconds: 180, output: "paste", continue_minutes: 10, cleanup_request: false },
   cleanup: { enabled: false, base_url: "https://inference.baseten.co/v1", model: "deepseek-ai/DeepSeek-V4.1-Flash-Fast", api_key_ref: "cleanup", prompt_override: "", timeout_seconds: 15, reasoning_effort: null },
   schema_version: 1,
   ui_language: params.get("lang") === "en" ? "en" : "tr",
@@ -21,7 +22,7 @@ const config: AppConfig = {
     api_key_ref: null, language: "tr", audio_format: "flac", response_format: "verbose_json",
     send_prompt: true, send_keywords: false, apply_rules: true, apply_cleanup: true, fallback_profile_id: null,
   }],
-  hotkey: { pause_keys: [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
+  hotkey: { ask_keys: [], pause_keys: [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
   recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults },
   paste: { restore_clipboard: false, trailing_space: true },
   history: { enabled: true, save_audio: false, audio_retention_days: 7, max_entries: 1000 },
@@ -32,7 +33,7 @@ const config: AppConfig = {
 const now = Date.now();
 let rows: Dictation[] = Array.from({ length: params.get("empty") === "true" ? 0 : 9 }, (_, i) => ({
   id: 9 - i, created_at_ms: now - i * 3_600_000, profile_id: "preview",
-  cleanup_status: null, cleanup_model: null,
+  mode: "dictation", agent: null, cleanup_status: null, cleanup_model: null,
   raw_text: "Toplantıdan önce github değişikliklerini kontrol edelim.",
   text: "Toplantıdan önce GitHub değişikliklerini kontrol edelim.",
   status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null, error_code: null, language: "tr",
@@ -56,6 +57,8 @@ async function changeStatus(state: DictationStatus["state"]) {
 }
 mockIPC(async (command, payload) => {
   switch (command) {
+    case "ask_status": return [{ agent: "claude", installed: false }, { agent: "codex", installed: false }];
+    case "test_ask": return "OK";
     // File preview data never reads a real file or contacts a service.
     case "file_state": return structuredClone(fileState);
     case "file_pick":

@@ -262,7 +262,15 @@ impl AppCore {
     /// Caller holds `config_lock`.
     fn save_locked(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
         config.normalize();
-        crate::platform::keys::validate_shortcuts(&config.hotkey.keys, &config.hotkey.pause_keys).map_err(|err| {
+        if !config.ask.valid() || crate::ask::resolve_directory(&config.ask.working_dir).is_err() {
+            return Err(CommandError::new("invalid_input", self.settings.current().lang.ask_invalid()));
+        }
+        crate::platform::keys::validate_all_shortcuts(
+            &config.hotkey.keys,
+            &config.hotkey.pause_keys,
+            &config.hotkey.ask_keys,
+        )
+        .map_err(|err| {
             let lang = self.settings.current().lang;
             let message = match err {
                 HotkeyError::Collision => lang.shortcut_collision().into(),
@@ -325,9 +333,14 @@ impl AppCore {
 
     /// (Re-)installs the global hook for the configured keys.
     pub fn apply_hotkey(&self, config: &AppConfig) {
-        let result = crate::platform::keys::validate_shortcuts(&config.hotkey.keys, &config.hotkey.pause_keys)
-            .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
-            .and_then(|()| self.platform.hotkey.register_pause(&config.hotkey.pause_keys));
+        let result = crate::platform::keys::validate_all_shortcuts(
+            &config.hotkey.keys,
+            &config.hotkey.pause_keys,
+            &config.hotkey.ask_keys,
+        )
+        .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
+        .and_then(|()| self.platform.hotkey.register_pause(&config.hotkey.pause_keys))
+        .and_then(|()| self.platform.hotkey.register_ask(&config.hotkey.ask_keys));
         let error = result.err().map(|err: HotkeyError| {
             warn!(error = %err, "global shortcut unavailable");
             err.to_string()
@@ -1222,6 +1235,8 @@ mod tests {
         let f = fixture();
         let history = f.core.history.as_ref().unwrap();
         let entry = |text: &'static str| NewDictation {
+            mode: "dictation",
+            agent: None,
             created_at_ms: 1,
             profile_id: "groq",
             raw_text: text,
@@ -1269,6 +1284,8 @@ mod tests {
         let db = f.core.paths.root.join("retry.db");
         let history = Arc::new(HistoryService::open(&db, f.core.paths.audio.clone()).unwrap());
         let entry = NewDictation {
+            mode: "dictation",
+            agent: None,
             created_at_ms: 123,
             profile_id: "old",
             raw_text: "",
@@ -1345,6 +1362,8 @@ mod tests {
         let history = f.core.history.clone().unwrap();
         for i in 0..3 {
             let entry = NewDictation {
+                mode: "dictation",
+                agent: None,
                 created_at_ms: i,
                 profile_id: "groq",
                 raw_text: "github",

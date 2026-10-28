@@ -1,12 +1,14 @@
 // Typed wrappers for every Rust command. Argument names are camelCase (Tauri maps them).
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
+  AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
   FileOptions, FileState, FileOutputFormat,
 } from "./types";
 
 export const api = {
+  askStatus: () => invoke<AgentStatus[]>("ask_status"),
+  testAsk: (config: AskConfig) => invoke<string>("test_ask", { config }),
   filePick: () => invoke<FileState>("file_pick"),
   fileState: () => invoke<FileState>("file_state"),
   fileStart: (options: FileOptions) => invoke<FileState>("file_start", { options }),

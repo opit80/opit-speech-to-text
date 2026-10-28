@@ -22,6 +22,7 @@ pub fn credential_refs(config_json: Option<&str>) -> Vec<String> {
         .into_iter()
         .filter_map(|profile| profile.api_key_ref)
         .collect();
+    refs.insert("ask".into());
     refs.extend(opit_core::cleanup::presets().into_iter().filter_map(|p| p.config.api_key_ref));
     let config = config_json.and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
     let profiles = config.as_ref().and_then(|c| c.get("profiles")).and_then(|p| p.as_array());
@@ -38,6 +39,16 @@ pub fn credential_refs(config_json: Option<&str>) -> Vec<String> {
         .and_then(|r| r.as_str())
         .map(str::trim)
         .filter(|r| !r.is_empty())
+    {
+        refs.insert(key_ref.into());
+    }
+    if let Some(key_ref) = config
+        .as_ref()
+        .and_then(|c| c.get("ask"))
+        .and_then(|c| c.get("api_key_ref"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
     {
         refs.insert(key_ref.into());
     }
@@ -67,6 +78,7 @@ mod tests {
 
     fn expected(extra: &[&str]) -> Vec<String> {
         let mut refs: Vec<String> = [
+            "ask",
             "cleanup",
             "cleanup-custom",
             "cleanup-deepseek",

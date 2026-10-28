@@ -15,6 +15,7 @@ pub struct HttpProviders {
     secrets: Arc<dyn SecretStore>,
     cache: Mutex<HashMap<String, Cached>>,
     cleanup: Mutex<Option<CachedCleanup>>,
+    ask: Arc<crate::ask::AskService>,
 }
 
 /// Not `Debug`: it holds an API key.
@@ -32,7 +33,12 @@ struct CachedCleanup {
 
 impl HttpProviders {
     pub fn new(secrets: Arc<dyn SecretStore>) -> Self {
-        Self { secrets, cache: Mutex::default(), cleanup: Mutex::default() }
+        Self {
+            ask: Arc::new(crate::ask::AskService::new(secrets.clone())),
+            secrets,
+            cache: Mutex::default(),
+            cleanup: Mutex::default(),
+        }
     }
 
     fn key_for(&self, profile: &Profile) -> Result<Option<String>, SetupError> {
@@ -48,6 +54,10 @@ impl HttpProviders {
 
 impl Providers for HttpProviders {
     type Client = Arc<ProviderClient>;
+
+    fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
+        Some(self.ask.clone())
+    }
 
     fn client(&self, profile: &Profile) -> Result<Self::Client, SetupError> {
         let key = self.key_for(profile)?;

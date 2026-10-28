@@ -46,6 +46,10 @@ pub trait Providers: Send + Sync + 'static {
 
     fn client(&self, profile: &Profile) -> Result<Self::Client, SetupError>;
 
+    fn ask_service(&self) -> Option<Arc<crate::ask::AskService>> {
+        None
+    }
+
     fn cleanup_client(&self, _config: &CleanupConfig) -> Result<Arc<CleanupClient>, CleanupError> {
         Err(CleanupError::MissingKey)
     }
@@ -104,6 +108,26 @@ pub struct Env<P: Providers> {
 /// Controller input. Deliberately not `Debug`: `Transcribed` carries transcript text,
 /// which must never reach a log line.
 pub enum Msg {
+    Ask {
+        text: Option<String>,
+        reply: Option<oneshot::Sender<Result<String, ErrorKind>>>,
+    },
+    TestAsk {
+        config: Box<opit_core::ask::AskConfig>,
+        reply: oneshot::Sender<Result<String, ErrorKind>>,
+    },
+    NewConversation,
+    BeginAsk {
+        session: u64,
+        reply: oneshot::Sender<bool>,
+    },
+    AskFailed {
+        session: u64,
+        kind: ErrorKind,
+    },
+    Asking {
+        session: u64,
+    },
     Control {
         action: ControlAction,
         reply: oneshot::Sender<Result<DictationStatus, ErrorKind>>,
@@ -245,6 +269,18 @@ impl ControllerHandle {
         result.await.unwrap_or(Err(ErrorKind::Cancelled))
     }
 
+    pub async fn test_ask(&self, config: opit_core::ask::AskConfig) -> Result<String, ErrorKind> {
+        let (reply, result) = oneshot::channel();
+        self.send(Msg::TestAsk { config: Box::new(config), reply });
+        result.await.unwrap_or(Err(ErrorKind::Cancelled))
+    }
+
+    pub async fn ask(&self, text: Option<String>) -> Result<String, ErrorKind> {
+        let (reply, result) = oneshot::channel();
+        self.send(Msg::Ask { text, reply: Some(reply) });
+        result.await.unwrap_or(Err(ErrorKind::Cancelled))
+    }
+
     pub async fn record(&self, seconds: u32) -> Result<String, ErrorKind> {
         let (reply, result) = oneshot::channel();
         self.send(Msg::Record { seconds, reply });
@@ -296,6 +332,8 @@ struct Clients<C> {
 }
 
 struct Job {
+    ask: bool,
+    ask_test: bool,
     text_reply: Option<TextReply>,
     settings: Arc<Settings>,
     /// When the user stopped recording (or pressed "Try again"); latency is measured from here.
@@ -306,11 +344,13 @@ struct Job {
 }
 
 enum Input {
+    Text(String),
     Raw(Recording),
     Prepared(Arc<PreparedAudio>),
 }
 
 struct ActiveRecording<C> {
+    ask: bool,
     text_reply: Option<TextReply>,
     session: u64,
     capture: Box<dyn Capture>,
@@ -327,7 +367,7 @@ struct ActiveRecording<C> {
 struct Pending<C> {
     session: u64,
     job: Job,
-    clients: Clients<C>,
+    clients: Option<Clients<C>>,
     input: Input,
     salvage: bool,
 }
@@ -348,6 +388,7 @@ enum Phase {
         cancel: watch::Sender<bool>,
         progress: Option<RetryWait>,
         cleaning: bool,
+        asking: bool,
     },
     Pasting {
         session: u64,
@@ -392,6 +433,61 @@ impl<P: Providers> Controller<P> {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
+            Msg::TestAsk { config, reply } => {
+                let before = self.session;
+                self.ask(Some(opit_core::ask::TEST_REQUEST.into()), Some(reply));
+                if self.session != before
+                    && let Some(pending) = self.waiting.back_mut()
+                {
+                    pending.job.ask_test = true;
+                    let mut settings = Settings {
+                        config: pending.job.settings.config.clone(),
+                        rules: pending.job.settings.rules.clone(),
+                        lang: pending.job.settings.lang,
+                    };
+                    settings.config.ask = *config;
+                    settings.config.history.enabled = false;
+                    pending.job.settings = Arc::new(settings);
+                }
+            }
+            Msg::NewConversation => {
+                if let Some(service) = self.env.providers.ask_service() {
+                    service.reset();
+                }
+            }
+            Msg::Ask { text, reply } => self.ask(text, reply),
+            Msg::AskFailed { session, kind } => {
+                if matches!(self.phase, Phase::Transcribing { session: current, .. } if current == session) {
+                    let Phase::Transcribing { mut job, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
+                        unreachable!()
+                    };
+                    if let Some(reply) = job.text_reply.take() {
+                        reply.finish(Err(kind));
+                    }
+                    self.fail(kind, job.settings.lang);
+                }
+            }
+            Msg::BeginAsk { session, reply } => {
+                let active = matches!(self.phase, Phase::Transcribing { session: current, .. } if current == session);
+                if active {
+                    self.handle(Msg::Asking { session });
+                }
+                let _ = reply.send(active);
+            }
+            Msg::Asking { session } => {
+                if let Phase::Transcribing { session: active, asking, .. } = &mut self.phase
+                    && *active == session
+                {
+                    *asking = true;
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let _ = tx.send(Msg::Asking { session });
+                    });
+                    self.show_progress();
+                    self.set_state(DictationState::Asking);
+                }
+            }
             Msg::Control { action, reply } => {
                 let result = self.control(action);
                 self.pump();
@@ -520,6 +616,51 @@ impl<P: Providers> Controller<P> {
         Ok(())
     }
 
+    fn ask(&mut self, text: Option<String>, reply: Option<oneshot::Sender<Result<String, ErrorKind>>>) {
+        let reply = reply.map(|reply| TextReply(Some(reply)));
+        if self.update_holds != 0 || self.waiting.len() + usize::from(self.recording.is_some()) >= MAX_WAITING {
+            if let Some(reply) = reply {
+                reply.finish(Err(ErrorKind::Rejected));
+            }
+            return;
+        }
+        if let Some(text) = text {
+            if text.trim().is_empty() || text.len() > opit_core::ask::MAX_REQUEST {
+                if let Some(reply) = reply {
+                    reply.finish(Err(ErrorKind::Rejected));
+                }
+                return;
+            }
+            self.session += 1;
+            self.waiting.push_back(Pending {
+                session: self.session,
+                job: Job {
+                    ask: true,
+                    ask_test: false,
+                    text_reply: reply,
+                    settings: self.env.settings.current(),
+                    started: Instant::now(),
+                    auto_paste: self.env.paster.can_auto_paste(),
+                    history_id: None,
+                    reply: None,
+                },
+                clients: None,
+                input: Input::Text(text),
+                salvage: false,
+            });
+        } else if self.recording.is_none() {
+            self.start();
+            if let Some(recording) = self.recording.as_mut() {
+                recording.ask = true;
+                recording.text_reply = reply;
+            } else if let Some(reply) = reply {
+                reply.finish(Err(ErrorKind::Rejected));
+            }
+        } else if let Some(reply) = reply {
+            reply.finish(Err(ErrorKind::Rejected));
+        }
+    }
+
     fn toggle(&mut self, auto_paste: bool) {
         if self.recording.is_some() {
             self.stop(auto_paste);
@@ -536,6 +677,13 @@ impl<P: Providers> Controller<P> {
         let recording = self.recording.is_some();
         match (event, mode) {
             (HotkeyEvent::Escape, _) => self.cancel(true),
+            (HotkeyEvent::Ask, _) => {
+                if recording {
+                    self.stop(true);
+                } else {
+                    self.ask(None, None);
+                }
+            }
             (HotkeyEvent::Pause, _) => self.pause_resume(),
             (HotkeyEvent::ComboDown, HotkeyMode::Toggle) => self.toggle(true),
             (HotkeyEvent::LoneCtrl, HotkeyMode::Toggle) if recording => self.stop(true),
@@ -557,8 +705,8 @@ impl<P: Providers> Controller<P> {
             }
         });
         let uses_cleanup = profile.apply_cleanup || config.fallback_for(profile).is_some_and(|p| p.apply_cleanup);
-        let cleanup =
-            (config.cleanup.enabled && uses_cleanup).then(|| self.env.providers.cleanup_client(&config.cleanup));
+        let cleanup = ((config.cleanup.enabled && uses_cleanup) || config.ask.cleanup_request)
+            .then(|| self.env.providers.cleanup_client(&config.cleanup));
         Ok(Clients { primary, fallback, cleanup })
     }
 
@@ -623,6 +771,7 @@ impl<P: Providers> Controller<P> {
         self.play(Sound::Start);
         info!(session, device = %started.device, profile = %settings.config.active_profile_id, "recording started");
         self.recording = Some(ActiveRecording {
+            ask: false,
             text_reply: None,
             session,
             capture: started.capture,
@@ -648,13 +797,15 @@ impl<P: Providers> Controller<P> {
             session: r.session,
             job: Job {
                 text_reply: r.text_reply,
+                ask: r.ask,
+                ask_test: false,
                 settings: r.settings,
                 started: Instant::now(),
                 auto_paste,
                 history_id: None,
                 reply: None,
             },
-            clients: r.clients,
+            clients: Some(r.clients),
             input: Input::Raw(recording),
             salvage: false,
         });
@@ -682,6 +833,8 @@ impl<P: Providers> Controller<P> {
         info!(session = self.session, "retrying the last dictation");
         self.env.hotkey.set_capture_escape(true);
         let job = Job {
+            ask: false,
+            ask_test: false,
             text_reply: None,
             settings,
             started: Instant::now(),
@@ -689,11 +842,17 @@ impl<P: Providers> Controller<P> {
             history_id: None,
             reply: None,
         };
-        self.begin_transcription(self.session, job, clients, Input::Prepared(audio));
+        self.begin_transcription(self.session, job, Some(clients), Input::Prepared(audio));
     }
 
-    fn begin_transcription(&mut self, session: u64, job: Job, clients: Clients<P::Client>, input: Input) {
+    fn begin_transcription(&mut self, session: u64, job: Job, clients: Option<Clients<P::Client>>, input: Input) {
         let settings = job.settings.clone();
+        let is_ask = job.ask;
+        if is_ask {
+            self.retry = None;
+        }
+        let is_ask_test = job.ask_test;
+        let ask_service = self.env.providers.ask_service();
         self.show(view(Tone::Busy, settings.lang.transcribing(), None));
         let tx = self.tx.clone();
         let retry_delay = self.env.retry_delay;
@@ -705,62 +864,129 @@ impl<P: Providers> Controller<P> {
         let (cancel, cancel_rx) = watch::channel(false);
         let worker = tokio::spawn(async move {
             let tx = worker_tx;
-            let audio = match input {
-                Input::Prepared(audio) => audio,
-                Input::Raw(recording) => {
-                    match prepare_off_thread(recording, task_settings.config.recording.clone()).await {
-                        Ok(audio) => Arc::new(audio),
-                        Err(err) => {
-                            let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
-                            return;
+            let (audio, mut result) = match input {
+                Input::Text(text) => (
+                    None,
+                    Ok(Transcript {
+                        raw_text: text.clone(),
+                        text,
+                        status: TranscriptStatus::Ok,
+                        profile_id: task_settings.config.active_profile_id.clone(),
+                        detected_language: None,
+                        language: None,
+                        cleanup_status: None,
+                        cleanup_model: None,
+                        cleanup_error: None,
+                        used_fallback: false,
+                        audio_ms: 0,
+                        request_ms: 0,
+                        hits: Vec::new(),
+                    }),
+                ),
+                input => {
+                    let clients = clients.as_ref().expect("audio jobs have speech clients");
+                    let audio = match input {
+                        Input::Text(_) => unreachable!(),
+                        Input::Prepared(audio) => audio,
+                        Input::Raw(recording) => {
+                            match prepare_off_thread(recording, task_settings.config.recording.clone()).await {
+                                Ok(audio) => Arc::new(audio),
+                                Err(err) => {
+                                    let _ = tx.send(Msg::Transcribed { session, audio: None, result: Err(err) });
+                                    return;
+                                }
+                            }
+                        }
+                    };
+                    let ctx = PipelineContext {
+                        primary: &clients.primary,
+                        fallback: clients.fallback.as_ref(),
+                        rules: &task_settings.rules,
+                        prompt_context: &task_settings.config.rules.prompt_context,
+                        retry_delay,
+                        numbers_as_words: task_settings.config.rules.numbers_as_words,
+                    };
+                    let mut result = pipeline::transcribe_with_wait(&audio, &ctx, |progress, delay| {
+                        wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
+                    })
+                    .await;
+                    let use_cleanup = !is_ask || task_settings.config.ask.cleanup_request;
+                    if use_cleanup && let Ok(transcript) = &mut result {
+                        let profile = task_settings
+                            .config
+                            .profiles
+                            .iter()
+                            .find(|p| p.id == transcript.profile_id)
+                            .unwrap_or_else(|| clients.primary.profile());
+                        let mut cleanup_config = task_settings.config.cleanup.clone();
+                        if is_ask {
+                            cleanup_config.enabled = true;
+                        }
+                        let config = &cleanup_config;
+                        if cleanup::eligible(transcript, config, profile)
+                            || (is_ask && transcript.status == TranscriptStatus::Ok && !transcript.text.is_empty())
+                        {
+                            let _ = tx.send(Msg::Cleaning { session });
+                            let ui_language = if task_settings.lang == Lang::Tr { "tr" } else { "en" };
+                            let language = cleanup::prompt_language(
+                                transcript.detected_language.as_deref(),
+                                &profile.language,
+                                ui_language,
+                            );
+                            let system = cleanup::system_prompt(
+                                config,
+                                language,
+                                &task_settings.rules,
+                                &task_settings.config.rules.prompt_context,
+                            );
+                            transcript.cleanup_model = Some(config.model.clone());
+                            let client = match &clients.cleanup {
+                                Some(Ok(client)) => Ok(client.as_ref()),
+                                Some(Err(error)) => Err(*error),
+                                None => Err(CleanupError::MissingKey),
+                            };
+                            cleanup::apply(transcript, client, &system, &task_settings.rules, profile.apply_rules)
+                                .await;
                         }
                     }
+                    (Some(audio), result)
                 }
             };
-            let ctx = PipelineContext {
-                primary: &clients.primary,
-                fallback: clients.fallback.as_ref(),
-                rules: &task_settings.rules,
-                prompt_context: &task_settings.config.rules.prompt_context,
-                retry_delay,
-                numbers_as_words: task_settings.config.rules.numbers_as_words,
-            };
-            let mut result = pipeline::transcribe_with_wait(&audio, &ctx, |progress, delay| {
-                wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
-            })
-            .await;
-            if let Ok(transcript) = &mut result {
-                let profile = task_settings
-                    .config
-                    .profiles
-                    .iter()
-                    .find(|p| p.id == transcript.profile_id)
-                    .unwrap_or_else(|| clients.primary.profile());
-                let config = &task_settings.config.cleanup;
-                if cleanup::eligible(transcript, config, profile) {
-                    let _ = tx.send(Msg::Cleaning { session });
-                    let ui_language = if task_settings.lang == Lang::Tr { "tr" } else { "en" };
-                    let language = cleanup::prompt_language(
-                        transcript.detected_language.as_deref(),
-                        &profile.language,
-                        ui_language,
-                    );
-                    let system = cleanup::system_prompt(
-                        config,
-                        language,
-                        &task_settings.rules,
-                        &task_settings.config.rules.prompt_context,
-                    );
-                    transcript.cleanup_model = Some(config.model.clone());
-                    let client = match &clients.cleanup {
-                        Some(Ok(client)) => Ok(client.as_ref()),
-                        Some(Err(error)) => Err(*error),
-                        None => Err(CleanupError::MissingKey),
-                    };
-                    cleanup::apply(transcript, client, &system, &task_settings.rules, profile.apply_rules).await;
+            if is_ask
+                && let Ok(transcript) = &mut result
+                && transcript.status == TranscriptStatus::Ok
+                && !transcript.text.is_empty()
+            {
+                let (reply, ready) = oneshot::channel();
+                let _ = tx.send(Msg::BeginAsk { session, reply });
+                if !ready.await.unwrap_or(false) {
+                    return;
+                }
+                let answer = match ask_service {
+                    Some(service) => {
+                        let isolated;
+                        let service = if is_ask_test {
+                            isolated = service.isolated();
+                            &isolated
+                        } else {
+                            service.as_ref()
+                        };
+                        service
+                            .answer(task_settings.config.ask.clone(), transcript.text.clone(), cancel_rx.clone())
+                            .await
+                    }
+                    None => Err(ErrorKind::Rejected),
+                };
+                match answer {
+                    Ok(answer) => transcript.text = answer,
+                    Err(kind) => {
+                        let _ = tx.send(Msg::AskFailed { session, kind });
+                        return;
+                    }
                 }
             }
-            if task_settings.config.history.enabled && (result.is_err() || history_id.is_some()) {
+            if !is_ask && task_settings.config.history.enabled && (result.is_err() || history_id.is_some()) {
+                let audio = audio.clone().expect("speech retry has prepared audio");
                 let saved = save_transcription(
                     history,
                     task_settings,
@@ -782,7 +1008,7 @@ impl<P: Providers> Controller<P> {
                     }
                 }
             }
-            let _ = tx.send(Msg::Transcribed { session, audio: Some(audio), result });
+            let _ = tx.send(Msg::Transcribed { session, audio, result });
         });
         let task = worker.abort_handle();
         tokio::spawn(async move {
@@ -791,7 +1017,7 @@ impl<P: Providers> Controller<P> {
                 let _ = tx.send(Msg::Transcribed { session, audio: None, result });
             }
         });
-        self.phase = Phase::Transcribing { session, job, task, cancel, progress: None, cleaning: false };
+        self.phase = Phase::Transcribing { session, job, task, cancel, progress: None, cleaning: false, asking: false };
         self.set_state(DictationState::Transcribing);
     }
 
@@ -816,6 +1042,8 @@ impl<P: Providers> Controller<P> {
         self.waiting.push_back(Pending {
             session: self.session,
             job: Job {
+                ask: false,
+                ask_test: false,
                 text_reply: None,
                 settings,
                 started: Instant::now(),
@@ -823,7 +1051,7 @@ impl<P: Providers> Controller<P> {
                 history_id: Some(id),
                 reply: Some(reply),
             },
-            clients,
+            clients: Some(clients),
             input: Input::Prepared(audio),
             salvage: false,
         });
@@ -832,6 +1060,9 @@ impl<P: Providers> Controller<P> {
     fn show_progress(&self) {
         let lang = self.env.settings.current().lang;
         let text = match &self.phase {
+            Phase::Transcribing { asking: true, job, .. } => {
+                job.settings.lang.asking(job.settings.config.ask.agent.name(), job.started.elapsed().as_secs())
+            }
             Phase::Transcribing { cleaning: true, .. } => lang.cleaning().into(),
             Phase::Transcribing { progress: Some(progress), .. } => lang.retry_wait(*progress),
             _ => lang.transcribing().into(),
@@ -852,6 +1083,13 @@ impl<P: Providers> Controller<P> {
                 warn!(session, %reason, "microphone stopped during recording");
                 let r = self.recording.take().unwrap();
                 r.limit.abort();
+                if r.ask {
+                    if let Some(reply) = r.text_reply {
+                        reply.finish(Err(ErrorKind::Microphone));
+                    }
+                    drop(r.capture);
+                    return self.fail(ErrorKind::Microphone, r.settings.lang);
+                }
                 if let Some(reply) = r.text_reply {
                     reply.finish(Err(ErrorKind::Microphone));
                 }
@@ -860,6 +1098,8 @@ impl<P: Providers> Controller<P> {
                 self.waiting.push_back(Pending {
                     session,
                     job: Job {
+                        ask: false,
+                        ask_test: false,
                         text_reply: None,
                         settings: r.settings,
                         started: Instant::now(),
@@ -867,7 +1107,7 @@ impl<P: Providers> Controller<P> {
                         history_id: None,
                         reply: None,
                     },
-                    clients: r.clients,
+                    clients: Some(r.clients),
                     input: Input::Raw(recording),
                     salvage: true,
                 });
@@ -901,11 +1141,28 @@ impl<P: Providers> Controller<P> {
         if !matches!(self.phase, Phase::Transcribing { session: current, .. } if current == session) {
             return; // cancelled meanwhile
         }
-        let Phase::Transcribing { mut job, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
+        let Phase::Transcribing { mut job, cancel, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
             unreachable!("checked above")
         };
         let lang = job.settings.lang;
-        if let Some(reply) = job.text_reply.take() {
+        if job.ask && *cancel.borrow() {
+            if let Some(reply) = job.text_reply.take() {
+                reply.finish(Err(ErrorKind::Cancelled));
+            }
+            return self.finish_info(lang.cancelled());
+        }
+        if job.ask
+            && let Err(error) = &result
+        {
+            let kind = ErrorKind::from(error);
+            if let Some(reply) = job.text_reply.take() {
+                reply.finish(Err(kind));
+            }
+            return self.fail(kind, lang);
+        }
+        if (!job.ask || job.ask_test)
+            && let Some(reply) = job.text_reply.take()
+        {
             match result {
                 Ok(transcript) => {
                     self.retry = None;
@@ -942,7 +1199,7 @@ impl<P: Providers> Controller<P> {
                 if let Some(reply) = job.reply.take() {
                     let _ = reply.send(Err(ErrorKind::from(&err)));
                 }
-                self.retry = audio;
+                self.retry = if job.ask { None } else { audio };
                 return self.fail(ErrorKind::from(&err), lang);
             }
         };
@@ -966,9 +1223,13 @@ impl<P: Providers> Controller<P> {
         }
 
         let paste = &job.settings.config.paste;
-        let text = if paste.trailing_space { format!("{} ", transcript.text) } else { transcript.text.clone() };
-        let restore = job.history_id.is_none() && paste.restore_clipboard;
-        let auto_paste = job.auto_paste;
+        let text =
+            if !job.ask && paste.trailing_space { format!("{} ", transcript.text) } else { transcript.text.clone() };
+        let restore = job.history_id.is_none()
+            && paste.restore_clipboard
+            && (!job.ask || job.settings.config.ask.output == opit_core::ask::Output::Paste);
+        let auto_paste =
+            job.auto_paste && (!job.ask || job.settings.config.ask.output == opit_core::ask::Output::Paste);
         let paster = self.env.paster.clone();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
@@ -989,6 +1250,13 @@ impl<P: Providers> Controller<P> {
         let lang = job.settings.lang;
         let elapsed = job.started.elapsed();
         self.record(&job, &transcript, audio.as_deref());
+        if let Some(reply) = job.text_reply.take() {
+            reply.finish(if matches!(outcome, PasteOutcome::Failed(_)) {
+                Err(ErrorKind::Paste)
+            } else {
+                Ok(transcript.text.clone())
+            });
+        }
         if let Some(reply) = job.reply.take() {
             let _ = reply.send(if matches!(outcome, PasteOutcome::Failed(_)) { Err(ErrorKind::Paste) } else { Ok(()) });
         }
@@ -1013,7 +1281,11 @@ impl<P: Providers> Controller<P> {
             }
         }
         if let Some(error) = transcript.cleanup_error {
-            let message = lang.cleanup_failed(error, matches!(outcome, PasteOutcome::ClipboardOnly));
+            let message = if job.ask {
+                lang.ask_cleanup_failed().into()
+            } else {
+                lang.cleanup_failed(error, matches!(outcome, PasteOutcome::ClipboardOnly))
+            };
             self.show(view(Tone::Warning, message, Some(WARNING_HIDE)));
         }
         self.set_state(DictationState::Idle);
@@ -1025,6 +1297,8 @@ impl<P: Providers> Controller<P> {
             return;
         }
         let entry = NewDictation {
+            mode: if job.ask { "ask" } else { "dictation" },
+            agent: job.ask.then_some(job.settings.config.ask.agent.name()),
             created_at_ms: now_ms(),
             profile_id: &transcript.profile_id,
             language: transcript.language.as_deref(),
@@ -1074,12 +1348,13 @@ impl<P: Providers> Controller<P> {
                 info!(session, "cancelled after the microphone was lost");
                 settings.lang
             }
-            Phase::Transcribing { session, task, job, cancel, progress, cleaning } => {
-                if progress.is_some() {
+            Phase::Transcribing { session, task, job, cancel, progress, cleaning, asking } => {
+                if progress.is_some() || asking {
                     let _ = cancel.send(true);
-                    self.phase = Phase::Transcribing { session, task, job, cancel, progress, cleaning };
+                    self.phase = Phase::Transcribing { session, task, job, cancel, progress, cleaning, asking };
                     return;
                 }
+                let _ = cancel.send(true);
                 task.abort();
                 info!(session, "transcription cancelled");
                 job.settings.lang
@@ -1185,6 +1460,7 @@ impl<P: Providers> Controller<P> {
             match self.phase {
                 Phase::Idle => DictationState::Idle,
                 Phase::Salvaging { .. } => DictationState::Transcribing,
+                Phase::Transcribing { asking: true, .. } => DictationState::Asking,
                 Phase::Transcribing { cleaning: true, .. } => DictationState::Cleaning,
                 Phase::Transcribing { .. } => DictationState::Transcribing,
                 Phase::Pasting { .. } => DictationState::Pasting,
@@ -1307,6 +1583,8 @@ async fn save_transcription(
         };
         let transcript = result.ok();
         let entry = NewDictation {
+            mode: "dictation",
+            agent: None,
             created_at_ms: now_ms(),
             profile_id: transcript.as_ref().map_or(settings.config.active_profile_id.as_str(), |t| &t.profile_id),
             raw_text: transcript.as_ref().map_or("", |t| &t.raw_text),

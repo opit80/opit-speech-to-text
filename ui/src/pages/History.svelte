@@ -279,7 +279,7 @@
           <li class:failed={row.status === "failed"}>
             <div class="metadata muted">
               <time datetime={new Date(row.created_at_ms).toISOString()}>{formatDateTime(row.created_at_ms, app.lang)}</time>
-              <span>{row.profile_id}</span>
+              <span>{row.mode === "ask" ? t("ask.history_agent", { agent: row.agent ?? "" }) : row.profile_id}</span>
               <CleanupMarker status={row.cleanup_status} model={row.cleanup_model} />
               {#if row.language}<span>{t("history.language", { language: row.language.toUpperCase() })}</span>{/if}
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
@@ -293,7 +293,7 @@
               aria-label={t("history.transcript")} onbeforeinput={(event) => event.preventDefault()}>{rawIds.includes(row.id) ? row.raw_text : row.text}</div>
             {#if row.status !== "ok"}<p class="muted">{t(row.status === "empty" ? "dictation.empty" : "dictation.hallucination")}</p>{/if}
             {#if row.raw_text !== row.text}
-              <Button variant="ghost" aria-pressed={rawIds.includes(row.id)} onclick={() => { rawIds = rawIds.includes(row.id) ? rawIds.filter((id) => id !== row.id) : [...rawIds, row.id]; }}>{t(rawIds.includes(row.id) ? "cleanup.final" : "cleanup.raw")}</Button>
+              <Button variant="ghost" aria-pressed={rawIds.includes(row.id)} onclick={() => { rawIds = rawIds.includes(row.id) ? rawIds.filter((id) => id !== row.id) : [...rawIds, row.id]; }}>{t(row.mode === "ask" ? (rawIds.includes(row.id) ? "ask.answer" : "ask.request") : (rawIds.includes(row.id) ? "cleanup.final" : "cleanup.raw"))}</Button>
             {/if}
             {/if}
             <div class="row actions">
@@ -308,7 +308,7 @@
                 <Button variant="ghost" title={t("history.play")} aria-label={t("history.play")}
                   disabled={mutationBusy} onclick={() => void play(row)}><Icon name="play" /></Button>
               {/if}
-              {#if row.status !== "failed"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
+              {#if row.status !== "failed" && row.mode !== "ask"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
                 disabled={mutationBusy || rawIds.includes(row.id)} onpointerdown={(event) => event.preventDefault()}
                 onclick={(event) => addCorrection(row, event.currentTarget)}><Icon name="wand" /></Button>{/if}
               <Button variant="ghost" title={t("common.delete")} aria-label={t("common.delete")} disabled={mutationBusy}

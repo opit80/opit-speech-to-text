@@ -30,6 +30,7 @@ pub enum Command {
     Pause,
     Resume,
     Retry,
+    Ask { text: Option<String> },
     Record { seconds: u32 },
     HistoryList { limit: usize, search: Option<String> },
     HistoryRetry { id: i64 },
@@ -95,6 +96,9 @@ impl Request {
             return Err(Error::new("protocol_version", "Unsupported local control protocol version."));
         }
         let valid = match &self.command {
+            Command::Ask { text } => {
+                text.as_ref().is_none_or(|s| !s.trim().is_empty() && s.len() <= 12 * 1024 && !s.contains('\0'))
+            }
             Command::Record { seconds } => (1..=300).contains(seconds),
             Command::HistoryList { limit, search } => {
                 (1..=1000).contains(limit) && search.as_ref().is_none_or(|s| s.len() <= 1024 && !s.contains('\0'))

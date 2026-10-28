@@ -193,6 +193,13 @@ pub fn strip_answer(answer: &str, input: &str) -> Result<String, CleanupError> {
     Ok(answer.into())
 }
 
+/// Conversation buffers deliberately do not implement Debug.
+#[derive(Clone, Serialize)]
+pub struct ChatMessage {
+    pub role: &'static str,
+    pub content: String,
+}
+
 /// Not Debug: contains a secret and may hold transcript request buffers.
 pub struct CleanupClient {
     client: reqwest::Client,
@@ -223,7 +230,7 @@ impl CleanupClient {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(3))
-            .timeout(Duration::from_secs(u64::from(config.timeout_seconds.clamp(1, 120))))
+            .timeout(Duration::from_secs(u64::from(config.timeout_seconds.clamp(1, 3600))))
             .build()
             .map_err(network_error)?;
         Ok(Self { client, config, key })
@@ -253,6 +260,19 @@ impl CleanupClient {
         if let Some(effort) = self.config.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             body["reasoning_effort"] = effort.into();
         }
+        let answer = self.send_chat(body).await?;
+        strip_answer(&answer, text)
+    }
+
+    /// Shared transport for Ask conversations. Answers are not edited or shortened.
+    pub async fn complete(&self, messages: &[ChatMessage]) -> Result<String, CleanupError> {
+        self.send_chat(serde_json::json!({
+            "model": self.config.model, "temperature": 0, "max_tokens": 4096, "messages": messages,
+        }))
+        .await
+    }
+
+    async fn send_chat(&self, body: serde_json::Value) -> Result<String, CleanupError> {
         let mut response = self.request("chat/completions").json(&body).send().await.map_err(network_error)?;
         match response.status().as_u16() {
             200..=299 => {}
@@ -285,7 +305,11 @@ impl CleanupClient {
         if choice.finish_reason.as_deref().is_some_and(|s| s != "stop") {
             return Err(CleanupError::BadResponse);
         }
-        strip_answer(&choice.message.content, text)
+        let answer = choice.message.content.trim();
+        if answer.is_empty() {
+            return Err(CleanupError::BadResponse);
+        }
+        Ok(answer.into())
     }
 }
 

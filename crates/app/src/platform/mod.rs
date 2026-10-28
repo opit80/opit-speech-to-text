@@ -58,6 +58,7 @@ pub trait Capture: Send {
 // ---------- Hotkey ----------
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HotkeyEvent {
+    Ask,
     Pause,
     /// All combo keys are now held (fires once per press, not on auto-repeat).
     ComboDown,
@@ -87,6 +88,9 @@ pub enum HotkeyError {
 }
 
 pub trait Hotkey: Send + Sync {
+    fn register_ask(&self, _keys: &[String]) -> Result<(), HotkeyError> {
+        Ok(())
+    }
     fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError>;
     /// Installs (or re-targets) the global hook for `keys` (names like "RightCtrl").
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError>;
