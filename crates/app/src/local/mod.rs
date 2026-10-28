@@ -503,9 +503,11 @@ impl LocalService {
             let _ = self.endpoint(&profile).await;
         }
     }
+    /// Called from Tauri `setup` on the main thread, where no Tokio runtime is entered:
+    /// spawn on the Tauri runtime, never with `tokio::spawn`.
     pub fn start_background(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 let Some(service) = weak.upgrade() else {
@@ -519,7 +521,7 @@ impl LocalService {
         });
         if self.settings.current().config.local.preload {
             let service = self.clone();
-            tokio::spawn(async move {
+            tauri::async_runtime::spawn(async move {
                 let profile = service
                     .settings
                     .current()
@@ -677,6 +679,19 @@ mod tests {
         assert!(!alive.load(Ordering::SeqCst));
         assert!(matches!(worker.await.unwrap(), Err(LocalError::Closed)));
         assert!(service.session.lock().unwrap().running.is_none());
+    }
+    /// Regression: `start_background` runs from Tauri `setup` on the main thread, outside any
+    /// Tokio runtime. A plain `#[test]` (no runtime entered) must not panic.
+    #[test]
+    fn start_background_works_without_an_entered_tokio_runtime() {
+        assert!(tokio::runtime::Handle::try_current().is_err(), "the test must run outside a runtime");
+        let dir = tempfile::tempdir().unwrap();
+        let (service, _) = fake_service(dir.path(), "http://127.0.0.1:1".into());
+        let mut config = service.settings.current().config.clone();
+        config.local.preload = true;
+        service.settings.replace(crate::settings::Settings::build(config, None, None).0);
+        service.start_background();
+        service.closed.store(true, Ordering::SeqCst);
     }
     #[tokio::test]
     async fn shared_local_server_preserves_language_without_keys_and_updates_idle_time() {
