@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import { api } from "../api";
   import { app, errorText, saveConfig, t } from "../app.svelte";
-  import { cleanupPreset, cleanupValid } from "../cleanup";
+  import { cleanupPreset, cleanupValid, withLiveStyles } from "../cleanup";
   import { toast } from "../toast.svelte";
   import type { CleanupConfig, CleanupPreset, CleanupTestResult } from "../types";
   import Banner from "./Banner.svelte";
@@ -17,7 +17,6 @@
   // A form draft, never an independent live config. Saving uses the shared serialized chain.
   let draft = $state<CleanupConfig>(untrack(() => structuredClone($state.snapshot(app.config!.cleanup))));
   let presets = $state<CleanupPreset[]>([]);
-  let prompts = $state<Record<"en" | "tr", string> | null>(null);
   let loaded = $state(false);
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -25,14 +24,14 @@
   let storedKey = $state(false);
   let result = $state<CleanupTestResult | null>(null);
   let resultFor = $state("");
-  let promptLanguage = $state<"en" | "tr">(untrack(() => app.lang));
   let disposed = false;
   let keyRequest = 0;
   const valid = $derived(!!draft && cleanupValid(draft));
   const selected = $derived(draft ? cleanupPreset(draft, presets) : "baseten");
   const options = $derived(presets.map((p) => ({ value: p.id, label: p.id === "baseten" ? t("cleanup.baseten") : p.id === "local" ? t("cleanup.local") : p.id === "custom" ? t("cleanup.custom") : p.name })));
   const keyUrl = $derived(presets.find((p) => p.id === selected)?.key_url ?? "");
-  const signature = $derived(JSON.stringify(draft));
+  // The test uses the active style, so switching it hides an earlier result too.
+  const signature = $derived(JSON.stringify([draft, app.config?.cleanup.active_style_id]));
 
   $effect(() => { canNext = loaded && valid && !busy; });
   $effect(() => {
@@ -52,8 +51,7 @@
     error = null;
     try {
       const data = await api.cleanupPresets();
-      const builtins = await api.cleanupPrompts();
-      if (!disposed) { presets = data; prompts = builtins; loaded = true; }
+      if (!disposed) { presets = data; loaded = true; }
     } catch (e) { if (!disposed) error = errorText(e); }
   }
 
@@ -61,7 +59,7 @@
     const preset = presets.find((p) => p.id === id);
     if (!preset || !draft) return;
     // Presets are reactive proxies, which structuredClone rejects; snapshot first.
-    draft = { ...structuredClone($state.snapshot(preset.config)), enabled: draft.enabled, prompt_override: draft.prompt_override };
+    draft = { ...structuredClone($state.snapshot(preset.config)), enabled: draft.enabled };
     keyInput = "";
     error = null;
     result = null;
@@ -84,7 +82,7 @@
     try {
       if (!skip) await storeKey(config);
       if (disposed) return;
-      await saveConfig((c) => { c.cleanup = config; });
+      await saveConfig((c) => { c.cleanup = withLiveStyles(config, c.cleanup); });
       if (!disposed) { draft = config; toast(t("common.saved")); onsaved?.(); }
     } catch (e) { if (!disposed) error = errorText(e); }
     finally { if (!disposed) busy = false; }
@@ -98,9 +96,10 @@
     const config = $state.snapshot(draft);
     try {
       await storeKey(config);
-      if (disposed) return;
-      const answer = await api.testCleanup(config);
-      if (!disposed) { result = answer; resultFor = JSON.stringify(config); }
+      if (disposed || !app.config) return;
+      const live = $state.snapshot(app.config.cleanup);
+      const answer = await api.testCleanup(withLiveStyles(config, live));
+      if (!disposed) { result = answer; resultFor = JSON.stringify([config, live.active_style_id]); }
     } catch (e) { if (!disposed) error = errorText(e); }
     finally { if (!disposed) busy = false; }
   }
@@ -137,20 +136,6 @@
         {#snippet children(id, describedBy)}<input {id} value={draft.reasoning_effort ?? ""} aria-describedby={describedBy}
           onchange={(e) => { if (draft) draft.reasoning_effort = e.currentTarget.value.trim() || null; }} />{/snippet}
       </Field>
-      <details>
-        <summary>{t("cleanup.prompt")}</summary>
-        <div class="stack prompt-fields">
-          <Select label={t("cleanup.prompt_language")} bind:value={promptLanguage}
-            options={[{ value: "tr", label: t("cleanup.turkish") }, { value: "en", label: t("cleanup.other_languages") }]} />
-          <Field label={t("cleanup.builtin_prompt")} info={t("cleanup.language_hint")}>
-            {#snippet children(id, describedBy)}<textarea {id} readonly rows="8" value={prompts?.[promptLanguage] ?? ""} aria-describedby={describedBy}></textarea>{/snippet}
-          </Field>
-          <Field label={t("cleanup.override")} info={t("cleanup.override_hint")}>
-            {#snippet children(id, describedBy)}<textarea {id} rows="5" bind:value={draft.prompt_override} aria-describedby={describedBy}></textarea>{/snippet}
-          </Field>
-          <Button onclick={() => { if (draft) draft.prompt_override = ""; }}>{t("cleanup.restore")}</Button>
-        </div>
-      </details>
     </fieldset>
     {#if !valid}<Banner tone="warning">{t("cleanup.invalid")}</Banner>{/if}
     {#if error}<Banner tone="error">{error}</Banner>{/if}
@@ -170,9 +155,7 @@
 
 <style>
   fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
-  input, textarea { width: 100%; }
-  textarea { resize: vertical; }
-  .prompt-fields { padding-top: var(--space-3); }
+  input { width: 100%; }
   .result { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-3); background: var(--surface-2); }
   .selectable { user-select: text; overflow-wrap: anywhere; white-space: pre-wrap; }
 </style>

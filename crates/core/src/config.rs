@@ -110,6 +110,7 @@ pub struct HotkeyConfig {
     /// Empty disables the optional recording pause shortcut.
     pub pause_keys: Vec<String>,
     pub ask_keys: Vec<String>,
+    pub style_cycle_keys: Vec<String>,
     pub mode: HotkeyMode,
     pub enabled: bool,
 }
@@ -120,6 +121,7 @@ impl Default for HotkeyConfig {
             keys: vec!["RightCtrl".into(), "RightShift".into()],
             pause_keys: Vec::new(),
             ask_keys: Vec::new(),
+            style_cycle_keys: Vec::new(),
             mode: HotkeyMode::Toggle,
             enabled: true,
         }
@@ -319,6 +321,8 @@ impl AppConfig {
 
     /// Repairs values a hand edit or an old version could leave inconsistent.
     pub fn normalize(&mut self) {
+        self.cleanup.normalize_styles();
+        self.normalize_shortcuts();
         self.media.duck_volume_percent = self.media.duck_volume_percent.min(100);
         self.history.max_entries = self.history.max_entries.min(MAX_HISTORY_ENTRIES);
         self.cleanup.timeout_seconds = self.cleanup.timeout_seconds.clamp(1, 120);
@@ -358,6 +362,38 @@ impl AppConfig {
         self.profiles.iter().find(|p| p.id == id)
     }
 
+    /// Startup/hand-edited configs keep the first valid shortcut, clearing later conflicts.
+    /// Interactive saves validate before normalization so mistakes are reported to the user.
+    pub fn normalize_shortcuts(&mut self) {
+        if crate::hotkey::parse_combo(&self.hotkey.keys).is_err() {
+            self.hotkey.keys = HotkeyConfig::default().keys;
+        }
+        let mut accepted = vec![self.hotkey.keys.clone()];
+        for keys in std::iter::once(&mut self.hotkey.pause_keys)
+            .chain(std::iter::once(&mut self.hotkey.ask_keys))
+            .chain(std::iter::once(&mut self.hotkey.style_cycle_keys))
+            .chain(self.cleanup.styles.iter_mut().map(|style| &mut style.hotkey))
+        {
+            if keys.is_empty() {
+                continue;
+            }
+            if accepted.iter().any(|previous| crate::hotkey::validate_shortcuts(previous, keys).is_err()) {
+                keys.clear();
+            } else {
+                accepted.push(keys.clone());
+            }
+        }
+    }
+
+    pub fn shortcuts(&self) -> Vec<&[String]> {
+        std::iter::once(self.hotkey.keys.as_slice())
+            .chain(std::iter::once(self.hotkey.pause_keys.as_slice()))
+            .chain(std::iter::once(self.hotkey.ask_keys.as_slice()))
+            .chain(std::iter::once(self.hotkey.style_cycle_keys.as_slice()))
+            .chain(self.cleanup.styles.iter().map(|style| style.hotkey.as_slice()))
+            .collect()
+    }
+
     pub fn active_profile(&self) -> Option<&Profile> {
         self.profile(&self.active_profile_id)
     }
@@ -381,6 +417,41 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleanup_styles_load_old_configs_and_normalize_shortcut_conflicts() {
+        let old = AppConfig::from_json(r#"{"cleanup":{"enabled":true,"prompt_override":"Legacy"}}"#).unwrap();
+        assert_eq!(old.cleanup.active_style_id, "clean");
+        assert_eq!(old.cleanup.style("clean").unwrap().prompt, "Legacy");
+        assert!(old.cleanup.prompt_override.is_empty());
+        assert!(old.hotkey.style_cycle_keys.is_empty());
+        assert!(old.cleanup.styles.iter().all(|s| s.in_cycle && s.hotkey.is_empty()));
+        assert_eq!(AppConfig::from_json(&old.to_json()).unwrap(), old);
+        let mut c = old;
+        c.hotkey.keys = vec!["F13".into()];
+        c.hotkey.pause_keys = vec!["F14".into()];
+        c.hotkey.ask_keys = vec!["F15".into()];
+        c.hotkey.style_cycle_keys = vec!["F16".into()];
+        c.cleanup.styles[0].hotkey = vec!["F17".into()];
+        for conflict in [
+            vec!["f13".into()],
+            vec!["F14".into(), "LeftCtrl".into()],
+            vec!["F15".into()],
+            vec!["F16".into()],
+            vec!["F17".into()],
+            vec!["Escape".into()],
+            vec!["Unknown".into()],
+        ] {
+            c.cleanup.styles[1].hotkey = conflict;
+            assert!(crate::hotkey::validate_list(&c.shortcuts()).is_err());
+            c.normalize();
+            assert!(c.cleanup.styles[1].hotkey.is_empty());
+        }
+        c.hotkey.style_cycle_keys = vec!["F13".into()];
+        c.normalize();
+        assert!(c.hotkey.style_cycle_keys.is_empty());
+        assert!(crate::hotkey::validate_list(&c.shortcuts()).is_ok());
+    }
 
     #[test]
     fn media_defaults_are_backward_compatible_and_partial_objects_keep_defaults() {

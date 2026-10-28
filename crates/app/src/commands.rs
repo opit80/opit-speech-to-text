@@ -55,6 +55,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         get_config,
         save_config,
         set_active_profile,
+        set_active_style,
+        cleanup_style_defaults,
         profile_presets,
         local_state,
         local_download,
@@ -233,6 +235,18 @@ async fn set_active_profile(app: AppHandle, core: Core<'_>, id: String) -> Resul
     Ok(saved)
 }
 
+#[tauri::command]
+async fn set_active_style(app: AppHandle, core: Core<'_>, id: String) -> Result<AppConfig> {
+    let saved = blocking(core.inner().clone(), move |core| core.set_active_style(&id)).await?;
+    events::config_changed(&app, &saved);
+    Ok(saved)
+}
+
+#[tauri::command]
+fn cleanup_style_defaults() -> Vec<opit_core::cleanup::styles::StyleDefaults> {
+    opit_core::cleanup::styles::defaults()
+}
+
 /// Groq, OpenAI, ElevenLabs, and a blank custom template (the UI fills in id, name, URL and model).
 #[tauri::command]
 fn profile_presets() -> Vec<Profile> {
@@ -284,7 +298,10 @@ struct CleanupTestResult {
 #[tauri::command]
 async fn test_cleanup(core: Core<'_>, config: opit_core::cleanup::CleanupConfig) -> Result<CleanupTestResult> {
     let (client, system, before) = blocking(core.inner().clone(), move |core| core.cleanup_test_client(config)).await?;
-    let after = client.clean(&before, &system).await?;
+    let after = match client {
+        Some(client) => client.clean(&before, &system).await?,
+        None => before.clone(),
+    };
     Ok(CleanupTestResult { before, after })
 }
 
@@ -475,8 +492,11 @@ fn set_hotkey_capture(core: Core<'_>, active: bool) {
 }
 
 #[tauri::command]
-fn validate_hotkey(keys: Vec<String>) -> Result<()> {
-    AppCore::validate_hotkey(&keys)
+fn validate_hotkey(core: Core<'_>, keys: Vec<String>, target: Option<String>, config: Option<AppConfig>) -> Result<()> {
+    match target {
+        Some(target) => core.validate_shortcut(keys, &target, config),
+        None => AppCore::validate_hotkey(&keys),
+    }
 }
 
 #[tauri::command]

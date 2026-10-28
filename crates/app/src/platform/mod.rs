@@ -90,8 +90,10 @@ pub trait Capture: Send {
 }
 
 // ---------- Hotkey ----------
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
+    StyleCycle,
+    Style(String),
     Ask,
     Pause,
     /// All combo keys are now held (fires once per press, not on auto-repeat).
@@ -107,25 +109,11 @@ pub enum HotkeyEvent {
 
 pub type HotkeySink = Arc<dyn Fn(HotkeyEvent) + Send + Sync>;
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum HotkeyError {
-    #[error("unknown key name: {0}")]
-    UnknownKey(String),
-    #[error("the shortcut has no keys")]
-    Empty,
-    #[error("the recording and pause shortcuts overlap")]
-    Collision,
-    #[error("Escape is reserved for cancelling dictation")]
-    PauseEscape,
-    #[error("the keyboard hook could not be installed: {0}")]
-    Install(String),
-}
+pub use opit_core::hotkey::HotkeyError;
 
 pub trait Hotkey: Send + Sync {
-    fn register_ask(&self, _keys: &[String]) -> Result<(), HotkeyError> {
-        Ok(())
-    }
-    fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError>;
+    /// Replace all auxiliary shortcuts atomically; each action fires once on key-down.
+    fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError>;
     /// Installs (or re-targets) the global hook for `keys` (names like "RightCtrl").
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError>;
     /// Paused: no events are delivered.

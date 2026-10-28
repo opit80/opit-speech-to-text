@@ -109,6 +109,16 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 }
             });
         }
+        Some(TrayCommand::Style(id)) => {
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || match core.set_active_style(&id) {
+                Ok(saved) => events::config_changed(&app, &saved),
+                Err(_) => {
+                    warn!("could not switch cleanup style");
+                    refresh(&app);
+                }
+            });
+        }
         Some(TrayCommand::TogglePause) => {
             core.set_hotkey_paused(!core.hotkey_state().paused);
             events::hotkey_state(app, &core.hotkey_state());

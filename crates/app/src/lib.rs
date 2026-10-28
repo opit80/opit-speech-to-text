@@ -239,7 +239,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     let env = Env {
         media,
         settings: settings.clone(),
-        providers: HttpProviders::new(secrets.clone()).with_local(core.local.clone()),
+        providers: Arc::new(HttpProviders::new(secrets.clone()).with_local(core.local.clone())),
         mic: mic.clone(),
         hotkey: hotkey.clone(),
         paster: Arc::new(WinPaster::new()),

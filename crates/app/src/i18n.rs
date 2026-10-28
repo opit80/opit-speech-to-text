@@ -78,7 +78,7 @@ impl Lang {
         }
     }
     pub fn shortcut_collision(self) -> &'static str {
-        self.pick("The shortcuts overlap", "Kayıt ve duraklatma kısayolları çakışıyor")
+        self.pick("The shortcuts overlap", "Kısayollar çakışıyor")
     }
 
     pub fn pause_escape_reserved(self) -> &'static str {
@@ -255,6 +255,19 @@ impl Lang {
         self.pick("Profile", "Profil")
     }
 
+    pub fn tray_style(self) -> &'static str {
+        self.pick("Style", "Stil")
+    }
+
+    pub fn style_name(self, style: &opit_core::cleanup::CleanupStyle) -> String {
+        use opit_core::cleanup::styles::builtin_name;
+        if builtin_name(&style.id, "en") == Some(style.name.as_str()) {
+            builtin_name(&style.id, if self == Self::Tr { "tr" } else { "en" }).unwrap().into()
+        } else {
+            style.name.clone()
+        }
+    }
+
     pub fn tray_pause_hotkey(self) -> &'static str {
         self.pick("Pause shortcut", "Kısayolu duraklat")
     }
@@ -329,9 +342,15 @@ mod tests {
             ("hotkey_failed", lang.hotkey_failed().into()),
             ("tray_open", lang.tray_open().into()),
             ("tray_profile", lang.tray_profile().into()),
+            ("tray_style", lang.tray_style().into()),
             ("tray_pause_hotkey", lang.tray_pause_hotkey().into()),
             ("tray_quit", lang.tray_quit().into()),
         ];
+        for mut style in opit_core::cleanup::styles::builtin_styles() {
+            out.push(("style_name", lang.style_name(&style)));
+            style.name = "My style".into();
+            out.push(("style_name", lang.style_name(&style)));
+        }
         for flag in [false, true] {
             out.push(("tray_recording_pause", lang.tray_recording_pause(flag).into()));
             out.push(("paste_failed", lang.paste_failed(flag).into()));

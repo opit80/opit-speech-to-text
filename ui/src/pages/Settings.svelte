@@ -1,6 +1,7 @@
 <script lang="ts">
   import AskSettings from "../lib/components/AskSettings.svelte";
   import CleanupSettings from "../lib/components/CleanupSettings.svelte";
+  import CleanupStyles from "../lib/components/CleanupStyles.svelte";
   import { untrack } from "svelte";
   import { api } from "../lib/api";
   import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
@@ -298,12 +299,16 @@
       <section class="card stack" aria-labelledby="settings-shortcut">
         <h2 id="settings-shortcut">{t("settings.shortcut")}</h2>
         {#if app.hotkey.error}<Banner tone="error">{t("notice.hotkey_failed", { reason: app.hotkey.error })}</Banner>{/if}
-        <HotkeyInput keys={config.hotkey.keys}
+        <HotkeyInput keys={config.hotkey.keys} target="dictation"
           onchange={(keys) => save("hotkey_keys", (c) => { c.hotkey.keys = keys; })} />
         {@render fieldError("hotkey_keys")}
-        <HotkeyInput keys={config.hotkey.pause_keys} optional label={t("settings.pause_shortcut")} info={t("settings.pause_shortcut_note")}
+        <HotkeyInput keys={config.hotkey.pause_keys} optional target="pause" label={t("settings.pause_shortcut")} info={t("settings.pause_shortcut_note")}
           onchange={(keys) => save("pause_keys", (c) => { c.hotkey.pause_keys = keys; })} />
         {@render fieldError("pause_keys")}
+        <HotkeyInput keys={config.hotkey.style_cycle_keys} optional target="style_cycle" label={t("settings.style_cycle_shortcut")}
+          info={t("settings.style_cycle_shortcut_note")}
+          onchange={(keys) => save("style_cycle_keys", (c) => { c.hotkey.style_cycle_keys = keys; })} />
+        {@render fieldError("style_cycle_keys")}
         <Select label={t("settings.mode")} options={modeOptions} value={view.mode}
           info={config.hotkey.keys.includes("Escape") ? t("guide.cancel_from_home") : config.hotkey.mode === "toggle" ? t("settings.mode_toggle_hint") : undefined}
           onchange={(v) => void save("mode", (c) => { c.hotkey.mode = v as HotkeyMode; })} />
@@ -420,7 +425,7 @@
 
       <details class="card settings-group">
         <summary>{t("cleanup.title")}</summary>
-        <div class="stack group-body"><CleanupSettings /></div>
+        <div class="stack group-body"><CleanupSettings /><CleanupStyles /></div>
       </details>
 
       <details class="card settings-group" open={installing !== null || !!errors.update_check}>

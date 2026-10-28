@@ -17,8 +17,8 @@ use tracing::{info, warn};
 use crate::controller::{ControllerHandle, DictationState, DictationStatus, ErrorKind};
 use crate::history_service::HistoryService;
 use crate::platform::{
-    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, MediaControl, Microphone, Overlay, OverlayView,
-    SecretError, SecretStore, Tone,
+    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, HotkeyEvent, MediaControl, Microphone, Overlay,
+    OverlayView, SecretError, SecretStore, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::{self, Paths, StartupNotice};
@@ -248,7 +248,7 @@ impl AppCore {
     pub fn save_config(&self, config: AppConfig) -> Result<AppConfig, CommandError> {
         crate::local::validate_config(&config.local)?;
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
-        self.save_locked(config)
+        self.save_locked(config, true)
     }
 
     /// Read-modify-write of the current config, all under `config_lock`, so a concurrent
@@ -260,37 +260,27 @@ impl AppCore {
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut config = self.config();
         change(&mut config)?;
-        self.save_locked(config)
+        self.save_locked(config, true)
     }
 
     /// Caller holds `config_lock`.
-    fn save_locked(&self, mut config: AppConfig) -> Result<AppConfig, CommandError> {
+    fn save_locked(&self, mut config: AppConfig, notify_style: bool) -> Result<AppConfig, CommandError> {
+        crate::platform::keys::validate_list(&config.shortcuts()).map_err(|err| self.shortcut_error(err))?;
         config.normalize();
         if !config.ask.valid() || crate::ask::resolve_directory(&config.ask.working_dir).is_err() {
             return Err(CommandError::new("invalid_input", self.settings.current().lang.ask_invalid()));
         }
-        crate::platform::keys::validate_all_shortcuts(
-            &config.hotkey.keys,
-            &config.hotkey.pause_keys,
-            &config.hotkey.ask_keys,
-        )
-        .map_err(|err| {
-            let lang = self.settings.current().lang;
-            let message = match err {
-                HotkeyError::Collision => lang.shortcut_collision().into(),
-                HotkeyError::PauseEscape => lang.pause_escape_reserved().into(),
-                other => other.to_string(),
-            };
-            CommandError::new("invalid_input", message)
-        })?;
         if self.bad_config_kept.load(Ordering::SeqCst) {
             self.move_bad_config_aside()?;
         }
         let old = self.config();
         config.save(&self.paths.config)?;
         self.rebuild(config.clone());
-        if old.hotkey != config.hotkey {
+        if old.hotkey != config.hotkey || old.cleanup.styles != config.cleanup.styles {
             self.apply_hotkey(&config);
+        }
+        if notify_style && old.cleanup.active_style_id != config.cleanup.active_style_id {
+            self.controller.send(crate::controller::Msg::StyleChanged(config.cleanup.active_style()));
         }
         if old.ui.overlay_position != config.ui.overlay_position {
             self.platform.overlay.set_position(config.ui.overlay_position);
@@ -331,20 +321,78 @@ impl AppCore {
         })
     }
 
+    pub fn set_active_style(&self, id: &str) -> Result<AppConfig, CommandError> {
+        self.persist_active_style(id, true)
+    }
+
+    /// The controller applies its own notification after the blocking save completes.
+    pub fn persist_active_style(&self, id: &str, notify: bool) -> Result<AppConfig, CommandError> {
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut config = self.config();
+        if config.cleanup.style(id).is_none() {
+            return Err(CommandError::new("invalid_input", "unknown cleanup style"));
+        }
+        config.cleanup.active_style_id = id.into();
+        let saved = self.save_locked(config, false)?;
+        if notify {
+            self.controller.send(crate::controller::Msg::StyleChanged(saved.cleanup.active_style()));
+        }
+        Ok(saved)
+    }
+
+    fn shortcut_error(&self, err: HotkeyError) -> CommandError {
+        let lang = self.settings.current().lang;
+        let message = match err {
+            HotkeyError::Collision => lang.shortcut_collision().into(),
+            HotkeyError::PauseEscape => lang.pause_escape_reserved().into(),
+            other => other.to_string(),
+        };
+        CommandError::new("invalid_input", message)
+    }
+
+    pub fn validate_shortcut(
+        &self,
+        keys: Vec<String>,
+        target: &str,
+        draft: Option<AppConfig>,
+    ) -> Result<(), CommandError> {
+        let mut config = draft.unwrap_or_else(|| self.config());
+        let slot = match target {
+            "dictation" => &mut config.hotkey.keys,
+            "pause" => &mut config.hotkey.pause_keys,
+            "ask" => &mut config.hotkey.ask_keys,
+            "style_cycle" => &mut config.hotkey.style_cycle_keys,
+            _ => {
+                let id = target
+                    .strip_prefix("style:")
+                    .ok_or_else(|| CommandError::new("invalid_input", "unknown shortcut target"))?;
+                &mut config
+                    .cleanup
+                    .styles
+                    .iter_mut()
+                    .find(|s| s.id == id)
+                    .ok_or_else(|| CommandError::new("invalid_input", "unknown cleanup style"))?
+                    .hotkey
+            }
+        };
+        *slot = keys;
+        crate::platform::keys::validate_list(&config.shortcuts()).map_err(|err| self.shortcut_error(err))
+    }
+
     pub fn system_locale(&self) -> Option<&str> {
         self.system_locale.as_deref()
     }
 
     /// (Re-)installs the global hook for the configured keys.
     pub fn apply_hotkey(&self, config: &AppConfig) {
-        let result = crate::platform::keys::validate_all_shortcuts(
-            &config.hotkey.keys,
-            &config.hotkey.pause_keys,
-            &config.hotkey.ask_keys,
-        )
-        .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
-        .and_then(|()| self.platform.hotkey.register_pause(&config.hotkey.pause_keys))
-        .and_then(|()| self.platform.hotkey.register_ask(&config.hotkey.ask_keys));
+        let shortcuts = std::iter::once((HotkeyEvent::Pause, config.hotkey.pause_keys.clone()))
+            .chain(std::iter::once((HotkeyEvent::Ask, config.hotkey.ask_keys.clone())))
+            .chain(std::iter::once((HotkeyEvent::StyleCycle, config.hotkey.style_cycle_keys.clone())))
+            .chain(config.cleanup.styles.iter().map(|s| (HotkeyEvent::Style(s.id.clone()), s.hotkey.clone())))
+            .collect::<Vec<_>>();
+        let result = crate::platform::keys::validate_list(&config.shortcuts())
+            .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
+            .and_then(|()| self.platform.hotkey.register_shortcuts(&shortcuts));
         let error = result.err().map(|err: HotkeyError| {
             warn!(error = %err, "global shortcut unavailable");
             err.to_string()
@@ -521,11 +569,14 @@ impl AppCore {
     /// Resolve credentials and snapshot glossary on a blocking worker before the test request.
     pub fn cleanup_test_client(
         &self,
-        config: opit_core::cleanup::CleanupConfig,
-    ) -> Result<(opit_core::cleanup::CleanupClient, String, String), CommandError> {
+        mut config: opit_core::cleanup::CleanupConfig,
+    ) -> Result<(Option<opit_core::cleanup::CleanupClient>, String, String), CommandError> {
         use opit_core::cleanup::{CleanupClient, CleanupError, system_prompt};
+        config.normalize_styles();
         let settings = self.settings.current();
+        let raw = config.active_style_id == "raw";
         let key = match &config.api_key_ref {
+            _ if raw => None,
             Some(key_ref) => {
                 self.platform.secrets.get(key_ref).map_err(|_| CommandError::from(CleanupError::MissingKey))?
             }
@@ -538,7 +589,8 @@ impl AppCore {
         } else {
             "um today today we have a meeting it starts at three"
         };
-        Ok((CleanupClient::new(config, key)?, system, sample.into()))
+        let client = if raw { None } else { Some(CleanupClient::new(config, key)?) };
+        Ok((client, system, sample.into()))
     }
 
     // ----- rules -----
@@ -1137,7 +1189,7 @@ mod tests {
         let mut config = f.core.config();
         config.hotkey.pause_keys = vec!["F14".into()];
         let saved = f.core.save_config(config).unwrap();
-        assert_eq!(f.hotkey.pause_registered.lock().unwrap().last().unwrap(), &["F14"]);
+        assert!(f.hotkey.shortcuts.lock().unwrap().contains(&(HotkeyEvent::Pause, vec!["F14".into()])));
         let before = std::fs::read(&f.core.paths.config).unwrap();
         let mut invalid = saved.clone();
         invalid.hotkey.pause_keys = invalid.hotkey.keys.clone();
@@ -1154,6 +1206,61 @@ mod tests {
         assert_eq!(f.core.config().active_profile_id, "openai");
         let on_disk = AppConfig::load(&f.core.paths.config).unwrap();
         assert_eq!(on_disk.active_profile_id, "openai");
+    }
+
+    #[test]
+    fn style_switches_persist_without_losing_other_settings_and_reject_unknown_ids() {
+        let f = fixture();
+        f.core
+            .update_config(|c| {
+                c.paste.trailing_space = false;
+                Ok(())
+            })
+            .unwrap();
+        let saved = f.core.set_active_style("formal").unwrap();
+        assert_eq!(saved.cleanup.active_style_id, "formal");
+        assert!(!saved.paste.trailing_space);
+        assert_eq!(AppConfig::load(&f.core.paths.config).unwrap(), saved);
+        assert_eq!(f.core.set_active_style("missing").unwrap_err().code, "invalid_input");
+        assert_eq!(f.core.config(), saved);
+        assert_eq!(AppConfig::load(&f.core.paths.config).unwrap(), saved);
+    }
+
+    #[test]
+    fn style_shortcut_edits_register_and_reject_conflicts_before_writing() {
+        let f = fixture();
+        let mut config = f.core.config();
+        config.hotkey.style_cycle_keys = vec!["F16".into()];
+        config.cleanup.styles.iter_mut().find(|s| s.id == "formal").unwrap().hotkey = vec!["F17".into()];
+        let saved = f.core.save_config(config).unwrap();
+        let shortcuts = f.hotkey.shortcuts.lock().unwrap().clone();
+        assert!(shortcuts.contains(&(HotkeyEvent::StyleCycle, vec!["F16".into()])));
+        assert!(shortcuts.contains(&(HotkeyEvent::Style("formal".into()), vec!["F17".into()])));
+        for target in ["dictation", "pause", "ask", "style_cycle", "style:clean"] {
+            assert_eq!(f.core.validate_shortcut(vec!["F17".into()], target, None).unwrap_err().code, "invalid_input");
+        }
+        assert!(f.core.validate_shortcut(vec!["F17".into()], "style:formal", None).is_ok());
+        assert!(f.core.validate_shortcut(vec![], "style:formal", None).is_ok());
+        assert!(f.core.validate_shortcut(vec![], "dictation", None).is_err());
+        assert!(f.core.validate_shortcut(vec!["F18".into()], "style:unknown", None).is_err());
+        let mut conflict = saved.clone();
+        conflict.cleanup.styles[0].hotkey = vec!["F16".into()];
+        assert_eq!(f.core.save_config(conflict).unwrap_err().code, "invalid_input");
+        assert_eq!(AppConfig::load(&f.core.paths.config).unwrap(), saved);
+        let mut removed = saved.clone();
+        removed.hotkey.style_cycle_keys.clear();
+        f.core.save_config(removed).unwrap();
+        assert!(f.core.validate_shortcut(vec!["F16".into()], "style:clean", None).is_ok());
+        assert!(f.core.validate_shortcut(vec!["F16".into()], "style:clean", Some(saved)).is_err());
+    }
+
+    #[test]
+    fn testing_raw_style_does_not_read_credentials_or_create_a_client() {
+        let f = fixture();
+        let mut config = f.core.config().cleanup;
+        config.active_style_id = "raw".into();
+        let (client, _, _) = f.core.cleanup_test_client(config).unwrap();
+        assert!(client.is_none());
     }
 
     #[test]
@@ -1260,6 +1367,7 @@ mod tests {
             language: None,
             cleanup_status: None,
             cleanup_model: None,
+            cleanup_style_id: None,
         };
         // Row with an audio file inside paths.audio.
         let inside = history.store().insert(&entry("a")).unwrap();
@@ -1309,6 +1417,7 @@ mod tests {
             language: None,
             cleanup_status: None,
             cleanup_model: None,
+            cleanup_style_id: None,
         };
         let audio = opit_core::pipeline::PreparedAudio { samples: vec![0.1; 16_000], audio_ms: 1000, speech_ms: 1000 };
         let id = history.record(&entry, Some(&audio), 1000).unwrap();
@@ -1387,6 +1496,7 @@ mod tests {
                 language: None,
                 cleanup_status: None,
                 cleanup_model: None,
+                cleanup_style_id: None,
             };
             history.record(&entry, None, 1000).unwrap();
         }

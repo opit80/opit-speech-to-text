@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use opit_core::audio::Recording;
 use opit_core::audio::encode::EncodeError;
-use opit_core::cleanup::{self, CleanupClient, CleanupConfig, CleanupError};
+use opit_core::cleanup::{self, CleanupClient, CleanupConfig, CleanupError, CleanupStyle};
 use opit_core::config::{HotkeyMode, PasteConfig};
 use opit_core::history::NewDictation;
 use opit_core::pipeline::{self, PipelineContext, PipelineError, PreparedAudio, Transcript, TranscriptStatus};
@@ -90,11 +90,13 @@ pub trait UiEvents: Send + Sync {
     fn status_changed(&self, status: &DictationStatus);
     fn history_added(&self, id: i64);
     fn open_settings(&self);
+    /// Called on a blocking worker, serialized with controller input.
+    fn save_style(&self, id: &str) -> Option<CleanupStyle>;
 }
 
 pub struct Env<P: Providers> {
     pub settings: SettingsHandle,
-    pub providers: P,
+    pub providers: Arc<P>,
     pub mic: Arc<dyn Microphone>,
     pub media: Arc<dyn MediaControl>,
     pub hotkey: Arc<dyn Hotkey>,
@@ -110,6 +112,7 @@ pub struct Env<P: Providers> {
 /// Controller input. Deliberately not `Debug`: `Transcribed` carries transcript text,
 /// which must never reach a log line.
 pub enum Msg {
+    StyleChanged(CleanupStyle),
     Ask {
         text: Option<String>,
         reply: Option<oneshot::Sender<Result<String, ErrorKind>>>,
@@ -387,7 +390,6 @@ impl ControllerHandle {
 }
 
 struct Clients<C> {
-    cleanup: Option<Result<Arc<CleanupClient>, CleanupError>>,
     primary: C,
     fallback: Option<C>,
 }
@@ -398,6 +400,7 @@ struct Job {
     text_reply: Option<TextReply>,
     settings: Arc<Settings>,
     paste: PasteConfig,
+    cleanup_style: CleanupStyle,
     /// When the user stopped recording (or pressed "Try again"); latency is measured from here.
     started: Instant,
     auto_paste: bool,
@@ -419,6 +422,7 @@ struct ActiveRecording<C> {
     media: MediaGuard,
     settings: Arc<Settings>,
     paste: PasteConfig,
+    cleanup_style: CleanupStyle,
     clients: Clients<C>,
     limit: AbortHandle,
     remaining: Duration,
@@ -440,6 +444,11 @@ struct Pending<C> {
 /// later without letting config changes affect recordings or queued jobs already in progress.
 fn effective_paste(settings: &Settings) -> PasteConfig {
     settings.config.paste.clone()
+}
+
+/// Foreground-app overrides can resolve the recording's style at this same boundary.
+fn effective_style(settings: &Settings) -> CleanupStyle {
+    settings.config.cleanup.active_style()
 }
 
 enum Phase {
@@ -496,13 +505,18 @@ impl<P: Providers> Controller<P> {
                 self.set_state(DictationState::Idle);
                 break;
             }
-            self.handle(msg);
+            match msg {
+                Msg::Hotkey(HotkeyEvent::StyleCycle) => self.select_style(None).await,
+                Msg::Hotkey(HotkeyEvent::Style(id)) => self.select_style(Some(id)).await,
+                msg => self.handle(msg),
+            }
             self.pump();
         }
     }
 
     fn handle(&mut self, msg: Msg) {
         match msg {
+            Msg::StyleChanged(style) => self.style_changed(style),
             Msg::TestAsk { config, reply } => {
                 let before = self.session;
                 self.ask(Some(opit_core::ask::TEST_REQUEST.into()), Some(reply));
@@ -710,6 +724,7 @@ impl<P: Providers> Controller<P> {
                     ask_test: false,
                     text_reply: reply,
                     paste: effective_paste(&settings),
+                    cleanup_style: effective_style(&settings),
                     settings,
                     started: Instant::now(),
                     auto_paste: self.env.paster.can_auto_paste(),
@@ -765,6 +780,32 @@ impl<P: Providers> Controller<P> {
         }
     }
 
+    async fn select_style(&mut self, id: Option<String>) {
+        let settings = self.env.settings.current();
+        let config = &settings.config.cleanup;
+        let style = match id {
+            Some(id) => config.style(&id).cloned(),
+            None => config
+                .next_style(self.recording.as_ref().map_or(config.active_style_id.as_str(), |r| &r.cleanup_style.id)),
+        };
+        let Some(style) = style else { return };
+        let events = self.env.events.clone();
+        let saved = tokio::task::spawn_blocking(move || events.save_style(&style.id)).await;
+        if let Ok(Some(style)) = saved {
+            self.style_changed(style);
+        }
+    }
+
+    fn style_changed(&mut self, style: CleanupStyle) {
+        if let Some(recording) = self.recording.as_mut() {
+            recording.cleanup_style = style;
+            self.show_recording();
+        } else {
+            let lang = self.env.settings.current().lang;
+            self.show(view(Tone::Neutral, lang.style_name(&style), Some(Duration::from_millis(1500))));
+        }
+    }
+
     fn clients(&self, settings: &Settings) -> Result<Clients<P::Client>, SetupError> {
         let config = &settings.config;
         let profile = config.active_profile().ok_or_else(|| SetupError::Client("no active profile".into()))?;
@@ -776,10 +817,7 @@ impl<P: Providers> Controller<P> {
                 None
             }
         });
-        let uses_cleanup = profile.apply_cleanup || config.fallback_for(profile).is_some_and(|p| p.apply_cleanup);
-        let cleanup = ((config.cleanup.enabled && uses_cleanup) || config.ask.cleanup_request)
-            .then(|| self.env.providers.cleanup_client(&config.cleanup));
-        Ok(Clients { primary, fallback, cleanup })
+        Ok(Clients { primary, fallback })
     }
 
     /// True (and says so on the overlay) while an update is installing.
@@ -829,10 +867,20 @@ impl<P: Providers> Controller<P> {
             warn!(device = %started.device, "configured microphone unavailable; using the default device");
         }
         self.env.providers.warm_up(&clients.primary);
-        if let Some(Ok(client)) = &clients.cleanup {
-            let client = client.clone();
+        let cleanup_config = &settings.config.cleanup;
+        let uses_cleanup = settings.config.active_profile().is_some_and(|p| p.apply_cleanup)
+            || settings
+                .config
+                .active_profile()
+                .and_then(|p| settings.config.fallback_for(p))
+                .is_some_and(|p| p.apply_cleanup);
+        if cleanup_config.enabled && uses_cleanup && cleanup_config.active_style_id != "raw" {
+            let config = cleanup_config.for_style(&effective_style(&settings));
+            let providers = self.env.providers.clone();
             tokio::spawn(async move {
-                client.warm_up().await;
+                if let Ok(Ok(client)) = tokio::task::spawn_blocking(move || providers.cleanup_client(&config)).await {
+                    client.warm_up().await;
+                }
             });
         }
 
@@ -850,6 +898,7 @@ impl<P: Providers> Controller<P> {
             session,
             capture: started.capture,
             paste: effective_paste(&settings),
+            cleanup_style: effective_style(&settings),
             settings,
             clients,
             limit,
@@ -876,6 +925,7 @@ impl<P: Providers> Controller<P> {
                 ask: r.ask,
                 ask_test: false,
                 paste: r.paste,
+                cleanup_style: r.cleanup_style,
                 settings: r.settings,
                 started: Instant::now(),
                 auto_paste,
@@ -914,6 +964,7 @@ impl<P: Providers> Controller<P> {
             ask_test: false,
             text_reply: None,
             paste: effective_paste(&settings),
+            cleanup_style: effective_style(&settings),
             settings,
             started: Instant::now(),
             auto_paste: self.env.paster.can_auto_paste(),
@@ -935,6 +986,8 @@ impl<P: Providers> Controller<P> {
         let tx = self.tx.clone();
         let retry_delay = self.env.retry_delay;
         let task_settings = settings.clone();
+        let style = job.cleanup_style.clone();
+        let providers = self.env.providers.clone();
         let worker_tx = tx.clone();
         let history = self.env.history.clone();
         let history_id = job.history_id;
@@ -996,7 +1049,12 @@ impl<P: Providers> Controller<P> {
                             .iter()
                             .find(|p| p.id == transcript.profile_id)
                             .unwrap_or_else(|| clients.primary.profile());
-                        let mut cleanup_config = task_settings.config.cleanup.clone();
+                        let selected = if is_ask {
+                            task_settings.config.cleanup.style("clean").cloned().unwrap_or_else(|| style.clone())
+                        } else {
+                            style.clone()
+                        };
+                        let mut cleanup_config = task_settings.config.cleanup.for_style(&selected);
                         if is_ask {
                             cleanup_config.enabled = true;
                         }
@@ -1018,11 +1076,12 @@ impl<P: Providers> Controller<P> {
                                 &task_settings.config.rules.prompt_context,
                             );
                             transcript.cleanup_model = Some(config.model.clone());
-                            let client = match &clients.cleanup {
-                                Some(Ok(client)) => Ok(client.as_ref()),
-                                Some(Err(error)) => Err(*error),
-                                None => Err(CleanupError::MissingKey),
-                            };
+                            let provider = providers.clone();
+                            let client_config = config.clone();
+                            let client = tokio::task::spawn_blocking(move || provider.cleanup_client(&client_config))
+                                .await
+                                .unwrap_or(Err(CleanupError::Rejected));
+                            let client = client.as_ref().map(Arc::as_ref).map_err(|error| *error);
                             cleanup::apply(transcript, client, &system, &task_settings.rules, profile.apply_rules)
                                 .await;
                         }
@@ -1072,6 +1131,7 @@ impl<P: Providers> Controller<P> {
                     audio.clone(),
                     result.clone(),
                     started.elapsed(),
+                    style.id.clone(),
                 )
                 .await;
                 match saved {
@@ -1124,6 +1184,7 @@ impl<P: Providers> Controller<P> {
                 ask_test: false,
                 text_reply: None,
                 paste: effective_paste(&settings),
+                cleanup_style: effective_style(&settings),
                 settings,
                 started: Instant::now(),
                 auto_paste: false,
@@ -1183,6 +1244,7 @@ impl<P: Providers> Controller<P> {
                         ask_test: false,
                         text_reply: None,
                         paste: r.paste,
+                        cleanup_style: r.cleanup_style,
                         settings: r.settings,
                         started: Instant::now(),
                         auto_paste: false,
@@ -1387,6 +1449,7 @@ impl<P: Providers> Controller<P> {
             language: transcript.language.as_deref(),
             cleanup_status: transcript.cleanup_status,
             cleanup_model: transcript.cleanup_model.as_deref(),
+            cleanup_style_id: (!job.ask).then_some(job.cleanup_style.id.as_str()),
             raw_text: &transcript.raw_text,
             text: &transcript.text,
             status: transcript.status,
@@ -1572,7 +1635,8 @@ impl<P: Providers> Controller<P> {
             let label = if r.paused { r.settings.lang.recording_paused() } else { r.label };
             let max = Duration::from_secs(u64::from(r.settings.config.recording.max_seconds));
             let remaining = if r.paused { r.remaining } else { r.remaining.saturating_sub(r.resumed_at.elapsed()) };
-            let mut view = listening(&r.settings.lang.with_waiting(label, self.waiting.len()), r.level);
+            let label = format!("{} - {}", label, r.settings.lang.style_name(&r.cleanup_style));
+            let mut view = listening(&r.settings.lang.with_waiting(&label, self.waiting.len()), r.level);
             view.recording = Some(RecordingTiming {
                 session: r.session,
                 elapsed: max.saturating_sub(remaining),
@@ -1657,6 +1721,7 @@ async fn save_transcription(
     audio: Arc<PreparedAudio>,
     result: Result<Transcript, PipelineError>,
     elapsed: Duration,
+    style_id: String,
 ) -> Result<i64, String> {
     tokio::task::spawn_blocking(move || {
         let failure_code = match &result {
@@ -1680,6 +1745,7 @@ async fn save_transcription(
             language: transcript.as_ref().and_then(|t| t.language.as_deref()),
             cleanup_status: transcript.as_ref().and_then(|t| t.cleanup_status),
             cleanup_model: transcript.as_ref().and_then(|t| t.cleanup_model.as_deref()),
+            cleanup_style_id: Some(&style_id),
         };
         match history_id {
             Some(id) => {

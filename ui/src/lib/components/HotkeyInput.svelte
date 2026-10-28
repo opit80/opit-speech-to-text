@@ -4,6 +4,7 @@
   import { app, errorText, t } from "../app.svelte";
   import { ComboRecorder, comboProblem, formatCombo, keyNameFromCode, SELECTABLE_KEYS, type ComboProblem } from "../hotkey";
   import type { MessageKey } from "../i18n";
+  import type { AppConfig, HotkeyTarget } from "../types";
   import Button from "./Button.svelte";
   import Field from "./Field.svelte";
   import InfoTip from "./InfoTip.svelte";
@@ -15,9 +16,15 @@
     /** Tooltip text on the label; the main shortcut's note by default. */
     info?: string;
     optional?: boolean;
+    /** Also checks conflicts with the other shortcuts (against `config`, else the saved settings). */
+    target?: HotkeyTarget;
+    /** An unsaved config draft to check conflicts against. */
+    config?: AppConfig;
     onchange: (keys: string[]) => void | Promise<void>;
   }
-  let { keys, onchange, label, info, optional = false }: Props = $props();
+  let { keys, onchange, label, info, optional = false, target, config }: Props = $props();
+
+  const validate = (combo: string[]) => api.validateHotkey(combo, target, config ? $state.snapshot(config) as AppConfig : undefined);
 
   const DEFAULT_KEYS = ["RightCtrl", "RightShift"];
   const PROBLEM_KEYS: Record<ComboProblem, MessageKey> = {
@@ -89,7 +96,7 @@
     error = null;
     checking = true;
     try {
-      await api.validateHotkey(combo);
+      await validate(combo);
     } catch (e) {
       if (current === session && !disposed) {
         error = errorText(e);
@@ -140,7 +147,7 @@
     error = null;
     checking = true;
     const combo = selectedKeys.length ? [...selectedKeys] : [chosenKey];
-    try { await api.validateHotkey(combo); if (!disposed) await apply(combo); }
+    try { await validate(combo); if (!disposed) await apply(combo); }
     catch (e) { if (!disposed) error = errorText(e); }
     finally { if (!disposed) checking = false; }
   }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import CleanupMarker from "../lib/components/CleanupMarker.svelte";
   import { api } from "../lib/api";
-  import { app, errorText, t } from "../lib/app.svelte";
+  import { app, errorText, loadStyleDefaults, t } from "../lib/app.svelte";
   import { onHistoryAdded } from "../lib/events";
   import { formatClock, formatDateTime, formatSeconds } from "../lib/format";
   import { expandToWords } from "../lib/selection";
@@ -85,6 +85,9 @@
     const timer = setTimeout(() => void load(search, epoch, !search), 250);
     return () => clearTimeout(timer);
   });
+
+  // Localized names of built-in cleanup styles; rows show the stored name until they arrive.
+  $effect(() => { loadStyleDefaults().catch(() => {}); });
 
   $effect(() => {
     let unlisten: (() => void) | undefined;
@@ -287,7 +290,7 @@
             <div class="metadata muted">
               <time datetime={new Date(row.created_at_ms).toISOString()}>{formatDateTime(row.created_at_ms, app.lang)}</time>
               <span>{row.mode === "ask" ? t("ask.history_agent", { agent: row.agent ?? "" }) : row.profile_id}</span>
-              <CleanupMarker status={row.cleanup_status} model={row.cleanup_model} />
+              <CleanupMarker status={row.cleanup_status} model={row.cleanup_model} styleId={row.cleanup_style_id} />
               {#if row.language}<span>{t("history.language", { language: row.language.toUpperCase() })}</span>{/if}
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
               <span>{t("history.audio_length", { duration: formatClock(row.audio_ms) })}</span>

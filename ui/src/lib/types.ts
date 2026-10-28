@@ -99,7 +99,15 @@ export interface AppConfig {
   ui_language: string | null;
   active_profile_id: string;
   profiles: Profile[];
-  hotkey: { keys: string[]; pause_keys: string[]; ask_keys: string[]; mode: HotkeyMode; enabled: boolean };
+  hotkey: {
+    keys: string[];
+    pause_keys: string[];
+    ask_keys: string[];
+    /** Cycles through the cleanup styles with `in_cycle`; empty disables it. */
+    style_cycle_keys: string[];
+    mode: HotkeyMode;
+    enabled: boolean;
+  };
   recording: {
     microphone: string | null;
     max_seconds: number;
@@ -141,6 +149,8 @@ export interface Dictation {
   profile_id: string;
   cleanup_status: "ok" | "failed" | "skipped" | null;
   cleanup_model: string | null;
+  /** The cleanup style chosen for the dictation; null for Ask and older rows. May name a deleted style. */
+  cleanup_style_id: string | null;
   raw_text: string;
   text: string;
   status: TranscriptStatus;
@@ -255,14 +265,44 @@ export type MicTestEvent = { kind: "level"; value: number } | { kind: "failed"; 
 /** Must match `PROMPT_TOKEN_BUDGET` in crates/core/src/rules/prompt.rs. */
 export const PROMPT_TOKEN_BUDGET = 224;
 
+export type BuiltinStyleId = "raw" | "clean" | "formal" | "casual" | "prompt";
+
+/** A cleanup style (crates/core/src/cleanup/styles.rs `CleanupStyle`). */
+export interface CleanupStyle {
+  /** A built-in id, or `custom-` + ASCII `[a-z0-9-]` (at most 48 characters in total). */
+  id: string;
+  /** Unchanged built-ins store the English default name; that name is shown localized. */
+  name: string;
+  builtin: boolean;
+  /** "" selects the built-in default for the dictation's language. */
+  prompt: string;
+  /** null inherits `cleanup.model`. */
+  model: string | null;
+  in_cycle: boolean;
+  hotkey: string[];
+}
+
+/** `cleanup_style_defaults`: the five built-ins in their fixed order. */
+export interface StyleDefaults {
+  id: BuiltinStyleId;
+  names: Record<Lang, string>;
+  prompts: Record<Lang, string>;
+}
+
+/** `validate_hotkey` targets. */
+export type HotkeyTarget = "dictation" | "pause" | "ask" | "style_cycle" | `style:${string}`;
+
 export interface CleanupConfig {
   enabled: boolean;
   base_url: string;
   model: string;
   api_key_ref: string | null;
+  /** Legacy; Rust migrates it into the clean style. The UI edits `styles[].prompt` instead. */
   prompt_override: string;
   timeout_seconds: number;
   reasoning_effort: string | null;
+  active_style_id: string;
+  styles: CleanupStyle[];
 }
 export interface CleanupPreset { id: string; name: string; key_url: string; config: CleanupConfig }
 export interface CleanupTestResult { before: string; after: string }

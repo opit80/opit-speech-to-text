@@ -1,12 +1,19 @@
 <script lang="ts">
-  import { t } from "../app.svelte";
+  import { app, t } from "../app.svelte";
+  import { historyStyleName } from "../styles";
   import type { Dictation } from "../types";
-  let { status, model }: { status: Dictation["cleanup_status"]; model: string | null } = $props();
+  let { status, model, styleId = null }: {
+    status: Dictation["cleanup_status"]; model: string | null;
+    /** The row's `cleanup_style_id`; named only when it is not the default clean style. */
+    styleId?: string | null;
+  } = $props();
+  const style = $derived(historyStyleName(styleId, app.config?.cleanup.styles ?? [], app.styleDefaults, app.lang));
+  const label = $derived(t(status === "ok" ? "cleanup.cleaned" : "cleanup.failed"));
 </script>
 
 {#if status === "ok" || status === "failed"}
   <span class="marker" class:warning={status === "failed"} title={model ?? undefined}>
-    {t(status === "ok" ? "cleanup.cleaned" : "cleanup.failed")}
+    {style ? t("cleanup.with_style", { status: label, style }) : label}
   </span>
 {/if}
 

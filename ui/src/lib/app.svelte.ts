@@ -8,7 +8,7 @@ import { parseRoute } from "./route";
 import { navigate } from "./router.svelte";
 import { createSerialQueue } from "./serial";
 import { checkUpdateState, keepInstallError } from "./update";
-import type { AppConfig, AppInfo, DictationStatus, FileWork, HotkeyState, Lang, StartupNotice, UpdateState } from "./types";
+import type { AppConfig, AppInfo, DictationStatus, FileWork, HotkeyState, Lang, StartupNotice, StyleDefaults, UpdateState } from "./types";
 
 interface AppState {
   info: AppInfo | null;
@@ -25,6 +25,8 @@ interface AppState {
   updateError: string | null;
   /** The file job as far as update installation cares; see `fileBlocksUpdate`. */
   fileWork: FileWork;
+  /** Built-in cleanup style names and prompts; null until `loadStyleDefaults` resolves. */
+  styleDefaults: StyleDefaults[] | null;
 }
 
 export const app = $state<AppState>({
@@ -40,7 +42,19 @@ export const app = $state<AppState>({
   updateDismissed: null,
   updateError: null,
   fileWork: { revision: -1, phase: "idle", unsaved: false },
+  styleDefaults: null,
 });
+
+let styleDefaultsRequest: Promise<void> | null = null;
+
+/** Loads the built-in style defaults once (they never change at runtime); a failure allows a retry. */
+export function loadStyleDefaults(): Promise<void> {
+  styleDefaultsRequest ??= api.cleanupStyleDefaults().then(
+    (defaults) => { app.styleDefaults = defaults; },
+    (error: unknown) => { styleDefaultsRequest = null; throw error; },
+  );
+  return styleDefaultsRequest;
+}
 
 function setFileWork(next: FileWork): void {
   app.fileWork = mergeFileWork(app.fileWork, next);
@@ -142,6 +156,15 @@ export function saveConfig(mutate: (draft: AppConfig) => void): Promise<AppConfi
     const draft = $state.snapshot(app.config) as AppConfig;
     mutate(draft);
     const saved = await api.saveConfig(draft);
+    setConfig(saved);
+    return saved;
+  });
+}
+
+/** Selects a cleanup style, queued with config saves so neither overwrites the other. */
+export function setActiveStyle(id: string): Promise<AppConfig> {
+  return enqueueSave(async () => {
+    const saved = await api.setActiveStyle(id);
     setConfig(saved);
     return saved;
   });

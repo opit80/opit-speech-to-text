@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { cleanupPreset, cleanupValid } from "./cleanup";
+import { cleanupPreset, cleanupValid, withLiveStyles } from "./cleanup";
 import type { CleanupConfig } from "./types";
 
 const config: CleanupConfig = {
   enabled: false, base_url: "http://127.0.0.1:8080/v1", model: "my-model", api_key_ref: null,
-  prompt_override: "", timeout_seconds: 15, reasoning_effort: null,
+  prompt_override: "", timeout_seconds: 15, reasoning_effort: null, active_style_id: "clean",
+  styles: [{ id: "clean", name: "Clean", builtin: true, prompt: "", model: null, in_cycle: true, hotkey: [] }],
 };
 describe("cleanup form", () => {
   it("accepts local and unknown models", () => {
@@ -22,5 +23,14 @@ describe("cleanup form", () => {
     const presets = [{ id: "local", name: "Local", key_url: "", config }];
     expect(cleanupPreset({ ...config, enabled: true }, presets)).toBe("local");
     expect(cleanupPreset({ ...config, model: "another-model" }, presets)).toBe("custom");
+  });
+  it("takes styles from the live config and connection fields from the form", () => {
+    const live: CleanupConfig = { ...config, prompt_override: "", active_style_id: "custom-a", styles: [
+      ...config.styles, { id: "custom-a", name: "Notes", builtin: false, prompt: "Write notes.", model: "m", in_cycle: false, hotkey: ["F8"] },
+    ] };
+    const form: CleanupConfig = { ...config, enabled: true, model: "new-model", prompt_override: "stale" };
+    const merged = withLiveStyles(form, live);
+    expect(merged).toEqual({ ...form, prompt_override: "", active_style_id: "custom-a", styles: live.styles });
+    expect(merged.styles).not.toBe(live.styles);
   });
 });

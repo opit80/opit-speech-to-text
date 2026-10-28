@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
-  FileOptions, FileState, FileOutputFormat, LocalState,
+  FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, StyleDefaults,
 } from "./types";
 
 export const api = {
@@ -45,6 +45,9 @@ export const api = {
     invoke<void>("test_connection", { profile, apiKey }),
   cleanupPresets: () => invoke<CleanupPreset[]>("cleanup_presets"),
   cleanupPrompts: () => invoke<Record<"en" | "tr", string>>("cleanup_prompts"),
+  cleanupStyleDefaults: () => invoke<StyleDefaults[]>("cleanup_style_defaults"),
+  /** Use `setActiveStyle` in app.svelte.ts, which serializes it with config saves. */
+  setActiveStyle: (id: string) => invoke<AppConfig>("set_active_style", { id }),
   testCleanup: (config: CleanupConfig) => invoke<CleanupTestResult>("test_cleanup", { config }),
   profilePresets: () => invoke<Profile[]>("profile_presets"),
 
@@ -72,7 +75,9 @@ export const api = {
   getHotkeyState: () => invoke<HotkeyState>("get_hotkey_state"),
   setHotkeyPaused: (paused: boolean) => invoke<HotkeyState>("set_hotkey_paused", { paused }),
   setHotkeyCapture: (active: boolean) => invoke<void>("set_hotkey_capture", { active }),
-  validateHotkey: (keys: string[]) => invoke<void>("validate_hotkey", { keys }),
+  /** Without a target: syntax only. With one: also conflicts, checked against `config` or the saved settings. */
+  validateHotkey: (keys: string[], target?: HotkeyTarget, config?: AppConfig) =>
+    invoke<void>("validate_hotkey", { keys, target, config }),
 
   getUpdateState: () => invoke<UpdateState>("get_update_state"),
   checkForUpdates: () => invoke<UpdateState>("check_for_updates"),

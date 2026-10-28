@@ -70,7 +70,7 @@
 
 <form class="stack" onsubmit={(event) => { event.preventDefault(); void save(); }}>
   <fieldset class="stack" disabled={busy}>
-    <HotkeyInput {keys} optional label={t("ask.shortcut")} info={t("ask.shortcut_hint")} onchange={(value) => { keys = value; }} />
+    <HotkeyInput {keys} optional target="ask" label={t("ask.shortcut")} info={t("ask.shortcut_hint")} onchange={(value) => { keys = value; }} />
     <Select label={t("ask.agent")} info={t("ask.privacy")} value={draft.agent} options={agents} onchange={(value) => { draft.agent = value as AskAgent; result = null; }} />
     <p class="muted" role="status">{!loaded ? t("common.loading") : installed ? t("ask.available") : t("ask.missing")}</p>
     {#if draft.agent === "chat"}

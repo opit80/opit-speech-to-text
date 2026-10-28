@@ -336,7 +336,8 @@ pub fn transcribe_path(
         settings.config.active_profile().cloned().ok_or_else(|| CommandError::new("config", "no active profile"))?;
     let primary = client(core, profile.clone(), options)?;
     let fallback = settings.config.fallback_for(&profile).cloned().and_then(|p| client(core, p, options).ok());
-    let cleanup = if options.cleanup {
+    let wants_cleanup = options.cleanup && settings.config.cleanup.active_style_id != "raw";
+    let cleanup = if wants_cleanup {
         HttpProviders::new(core.platform.secrets.clone()).cleanup_client(&settings.config.cleanup).ok()
     } else {
         None
@@ -362,7 +363,7 @@ pub fn transcribe_path(
             progress,
         ))
         .map_err(|e| file_error(e, settings.lang, path))?;
-    result.cleanup_failed |= options.cleanup && cleanup.is_none();
+    result.cleanup_failed |= wants_cleanup && cleanup.is_none();
     Ok(result)
 }
 

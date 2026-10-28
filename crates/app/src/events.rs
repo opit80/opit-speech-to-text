@@ -1,7 +1,7 @@
 //! Rust → web UI events. Payloads are the same serde types the commands return.
 
 use opit_core::config::AppConfig;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tracing::warn;
 
 use crate::app_core::HotkeyState;
@@ -36,6 +36,19 @@ impl TauriEvents {
 }
 
 impl UiEvents for TauriEvents {
+    fn save_style(&self, id: &str) -> Option<opit_core::cleanup::CleanupStyle> {
+        let core = self.app.try_state::<std::sync::Arc<crate::app_core::AppCore>>()?;
+        match core.persist_active_style(id, false) {
+            Ok(saved) => {
+                config_changed(&self.app, &saved);
+                Some(saved.cleanup.active_style())
+            }
+            Err(_) => {
+                warn!("could not save cleanup style");
+                None
+            }
+        }
+    }
     fn status_changed(&self, status: &DictationStatus) {
         emit(&self.app, STATUS, status);
         tray::refresh(&self.app);

@@ -19,6 +19,111 @@ use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 // ---------- scripted providers ----------
 
 #[tokio::test]
+async fn cleanup_style_snapshot_survives_unrelated_config_changes_and_raw_skips_clients() {
+    for raw in [false, true] {
+        let mut config = AppConfig::default();
+        config.cleanup.enabled = true;
+        config.cleanup.active_style_id = if raw { "raw" } else { "formal" }.into();
+        config.cleanup.styles.iter_mut().find(|s| s.id == "formal").unwrap().model = Some("formal-model".into());
+        let mut h = harness(config.clone());
+        h.script("groq", vec![Ok("three clear words")]);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        config.cleanup.active_style_id = "clean".into();
+        config.cleanup.model = "changed-model".into();
+        config.cleanup.styles.iter_mut().find(|s| s.id == "formal").unwrap().model = Some("changed-override".into());
+        h.settings.replace(settings(config));
+        h.send(Msg::Stop);
+        h.wait_for(|s| s.state == Idle).await;
+        let saved = h.history.entries();
+        assert_eq!(saved[0].cleanup_style_id.as_deref(), Some(if raw { "raw" } else { "formal" }));
+        if raw {
+            assert_eq!(saved[0].cleanup_status, Some(cleanup::CleanupStatus::Skipped));
+            assert_eq!(saved[0].cleanup_model, None);
+            assert!(h.providers.cleanup_configs.lock().unwrap().is_empty());
+        } else {
+            assert_eq!(saved[0].cleanup_model.as_deref(), Some("formal-model"));
+            assert_eq!(h.providers.cleanup_configs.lock().unwrap()[0].model, "formal-model");
+        }
+        h.send(Msg::Shutdown);
+    }
+}
+
+#[tokio::test]
+async fn style_hotkeys_persist_in_order_and_switch_the_recording_before_stop() {
+    let mut h = harness(AppConfig::default());
+    h.hotkey(HotkeyEvent::StyleCycle);
+    h.handle.control(ControlAction::Start).await.unwrap();
+    h.expect(&[Recording]).await;
+    assert_eq!(h.settings.current().config.cleanup.active_style_id, "formal");
+    assert!(h.overlay.last().text.contains("Formal"));
+    h.hotkey(HotkeyEvent::Style("prompt".into()));
+    h.hotkey(HotkeyEvent::StyleCycle);
+    // The actor awaits each blocking persistence operation before processing this stop.
+    h.script("groq", vec![Ok("three clear words")]);
+    h.send(Msg::Stop);
+    h.wait_for(|s| s.state == Idle).await;
+    assert_eq!(*h.events.style_saves.lock().unwrap(), ["formal", "prompt", "raw"]);
+    assert_eq!(h.history.entries()[0].cleanup_style_id.as_deref(), Some("raw"));
+    assert_eq!(h.settings.current().config.cleanup.active_style_id, "raw");
+    h.hotkey(HotkeyEvent::Style("clean".into()));
+    // A control round-trip waits for the idle switch and its notification.
+    h.handle.control(ControlAction::Cancel).await.unwrap();
+    assert!(
+        h.overlay
+            .views
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|v| v.text == "Clean" && v.hide_after == Some(Duration::from_millis(1500)))
+    );
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn cycle_advances_from_the_recording_style_snapshot() {
+    let mut config = AppConfig::default();
+    config.cleanup.active_style_id = "formal".into();
+    let mut h = harness(config.clone());
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    config.cleanup.active_style_id = "clean".into();
+    h.settings.replace(settings(config));
+    h.hotkey(HotkeyEvent::StyleCycle);
+    h.handle.control(ControlAction::Pause).await.unwrap();
+    assert_eq!(h.settings.current().config.cleanup.active_style_id, "casual");
+    assert!(h.overlay.last().text.contains("Casual"));
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn explicit_style_notification_updates_recording_but_keeps_queued_snapshots() {
+    let mut h = harness(AppConfig::default());
+    h.providers.gate.forget_permits(1_000);
+    h.script("groq", vec![Ok("first recording"), Ok("second recording")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    h.send(Msg::Stop);
+    h.expect(&[Transcribing]).await;
+    h.handle.control(ControlAction::Start).await.unwrap();
+    h.expect(&[Recording]).await;
+    let style = h.settings.current().config.cleanup.style("casual").unwrap().clone();
+    h.send(Msg::StyleChanged(style));
+    h.handle.control(ControlAction::Pause).await.unwrap();
+    assert!(h.overlay.last().text.contains("Casual"));
+    assert!(h.overlay.last().recording.is_some());
+    h.send(Msg::Stop);
+    h.providers.gate.add_permits(10);
+    h.wait_for(|s| s.state == Idle).await;
+    let entries = h.history.entries();
+    assert_eq!(
+        entries.iter().map(|e| e.cleanup_style_id.as_deref()).collect::<Vec<_>>(),
+        [Some("clean"), Some("casual")]
+    );
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
 async fn media_releases_on_every_recording_end_before_transcription_finishes() {
     use opit_core::config::MediaMode;
     for mode in [MediaMode::Pause, MediaMode::Duck] {
@@ -321,6 +426,7 @@ struct ProviderState {
     calls: AtomicUsize,
     warmups: AtomicUsize,
     cleanup: Mutex<Option<Arc<CleanupClient>>>,
+    cleanup_configs: Mutex<Vec<CleanupConfig>>,
     ask: Arc<crate::ask::AskService>,
 }
 
@@ -334,6 +440,7 @@ impl ProviderState {
             calls: AtomicUsize::new(0),
             warmups: AtomicUsize::new(0),
             cleanup: Mutex::default(),
+            cleanup_configs: Mutex::default(),
             ask: Arc::new(crate::ask::AskService::new(Arc::new(FakeSecrets::default()))),
         }
     }
@@ -393,8 +500,13 @@ impl Providers for TestProviders {
         Ok(ScriptedClient { profile: profile.clone(), state: self.0.clone() })
     }
 
-    fn cleanup_client(&self, _config: &CleanupConfig) -> Result<Arc<CleanupClient>, CleanupError> {
-        self.0.cleanup.lock().unwrap().clone().ok_or(CleanupError::MissingKey)
+    fn cleanup_client(&self, config: &CleanupConfig) -> Result<Arc<CleanupClient>, CleanupError> {
+        self.0.cleanup_configs.lock().unwrap().push(config.clone());
+        if self.0.cleanup.lock().unwrap().is_some() {
+            CleanupClient::new(config.clone(), None).map(Arc::new)
+        } else {
+            Err(CleanupError::MissingKey)
+        }
     }
 
     fn warm_up(&self, _client: &ScriptedClient) {
@@ -412,6 +524,7 @@ struct Saved {
     language: Option<String>,
     cleanup_status: Option<cleanup::CleanupStatus>,
     cleanup_model: Option<String>,
+    cleanup_style_id: Option<String>,
     raw_text: String,
     text: String,
     status: TranscriptStatus,
@@ -444,6 +557,7 @@ impl HistorySink for FakeHistory {
             language: entry.language.map(str::to_string),
             cleanup_status: entry.cleanup_status,
             cleanup_model: entry.cleanup_model.map(str::to_string),
+            cleanup_style_id: entry.cleanup_style_id.map(str::to_string),
             raw_text: entry.raw_text.into(),
             text: entry.text.into(),
             status: entry.status,
@@ -459,6 +573,7 @@ impl HistorySink for FakeHistory {
         row.language = entry.language.map(str::to_string);
         row.cleanup_status = entry.cleanup_status;
         row.cleanup_model = entry.cleanup_model.map(str::to_string);
+        row.cleanup_style_id = entry.cleanup_style_id.map(str::to_string);
         row.raw_text = entry.raw_text.into();
         row.text = entry.text.into();
         row.status = entry.status;
@@ -468,12 +583,22 @@ impl HistorySink for FakeHistory {
 }
 
 struct FakeEvents {
+    settings: SettingsHandle,
+    style_saves: Mutex<Vec<String>>,
     tx: mpsc::UnboundedSender<DictationStatus>,
     history: Mutex<Vec<i64>>,
     settings_opened: AtomicUsize,
 }
 
 impl UiEvents for FakeEvents {
+    fn save_style(&self, id: &str) -> Option<CleanupStyle> {
+        let mut config = self.settings.current().config.clone();
+        let style = config.cleanup.style(id)?.clone();
+        config.cleanup.active_style_id = id.into();
+        self.settings.replace(settings(config));
+        self.style_saves.lock().unwrap().push(id.into());
+        Some(style)
+    }
     fn status_changed(&self, status: &DictationStatus) {
         let _ = self.tx.send(status.clone());
     }
@@ -594,9 +719,15 @@ async fn disabled_cleanup_is_skipped_on_retry_and_by_profile() {
 
 fn harness(config: AppConfig) -> Harness {
     let (tx, states) = mpsc::unbounded_channel();
-    let events = Arc::new(FakeEvents { tx, history: Mutex::default(), settings_opened: AtomicUsize::new(0) });
     let providers = Arc::new(ProviderState::new());
     let settings = SettingsHandle::new(settings(config));
+    let events = Arc::new(FakeEvents {
+        settings: settings.clone(),
+        style_saves: Mutex::default(),
+        tx,
+        history: Mutex::default(),
+        settings_opened: AtomicUsize::new(0),
+    });
     let (mic, hotkey, paster) = (Arc::<FakeMic>::default(), Arc::<FakeHotkey>::default(), Arc::<FakePaster>::default());
     let (overlay, sounds, history) =
         (Arc::<FakeOverlay>::default(), Arc::<FakeSounds>::default(), Arc::<FakeHistory>::default());
@@ -607,7 +738,7 @@ fn harness(config: AppConfig) -> Harness {
         inbox,
         Env {
             settings: settings.clone(),
-            providers: TestProviders(providers.clone()),
+            providers: Arc::new(TestProviders(providers.clone())),
             mic: mic.clone(),
             media: media.clone(),
             hotkey: hotkey.clone(),

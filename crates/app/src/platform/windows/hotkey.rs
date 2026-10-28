@@ -20,13 +20,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::PCWSTR;
 
 use super::call_guarded;
-use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo};
+#[cfg(test)]
+use crate::platform::keys::track_transition as track;
+use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo, track_shortcuts};
 use crate::platform::{Hotkey, HotkeyError, HotkeyEvent, HotkeySink};
 
 struct HookState {
     tracker: KeyTracker,
-    pause_tracker: Option<KeyTracker>,
-    ask_tracker: Option<KeyTracker>,
+    shortcuts: Vec<(HotkeyEvent, KeyTracker)>,
     sink: HotkeySink,
 }
 
@@ -89,20 +90,21 @@ impl Drop for WinHotkey {
 }
 
 impl Hotkey for WinHotkey {
-    fn register_ask(&self, keys: &[String]) -> Result<(), HotkeyError> {
-        let combo = if keys.is_empty() { None } else { Some(parse_combo(keys)?) };
+    fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError> {
+        let shortcuts = shortcuts
+            .iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(action, keys)| Ok((action.clone(), KeyTracker::new(parse_combo(keys)?))))
+            .collect::<Result<Vec<_>, HotkeyError>>()?;
         if let Some(st) = state().as_mut() {
-            st.ask_tracker = combo.map(KeyTracker::new);
-        }
-        Ok(())
-    }
-
-    fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError> {
-        let combo = if keys.is_empty() { None } else { Some(parse_combo(keys)?) };
-        if let Some(st) = state().as_mut() {
-            match (st.pause_tracker.as_mut(), combo) {
-                (Some(tracker), Some(combo)) => tracker.retarget(combo),
-                (_, combo) => st.pause_tracker = combo.map(KeyTracker::new),
+            let held = st.tracker.held().to_vec();
+            st.shortcuts = shortcuts;
+            for (_, tracker) in &mut st.shortcuts {
+                // Retargeting while keys are held must not create a false lone-Ctrl release.
+                for vk in &held {
+                    let _ = tracker.on_key(*vk, true);
+                }
+                tracker.retarget(tracker.combo().to_vec());
             }
         }
         Ok(())
@@ -121,14 +123,7 @@ impl Hotkey for WinHotkey {
                     s.tracker.retarget(combo);
                     s.sink = sink;
                 }
-                None => {
-                    *st = Some(HookState {
-                        tracker: KeyTracker::new(combo),
-                        pause_tracker: None,
-                        ask_tracker: None,
-                        sink,
-                    })
-                }
+                None => *st = Some(HookState { tracker: KeyTracker::new(combo), shortcuts: Vec::new(), sink }),
             }
         }
         if first {
@@ -224,39 +219,6 @@ fn key_is_down(vk: u32) -> bool {
     unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
 }
 
-/// Feeds one transition to the tracker. On a key-down it first drops held keys whose key-up we
-/// missed (e.g. released on the secure desktop) so they cannot block the combo forever. The
-/// key being pressed gets no exemption: inside the hook its async state still predates this
-/// event, so a genuine auto-repeat reads as down and a new press after a missed key-up as up.
-fn track(tracker: &mut KeyTracker, vk: u32, down: bool, key_is_down: impl Fn(u32) -> bool) -> [Option<HotkeyEvent>; 2] {
-    let pruned = if down && !tracker.held().is_empty() { tracker.prune(key_is_down) } else { None };
-    [pruned, tracker.on_key(vk, down)]
-}
-
-fn track_shortcuts(
-    tracker: &mut KeyTracker,
-    pause_tracker: Option<&mut KeyTracker>,
-    vk: u32,
-    down: bool,
-    key_is_down: impl Fn(u32) -> bool,
-) -> [Option<HotkeyEvent>; 3] {
-    let pause_events = pause_tracker.map(|tracker| track(tracker, vk, down, &key_is_down));
-    let pause =
-        pause_events.is_some_and(|events| events.contains(&Some(HotkeyEvent::ComboDown))).then_some(HotkeyEvent::Pause);
-    let handled = pause_events.is_some_and(|events| {
-        events.iter().flatten().any(|event| matches!(event, HotkeyEvent::ComboDown | HotkeyEvent::ComboUp))
-    });
-    let mut events = track(tracker, vk, down, key_is_down);
-    if handled {
-        for event in &mut events {
-            if matches!(event, Some(HotkeyEvent::LoneCtrl | HotkeyEvent::Escape)) {
-                *event = None;
-            }
-        }
-    }
-    [events[0], events[1], pause]
-}
-
 /// Updates the tracker, delivers events, and returns true when the key must be swallowed.
 fn handle_key(vk: u32, down: bool) -> bool {
     let (events, sink) = {
@@ -264,25 +226,12 @@ fn handle_key(vk: u32, down: bool) -> bool {
         let Some(st) = guard.as_mut() else {
             return false;
         };
-        let ask_events = st.ask_tracker.as_mut().map(|tracker| track(tracker, vk, down, key_is_down));
-        let ask_handled = ask_events.is_some_and(|events| {
-            events.iter().flatten().any(|e| matches!(e, HotkeyEvent::ComboDown | HotkeyEvent::ComboUp))
-        });
-        let ask =
-            ask_events.is_some_and(|events| events.contains(&Some(HotkeyEvent::ComboDown))).then_some(HotkeyEvent::Ask);
-        let mut events = track_shortcuts(&mut st.tracker, st.pause_tracker.as_mut(), vk, down, key_is_down);
-        if ask_handled {
-            for event in &mut events {
-                if matches!(event, Some(HotkeyEvent::LoneCtrl | HotkeyEvent::Escape)) {
-                    *event = None;
-                }
-            }
-        }
-        ([events[0], events[1], events[2], ask], st.sink.clone())
+        let events = track_shortcuts(&mut st.tracker, &mut st.shortcuts, vk, down, key_is_down);
+        (events, st.sink.clone())
     };
     let paused = PAUSED.load(Ordering::Relaxed);
     if !paused {
-        for event in events.into_iter().flatten() {
+        for event in events {
             call_guarded(|| sink(event));
         }
     }
@@ -324,11 +273,11 @@ mod tests {
     #[test]
     fn pause_shortcut_fires_once_and_does_not_emit_a_stop_on_ctrl_release() {
         let mut main = KeyTracker::new(vec![0x7C]);
-        let mut pause = KeyTracker::new(vec![0xA2]);
+        let mut shortcuts = vec![(HotkeyEvent::Pause, KeyTracker::new(vec![0xA2]))];
         let transitions = [(0xA2, true), (0xA2, true), (0xA2, false), (0x7C, true), (0x7C, false), (0xA2, true)];
         let mut events = Vec::new();
         for (vk, down) in transitions {
-            events.extend(track_shortcuts(&mut main, Some(&mut pause), vk, down, |_| true).into_iter().flatten());
+            events.extend(track_shortcuts(&mut main, &mut shortcuts, vk, down, |_| true));
         }
         assert_eq!(events, [HotkeyEvent::Pause, HotkeyEvent::ComboDown, HotkeyEvent::ComboUp, HotkeyEvent::Pause]);
     }

@@ -152,7 +152,7 @@ impl Drop for FakeCapture {
 #[derive(Default)]
 pub struct FakeHotkey {
     pub registered: Mutex<Vec<Vec<String>>>,
-    pub pause_registered: Mutex<Vec<Vec<String>>>,
+    pub shortcuts: Mutex<Vec<(HotkeyEvent, Vec<String>)>>,
     pub sink: Mutex<Option<HotkeySink>>,
     pub fail_register: Mutex<Option<HotkeyError>>,
     pub paused: Mutex<bool>,
@@ -166,8 +166,8 @@ impl FakeHotkey {
 }
 
 impl Hotkey for FakeHotkey {
-    fn register_pause(&self, keys: &[String]) -> Result<(), HotkeyError> {
-        self.pause_registered.lock().unwrap().push(keys.to_vec());
+    fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError> {
+        *self.shortcuts.lock().unwrap() = shortcuts.to_vec();
         Ok(())
     }
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError> {

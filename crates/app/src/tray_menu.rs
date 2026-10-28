@@ -19,6 +19,7 @@ pub enum TrayCommand {
     NewConversation,
     Open,
     Profile(String),
+    Style(String),
     TogglePause,
     PauseRecording,
     Retry,
@@ -47,6 +48,19 @@ pub fn build(config: &AppConfig, lang: Lang, paused: bool, status: &DictationSta
         action("pause-recording", lang.tray_recording_pause(status.paused), status.state == DictationState::Recording),
         action("ask", lang.tray_ask(), true),
         action("new-conversation", lang.new_conversation(), true),
+        TrayItem::Submenu {
+            label: lang.tray_style().into(),
+            items: config
+                .cleanup
+                .styles
+                .iter()
+                .map(|style| TrayItem::Check {
+                    id: format!("style:{}", style.id),
+                    label: lang.style_name(style),
+                    checked: style.id == config.cleanup.active_style_id,
+                })
+                .collect(),
+        },
         TrayItem::Separator,
         action("quit", lang.tray_quit(), true),
     ]
@@ -61,7 +75,10 @@ pub fn parse(id: &str) -> Option<TrayCommand> {
         "pause-recording" => Some(TrayCommand::PauseRecording),
         "retry" => Some(TrayCommand::Retry),
         "quit" => Some(TrayCommand::Quit),
-        _ => id.strip_prefix(PROFILE_PREFIX).map(|p| TrayCommand::Profile(p.to_string())),
+        _ => id
+            .strip_prefix(PROFILE_PREFIX)
+            .map(|p| TrayCommand::Profile(p.to_string()))
+            .or_else(|| id.strip_prefix("style:").map(|s| TrayCommand::Style(s.into()))),
     }
 }
 
@@ -79,7 +96,7 @@ mod tests {
         assert_eq!(items[0], TrayItem::Action { id: "open".into(), label: "Aç".into(), enabled: true });
         assert_eq!(items[2], TrayItem::Check { id: "pause".into(), label: "Kısayolu duraklat".into(), checked: true });
         assert_eq!(items[3], TrayItem::Action { id: "retry".into(), label: "Tekrar dene".into(), enabled: false });
-        assert_eq!(items[8], TrayItem::Action { id: "quit".into(), label: "Çıkış".into(), enabled: true });
+        assert_eq!(items[9], TrayItem::Action { id: "quit".into(), label: "Çıkış".into(), enabled: true });
     }
 
     #[test]
@@ -90,13 +107,35 @@ mod tests {
                 TrayItem::Submenu { items, .. } => {
                     for sub in items {
                         let TrayItem::Check { id, .. } = sub else { panic!() };
-                        assert_eq!(parse(&id), Some(TrayCommand::Profile(id["profile:".len()..].to_string())));
+                        let expected = if let Some(id) = id.strip_prefix("profile:") {
+                            TrayCommand::Profile(id.into())
+                        } else {
+                            TrayCommand::Style(id["style:".len()..].into())
+                        };
+                        assert_eq!(parse(&id), Some(expected));
                     }
                 }
                 TrayItem::Separator => {}
             }
         }
         assert_eq!(parse("bogus"), None);
+    }
+
+    #[test]
+    fn style_submenu_checks_active_style_localizes_defaults_and_preserves_renames() {
+        let mut config = AppConfig::default();
+        config.cleanup.active_style_id = "formal".into();
+        config.cleanup.styles.iter_mut().find(|s| s.id == "casual").unwrap().name = "Personal style".into();
+        let items = build(&config, Lang::Tr, false, &DictationStatus::default());
+        let TrayItem::Submenu { label, items } = &items[7] else { panic!() };
+        assert_eq!(label, "Stil");
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0], TrayItem::Check { id: "style:raw".into(), label: "Ham".into(), checked: false });
+        assert_eq!(items[2], TrayItem::Check { id: "style:formal".into(), label: "Resmî".into(), checked: true });
+        assert_eq!(
+            items[3],
+            TrayItem::Check { id: "style:casual".into(), label: "Personal style".into(), checked: false }
+        );
     }
 
     #[test]

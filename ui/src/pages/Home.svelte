@@ -1,11 +1,12 @@
 <script lang="ts">
   import CleanupMarker from "../lib/components/CleanupMarker.svelte";
   import { api } from "../lib/api";
-  import { app, errorText, t } from "../lib/app.svelte";
+  import { app, errorText, loadStyleDefaults, setActiveStyle, t } from "../lib/app.svelte";
   import { onHistoryAdded } from "../lib/events";
   import { formatDateTime, formatSeconds } from "../lib/format";
   import { formatCombo } from "../lib/hotkey";
   import { navigate } from "../lib/router.svelte";
+  import { styleDisplayName } from "../lib/styles";
   import { toast } from "../lib/toast.svelte";
   import type { Dictation } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
@@ -28,6 +29,8 @@
   let profileError = $state<string | null>(null);
   let copyingId = $state<number | null>(null);
   let copyError = $state<string | null>(null);
+  let styleBusy = $state(false);
+  let styleError = $state<string | null>(null);
   let disposed = false;
   let listRequest = 0;
 
@@ -126,6 +129,33 @@
     }
   }
 
+  // Built-in style names arrive asynchronously; until then the stored names are shown.
+  $effect(() => { loadStyleDefaults().catch(() => {}); });
+
+  const styleOptions = $derived((app.config?.cleanup.styles ?? []).map((style) => ({
+    value: style.id, label: styleDisplayName(style, app.styleDefaults, app.lang),
+  })));
+
+  function selectedStyle() {
+    // Reconcile the native selection after a rejected switch, even if config did not change.
+    void styleBusy;
+    return app.config?.cleanup.active_style_id ?? "clean";
+  }
+
+  /** Allowed while recording: Rust applies the new style to the running recording. */
+  async function setStyle(id: string) {
+    if (styleBusy || disposed || id === app.config?.cleanup.active_style_id) return;
+    styleBusy = true;
+    styleError = null;
+    try {
+      await setActiveStyle(id);
+    } catch (error) {
+      if (!disposed) styleError = errorText(error);
+    } finally {
+      if (!disposed) styleBusy = false;
+    }
+  }
+
   async function copy(item: Dictation) {
     if (copyingId !== null || disposed) return;
     copyingId = item.id;
@@ -170,12 +200,17 @@
       {/snippet}
     </DictationControl>
 
-    <section class="card stack" aria-label={t("home.profile")} aria-busy={profileBusy || keyBusy}>
+    <section class="card stack" aria-label={t("home.profile")} aria-busy={profileBusy || keyBusy || styleBusy}>
       <Select label={t("home.profile")}
         bind:value={selectedProfile, (id) => void setProfile(id)}
         options={app.config?.profiles.map((profile) => ({ value: profile.id, label: profile.name })) ?? []}
         disabled={!app.config || app.status.state !== "idle" || profileBusy || actionBusy} />
       {#if profileError}<Banner tone="error">{profileError}</Banner>{/if}
+      {#if app.config?.cleanup.enabled}
+        <Select label={t("home.style")} bind:value={selectedStyle, (id) => void setStyle(id)} options={styleOptions}
+          disabled={styleBusy} />
+        {#if styleError}<Banner tone="error">{styleError}</Banner>{/if}
+      {/if}
       {#if keyError}<Banner tone="error">{keyError}</Banner>{/if}
       {#if missingKey}
         <Banner tone="warning">
@@ -210,7 +245,7 @@
                     <div class="metadata muted">
                       <time datetime={new Date(item.created_at_ms).toISOString()}>{formatDateTime(item.created_at_ms, app.lang)}</time>
                       <span>{formatSeconds(item.latency_ms, app.lang)}</span>
-              <CleanupMarker status={item.cleanup_status} model={item.cleanup_model} />
+              <CleanupMarker status={item.cleanup_status} model={item.cleanup_model} styleId={item.cleanup_style_id} />
                     </div>
                     <p class="transcript" class:muted={item.status !== "ok"}>
                       {#if item.status === "failed"}{t("history.failed")} — {t(`error.kind.${item.error_code ?? "rejected"}`)}{:else}

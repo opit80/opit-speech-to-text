@@ -168,6 +168,7 @@ mod tests {
             language: None,
             cleanup_status: None,
             cleanup_model: None,
+            cleanup_style_id: None,
         }
     }
 
