@@ -20,6 +20,10 @@
   const formId = `${uid}-form`;
   let list = $state<HTMLElement>();
   let switching = $state(false);
+  // The latest pick made while a switch was saving; applied once it finishes.
+  let pending: string | null = null;
+  // The style being saved, shown meanwhile so a queued pick does not flash the previous one.
+  let target = $state<string | null>(null);
   let error = $state<string | null>(null);
   let defaultsError = $state<string | null>(null);
 
@@ -39,6 +43,8 @@
 
   const styles = $derived(app.config?.cleanup.styles ?? []);
   const active = $derived(app.config?.cleanup.active_style_id ?? "clean");
+  // Like Home, which hides its picker: without AI cleanup the active style has no effect.
+  const cleanupOff = $derived(app.config?.cleanup.enabled === false);
   const nameOf = (style: Pick<CleanupStyle, "id" | "name">) => styleDisplayName(style, app.styleDefaults, app.lang);
   const draftDefaultPrompt = $derived(draft ? defaultStylePrompt(draft.id, app.styleDefaults, app.lang) : "");
   const draftBuiltin = $derived(!!draft && isBuiltinStyle(draft.id));
@@ -73,17 +79,28 @@
     }
   }
 
+  // The radios stay enabled while saving (disabling them would drop keyboard focus); a pick made
+  // meanwhile is kept and applied afterwards, so arrow keys through the list end on the last one.
   async function select(id: string) {
-    if (switching || id === active) return;
+    if (switching) { pending = id; return; }
+    if (id === active) { target = null; return; }
     switching = true;
+    target = id;
     error = null;
+    let failed = false;
     try {
       await setActiveStyle(id);
     } catch (e) {
-      if (!disposed) { error = errorText(e); syncRadios(); }
+      failed = true;
+      if (!disposed) error = errorText(e);
     } finally {
       if (!disposed) switching = false;
     }
+    const next = pending;
+    pending = null;
+    if (disposed) return;
+    if (!failed && next) void select(next);
+    else { target = null; syncRadios(); }
   }
 
   function edit(style: CleanupStyle) {
@@ -138,7 +155,11 @@
     deleteError = null;
     try {
       await saveConfig((c) => { Object.assign(c.cleanup, deleteStyle(c.cleanup, id)); });
-      if (!disposed) { deleteOpen = false; toast(t("common.saved")); }
+      if (disposed) return;
+      deleteOpen = false;
+      toast(t("common.saved"));
+      await tick();
+      document.getElementById(`${uid}-add`)?.focus();
     } catch (e) {
       if (!disposed) deleteError = errorText(e);
     } finally {
@@ -156,6 +177,7 @@
       {#snippet action()}<Button onclick={() => void loadDefaults()}>{t("common.reload")}</Button>{/snippet}
     </Banner>
   {/if}
+  {#if cleanupOff}<p class="muted note">{t("styles.cleanup_off")}</p>{/if}
   <fieldset class="styles" aria-busy={switching}>
     <legend class="visually-hidden">{t("styles.active")}</legend>
     <ul bind:this={list}>
@@ -163,7 +185,7 @@
         {@const name = nameOf(style)}
         <li>
           <label class="choice">
-            <input type="radio" name={`${uid}-active`} value={style.id} checked={style.id === active} disabled={switching}
+            <input type="radio" name={`${uid}-active`} value={style.id} checked={style.id === (target ?? active)} disabled={cleanupOff}
               onchange={() => void select(style.id)} />
             <span class="name">{name}</span>
           </label>
@@ -182,10 +204,11 @@
     </ul>
   </fieldset>
   {#if error}<Banner tone="error">{error}</Banner>{/if}
-  <div class="row"><Button onclick={add}>{t("styles.add")}</Button></div>
+  <div class="row"><Button id={`${uid}-add`} onclick={add}>{t("styles.add")}</Button></div>
 </section>
 
-<Dialog bind:open={editOpen} title={editTitle} onclose={() => { draft = null; }}>
+<!-- Escape while saving would hide the outcome (and a save error): keep the dialog open until it ends. -->
+<Dialog bind:open={editOpen} title={editTitle} onclose={() => { if (saving) editOpen = true; else draft = null; }}>
   {#if draft}
     <form id={formId} class="stack" novalidate onsubmit={(e) => { e.preventDefault(); void saveStyle(); }}>
       <fieldset class="stack" disabled={saving}>
@@ -229,7 +252,7 @@
   {/snippet}
 </Dialog>
 
-<Dialog bind:open={deleteOpen} title={t("styles.delete_title")} onclose={() => { deleting = null; }}>
+<Dialog bind:open={deleteOpen} title={t("styles.delete_title")} onclose={() => { if (deleteBusy) deleteOpen = true; else deleting = null; }}>
   <div class="stack">
     {#if deleting}<p>{t("styles.delete_body", { name: nameOf(deleting), fallback: fallbackName })}</p>{/if}
     {#if deleteError}<Banner tone="error">{deleteError}</Banner>{/if}
@@ -250,6 +273,7 @@
   .choice { display: flex; align-items: center; gap: var(--space-2); flex: 1; min-width: 0; cursor: pointer; padding: var(--space-1) 0; }
   .choice input { margin: 0; min-height: 0; accent-color: var(--accent); }
   .name { overflow-wrap: anywhere; }
+  .note { font-size: var(--text-sm); }
   .meta { display: flex; gap: var(--space-2); font-size: var(--text-sm); }
   .actions { display: flex; gap: var(--space-1); }
   input:not([type="radio"]), textarea { width: 100%; }

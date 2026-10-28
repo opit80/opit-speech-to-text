@@ -47,7 +47,6 @@ export const api = {
   testConnection: (profile: Profile, apiKey: string | null) =>
     invoke<void>("test_connection", { profile, apiKey }),
   cleanupPresets: () => invoke<CleanupPreset[]>("cleanup_presets"),
-  cleanupPrompts: () => invoke<Record<"en" | "tr", string>>("cleanup_prompts"),
   cleanupStyleDefaults: () => invoke<StyleDefaults[]>("cleanup_style_defaults"),
   /** Use `setActiveStyle` in app.svelte.ts, which serializes it with config saves. */
   setActiveStyle: (id: string) => invoke<AppConfig>("set_active_style", { id }),

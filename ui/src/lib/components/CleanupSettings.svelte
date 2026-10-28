@@ -11,8 +11,11 @@
   import Select from "./Select.svelte";
   import Switch from "./Switch.svelte";
 
-  let { formId = "cleanup-settings", wizard = false, onsaved, canNext = $bindable(false) }: {
-    formId?: string; wizard?: boolean; onsaved?: () => void; canNext?: boolean;
+  let { formId = "cleanup-settings", wizard = false, onsaved, onkeysaved, canNext = $bindable(false) }: {
+    formId?: string; wizard?: boolean; onsaved?: () => void;
+    /** Called after a key is stored, also by a test that does not save the settings. */
+    onkeysaved?: () => void;
+    canNext?: boolean;
   } = $props();
   // A form draft, never an independent live config. Saving uses the shared serialized chain.
   let draft = $state<CleanupConfig>(untrack(() => structuredClone($state.snapshot(app.config!.cleanup))));
@@ -70,6 +73,7 @@
       await api.setApiKey(config.api_key_ref, keyInput);
       keyInput = "";
       storedKey = true;
+      onkeysaved?.();
     }
   }
 

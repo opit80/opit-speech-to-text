@@ -143,6 +143,8 @@
   let cleanupKey = $state<{ ref: string; stored: boolean } | null>(null);
   let cleanupGroup = $state<HTMLDetailsElement>();
   let keyRequest = 0;
+  // Bumped when AI cleanup stores a key, so the hint is re-checked without a config change.
+  let keySaved = $state(0);
   const translateOptions = $derived(translateLanguageOptions(languages, app.lang, config?.translate.target_language ?? "en"));
 
   async function loadLanguages() {
@@ -155,9 +157,16 @@
     }
   }
 
-  // Re-checked after every config change, so saving a key in AI cleanup clears the hint.
+  // Memoized, so only a change of the cleanup connection (not every settings save) re-runs the check.
+  const keyCheck = $derived.by(() => {
+    const c = app.config?.cleanup;
+    return c ? JSON.stringify([c.api_key_ref, c.base_url, c.model]) : "";
+  });
+
   $effect(() => {
-    const ref = app.config?.cleanup.api_key_ref ?? null;
+    void keyCheck;
+    void keySaved;
+    const ref = untrack(() => app.config?.cleanup.api_key_ref ?? null);
     const request = ++keyRequest;
     if (!ref) return;
     untrack(() => {
@@ -392,6 +401,13 @@
             onchange={(v) => void save("translate_language", (c) => { c.translate.target_language = v; })} />
           {@render fieldError("translate_language")}
           {@render fieldError("translate_languages")}
+          <Field label={t("translate.model")} info={t("translate.model_hint")} error={errors.translate_model}>
+            {#snippet children(id, describedBy)}
+              <input {id} class="wide" value={view.translateModel} aria-describedby={describedBy} placeholder={config.cleanup.model}
+                autocomplete="off" spellcheck="false"
+                onchange={(e) => void saveTranslateModel(e.currentTarget)} />
+            {/snippet}
+          </Field>
         {/if}
         {#if cleanupMissing}
           <Banner tone="warning">{t("settings.voice_modes_setup")}
@@ -427,11 +443,9 @@
         <MicLevelTest device={config.recording.microphone} />
         {@render numberInput("max_seconds", t("settings.max_seconds"), t("settings.max_seconds_hint"), 10, 600, 10, false,
           (c) => c.recording.max_seconds, (c, n) => { c.recording.max_seconds = n; })}
-        <Switch label={t("settings.live_text")} info={t("settings.live_text_hint")} checked={view.liveText}
+        <Switch label={t("settings.live_text")} checked={view.liveText}
+          info={config.recording.live_text && activeStreams === false ? t("settings.live_text_unsupported") : t("settings.live_text_hint")}
           onchange={(v) => void save("live_text", (c) => { c.recording.live_text = v; })} />
-        {#if config.recording.live_text && activeStreams === false}
-          <p class="muted note" role="status">{t("settings.live_text_unsupported")}</p>
-        {/if}
         {@render fieldError("live_text")}
       </section>
 
@@ -524,18 +538,7 @@
       <details class="card settings-group" bind:this={cleanupGroup}>
         <summary>{t("cleanup.title")}</summary>
         <div class="stack group-body">
-          <CleanupSettings /><CleanupStyles />
-          {#if config.hotkey.translate_keys.length}
-            <div class="stack translate-model">
-              <Field label={t("translate.model")} info={t("translate.model_hint")} error={errors.translate_model}>
-                {#snippet children(id, describedBy)}
-                  <input {id} value={view.translateModel} aria-describedby={describedBy} placeholder={config.cleanup.model}
-                    autocomplete="off" spellcheck="false"
-                    onchange={(e) => void saveTranslateModel(e.currentTarget)} />
-                {/snippet}
-              </Field>
-            </div>
-          {/if}
+          <CleanupSettings onkeysaved={() => { keySaved++; }} /><CleanupStyles />
         </div>
       </details>
 
@@ -602,9 +605,7 @@
   .mic-row { display: flex; align-items: flex-end; gap: var(--space-2); }
   .grow { flex: 1; min-width: 0; }
   .number { width: 120px; }
-  .note { font-size: var(--text-sm); }
-  .translate-model { border-top: 1px solid var(--border); padding-top: var(--space-4); }
-  .translate-model input { width: 100%; }
+  .wide { width: 100%; }
   .paths { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; }
   dt { font-weight: 600; }
   dd { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; }

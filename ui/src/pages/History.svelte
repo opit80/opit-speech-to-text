@@ -9,7 +9,7 @@
   import { formatClock, formatDateTime, formatSeconds } from "../lib/format";
   import { expandToWords } from "../lib/selection";
   import { HISTORY_PAGE, refreshHistory, refreshWindow, sameList } from "../lib/history";
-  import { canEditRow, editIssue, editorRows, type EditIssue } from "../lib/learning";
+  import { canEditRow, canLearnFrom, editIssue, editorRows, type EditIssue } from "../lib/learning";
   import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
   import type { Dictation, TermChange } from "../lib/types";
@@ -300,7 +300,7 @@
       if (!editedIds.includes(id)) editedIds = [...editedIds, id];
       editingId = null;
       toast(t("common.saved"));
-      if (suggestions.length && app.config?.learning.enabled !== false) { offerRow = id; offer = suggestions; }
+      if (suggestions.length && canLearnFrom(dictation) && app.config?.learning.enabled !== false) { offerRow = id; offer = suggestions; }
       else await focusEditButton(id);
     } catch (error) {
       if (!disposed) editError = errorText(error);

@@ -61,6 +61,11 @@ export function canEditRow(row: Dictation): boolean {
   return row.status === "ok";
 }
 
+/** Only plain dictations teach the dictionary; answers, voice edits and translations are not what was said. */
+export function canLearnFrom(row: Dictation): boolean {
+  return row.mode === "dictation";
+}
+
 /** Height of the History edit box: roughly the wrapped line count, kept between 3 and 14 rows. */
 export function editorRows(text: string): number {
   const lines = text.split("\n").reduce((count, line) => count + Math.max(1, Math.ceil([...line].length / 70)), 0);

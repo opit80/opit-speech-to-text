@@ -7,14 +7,16 @@
     /** Extra information, shown in a tooltip on the label. */
     info?: string | null;
     disabled?: boolean;
+    /** Accessible name when the visible label alone is ambiguous; it must start with the label. */
+    ariaLabel?: string;
     onchange?: (checked: boolean) => void;
   }
-  let { checked = $bindable(), label, info, disabled = false, onchange }: Props = $props();
+  let { checked = $bindable(), label, info, disabled = false, ariaLabel, onchange }: Props = $props();
   const id = $props.id();
 </script>
 
 <div class="switch" class:disabled>
-  <input {id} type="checkbox" role="switch" bind:checked {disabled}
+  <input {id} type="checkbox" role="switch" bind:checked {disabled} aria-label={ariaLabel}
     aria-describedby={info ? `${id}-info` : undefined}
     onchange={(event) => { checked = event.currentTarget.checked; onchange?.(checked); }} />
   <span class="track" aria-hidden="true"></span>

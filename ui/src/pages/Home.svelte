@@ -33,6 +33,10 @@
   let copyError = $state<string | null>(null);
   let styleBusy = $state(false);
   let styleError = $state<string | null>(null);
+  // The latest pick made while a style switch was saving; applied once it finishes.
+  let pendingStyle: string | null = null;
+  // The style being saved, shown meanwhile so a queued pick does not flash the previous one.
+  let styleTarget = $state<string | null>(null);
   let disposed = false;
   let listRequest = 0;
 
@@ -141,21 +145,34 @@
   function selectedStyle() {
     // Reconcile the native selection after a rejected switch, even if config did not change.
     void styleBusy;
-    return app.config?.cleanup.active_style_id ?? "clean";
+    return styleTarget ?? app.config?.cleanup.active_style_id ?? "clean";
   }
 
-  /** Allowed while recording: Rust applies the new style to the running recording. */
+  /**
+   * Allowed while recording: Rust applies the new style to the running recording. The picker stays
+   * enabled while saving (disabling it would drop keyboard focus); a pick made meanwhile wins afterwards.
+   */
   async function setStyle(id: string) {
-    if (styleBusy || disposed || id === app.config?.cleanup.active_style_id) return;
+    if (disposed) return;
+    if (styleBusy) { pendingStyle = id; return; }
+    if (id === app.config?.cleanup.active_style_id) { styleTarget = null; return; }
     styleBusy = true;
+    styleTarget = id;
     styleError = null;
+    let failed = false;
     try {
       await setActiveStyle(id);
     } catch (error) {
+      failed = true;
       if (!disposed) styleError = errorText(error);
     } finally {
       if (!disposed) styleBusy = false;
     }
+    const next = pendingStyle;
+    pendingStyle = null;
+    if (disposed) return;
+    if (!failed && next) void setStyle(next);
+    else styleTarget = null;
   }
 
   async function copy(item: Dictation) {
@@ -209,8 +226,7 @@
         disabled={!app.config || app.status.state !== "idle" || profileBusy || actionBusy} />
       {#if profileError}<Banner tone="error">{profileError}</Banner>{/if}
       {#if app.config?.cleanup.enabled}
-        <Select label={t("home.style")} bind:value={selectedStyle, (id) => void setStyle(id)} options={styleOptions}
-          disabled={styleBusy} />
+        <Select label={t("home.style")} bind:value={selectedStyle, (id) => void setStyle(id)} options={styleOptions} />
         {#if styleError}<Banner tone="error">{styleError}</Banner>{/if}
       {/if}
       {#if keyError}<Banner tone="error">{keyError}</Banner>{/if}

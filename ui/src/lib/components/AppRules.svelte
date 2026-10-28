@@ -68,6 +68,11 @@
     return profiles.find((p) => p.id === id)?.name ?? id;
   }
 
+  /** Two rules can share an app; the title filter tells their controls apart for screen readers. */
+  function ruleName(rule: AppRule): string {
+    return rule.title_contains ? t("app_rules.rule_titled", { app: rule.exe, title: rule.title_contains }) : rule.exe;
+  }
+
   function partText(part: SummaryPart): string {
     switch (part.key) {
       case "app_rules.summary.style": return t(part.key, { value: styleName(part.value) });
@@ -136,6 +141,8 @@
   }
 
   function closeDialog() {
+    // Escape while saving would hide the outcome (and a save error): keep the dialog open until it ends.
+    if (saving) { editOpen = true; return; }
     draft = null;
     runningRequest++;
     running = [];
@@ -247,22 +254,23 @@
   {#if view.rules.length}
     <ul aria-label={t("app_rules.list")}>
       {#each view.rules as rule, index (rule.id)}
+        {@const name = ruleName(rule)}
         <li>
           <div class="main">
-            <Switch label={rule.exe} checked={rule.enabled} onchange={(v) => setRuleEnabled(rule.id, v)} />
+            <Switch label={rule.exe} ariaLabel={name} checked={rule.enabled} onchange={(v) => setRuleEnabled(rule.id, v)} />
             <span class="meta muted">
               {#each ruleSummary(rule) as part (part.key)}<span>{partText(part)}</span>{/each}
             </span>
           </div>
           <span class="actions">
             <Button id={`${uid}-${rule.id}-up`} variant="ghost" disabled={index === 0}
-              aria-label={t("app_rules.move_up_named", { app: rule.exe })} title={t("app_rules.move_up_named", { app: rule.exe })}
+              aria-label={t("app_rules.move_up_named", { app: name })} title={t("app_rules.move_up_named", { app: name })}
               onclick={() => void move(rule.id, -1)}><Icon name="up" /></Button>
             <Button id={`${uid}-${rule.id}-down`} variant="ghost" disabled={index === view.rules.length - 1}
-              aria-label={t("app_rules.move_down_named", { app: rule.exe })} title={t("app_rules.move_down_named", { app: rule.exe })}
+              aria-label={t("app_rules.move_down_named", { app: name })} title={t("app_rules.move_down_named", { app: name })}
               onclick={() => void move(rule.id, 1)}><Icon name="down" /></Button>
-            <Button variant="ghost" aria-label={t("app_rules.edit_named", { app: rule.exe })} onclick={() => edit(rule)}>{t("common.edit")}</Button>
-            <Button variant="ghost" aria-label={t("app_rules.delete_named", { app: rule.exe })} onclick={() => askDelete(rule)}>{t("common.delete")}</Button>
+            <Button variant="ghost" aria-label={t("app_rules.edit_named", { app: name })} onclick={() => edit(rule)}>{t("common.edit")}</Button>
+            <Button variant="ghost" aria-label={t("app_rules.delete_named", { app: name })} onclick={() => askDelete(rule)}>{t("common.delete")}</Button>
           </span>
         </li>
       {/each}
@@ -319,9 +327,9 @@
   {/snippet}
 </Dialog>
 
-<Dialog bind:open={deleteOpen} title={t("app_rules.delete_title")} onclose={() => { deleting = null; }}>
+<Dialog bind:open={deleteOpen} title={t("app_rules.delete_title")} onclose={() => { if (deleteBusy) deleteOpen = true; else deleting = null; }}>
   <div class="stack">
-    {#if deleting}<p>{t("app_rules.delete_body", { app: deleting.exe })}</p>{/if}
+    {#if deleting}<p>{t("app_rules.delete_body", { app: ruleName(deleting) })}</p>{/if}
     {#if deleteError}<Banner tone="error">{deleteError}</Banner>{/if}
   </div>
   {#snippet actions()}

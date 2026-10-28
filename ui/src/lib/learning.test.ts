@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  MAX_HISTORY_TEXT_BYTES, canEditRow, caseOnly, defaultChoice, editIssue, editorRows, foldText, initialChoices, splitChoices,
+  MAX_HISTORY_TEXT_BYTES, canEditRow, canLearnFrom, caseOnly, defaultChoice, editIssue, editorRows, foldText, initialChoices, splitChoices,
 } from "./learning";
 import type { Dictation } from "./types";
 
@@ -92,6 +92,16 @@ describe("canEditRow", () => {
     expect(canEditRow(row("failed"))).toBe(false);
     expect(canEditRow(row("empty"))).toBe(false);
     expect(canEditRow(row("hallucination"))).toBe(false);
+  });
+});
+
+describe("canLearnFrom", () => {
+  const row = (mode: Dictation["mode"]) => ({ status: "ok", mode }) as Dictation;
+  it("offers learning only for plain dictations", () => {
+    expect(canLearnFrom(row("dictation"))).toBe(true);
+    expect(canLearnFrom(row("ask"))).toBe(false);
+    expect(canLearnFrom(row("edit"))).toBe(false);
+    expect(canLearnFrom(row("translate"))).toBe(false);
   });
 });
 
