@@ -77,6 +77,7 @@ impl Transcriber for ScriptedClient {
                 text,
                 language: None,
                 dropped_segments: 0,
+                segments: Vec::new(),
             })
         }
     }

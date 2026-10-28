@@ -22,6 +22,33 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn file_media_filter(self) -> &'static str {
+        self.pick("Audio / video", "Ses / video")
+    }
+
+    pub fn file_decode(self, container: &str, format: &str) -> String {
+        let format = match format {
+            "read" => self.pick("file read", "dosya okuma"),
+            "container" => self.pick("container format", "kapsayıcı biçimi"),
+            "audio track" => self.pick("audio track", "ses parçası"),
+            "audio codec" => self.pick("audio codec", "ses kodeği"),
+            "packet" => self.pick("audio packet", "ses paketi"),
+            "sample rate" => self.pick("sample rate", "örnekleme hızı"),
+            "sample rate change" => self.pick("sample rate change", "örnekleme hızı değişimi"),
+            "channels" => self.pick("channel layout", "kanal düzeni"),
+            "empty audio" => self.pick("empty audio", "boş ses"),
+            _ => format,
+        };
+        let container = if container == "media" { self.pick("media", "medya") } else { container };
+        match self {
+            Self::En => format!(
+                "Cannot decode {container} ({format}). The file may be damaged or its audio codec is unsupported."
+            ),
+            Self::Tr => {
+                format!("{container} ({format}) çözümlenemedi. Dosya bozuk olabilir veya ses kodeği desteklenmiyor.")
+            }
+        }
+    }
     pub fn shortcut_collision(self) -> &'static str {
         self.pick("The recording and pause shortcuts overlap", "Kayıt ve duraklatma kısayolları çakışıyor")
     }

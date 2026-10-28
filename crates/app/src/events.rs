@@ -22,6 +22,8 @@ pub const MIC_TEST: &str = "mic-test";
 pub const NAVIGATE: &str = "navigate";
 /// Payload: `UpdateState` (updates.rs).
 pub const UPDATE_STATE: &str = "update-state";
+/// Payload: `file_jobs::FileEvent`. Contains no transcript.
+pub const FILE_PROGRESS: &str = "file-progress";
 
 pub struct TauriEvents {
     app: AppHandle,

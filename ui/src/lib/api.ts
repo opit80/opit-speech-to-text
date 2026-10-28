@@ -3,9 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
+  FileOptions, FileState, FileOutputFormat,
 } from "./types";
 
 export const api = {
+  filePick: () => invoke<FileState>("file_pick"),
+  fileState: () => invoke<FileState>("file_state"),
+  fileStart: (options: FileOptions) => invoke<FileState>("file_start", { options }),
+  fileCancel: () => invoke<void>("file_cancel"),
+  fileRender: (format: FileOutputFormat, prefixes: boolean, speakers: boolean) =>
+    invoke<string>("file_render", { format, prefixes, speakers }),
+  fileSave: (format: FileOutputFormat, prefixes: boolean, speakers: boolean) =>
+    invoke<boolean>("file_save", { format, prefixes, speakers }),
   appInfo: () => invoke<AppInfo>("app_info"),
   getStatus: () => invoke<DictationStatus>("get_status"),
   toggleDictation: () => invoke<void>("toggle_dictation"),

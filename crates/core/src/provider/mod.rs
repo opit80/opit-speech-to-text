@@ -69,6 +69,7 @@ pub struct RawTranscript {
     pub language: Option<String>,
     /// verbose_json segments dropped as probable silence.
     pub dropped_segments: usize,
+    pub segments: Vec<crate::files::Segment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

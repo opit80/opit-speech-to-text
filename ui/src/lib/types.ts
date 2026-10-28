@@ -174,7 +174,9 @@ export type StartupNotice =
   | { kind: "user_rules_broken"; reason: string };
 
 export type CommandErrorCode =
-  | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable" | "update";
+  | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable" | "update"
+  | "file_busy" | "file_pick" | "file_result" | "file_timestamps" | "file_language" | "file_speakers"
+  | "file_decode" | "file_limit" | "file_cancelled" | "file_worker" | "file_save";
 export interface CommandError {
   code: CommandErrorCode;
   message: string;
@@ -212,3 +214,15 @@ export interface CleanupConfig {
 }
 export interface CleanupPreset { id: string; name: string; key_url: string; config: CleanupConfig }
 export interface CleanupTestResult { before: string; after: string }
+
+export interface FileOptions { language: string | null; cleanup: boolean; speakers: boolean }
+export type FilePhase = "idle" | "decoding" | "transcribing" | "cancelling" | "completed" | "cancelled" | "failed";
+export interface FileProgress { chunk: number; chunks: number; percent: number }
+export interface FileSegment { start_ms: number; end_ms: number; text: string; speaker: string | null }
+export interface FileResult { text: string; segments: FileSegment[]; timestamps_available: boolean; duration_ms: number; cleanup_failed: boolean }
+export interface FileState {
+  revision: number; name: string | null; phase: FilePhase; progress: FileProgress | null;
+  result: FileResult | null; error: CommandError | null; options: FileOptions;
+}
+export type FileEvent = Pick<FileState, "revision" | "phase" | "progress">;
+export type FileOutputFormat = "txt" | "srt";

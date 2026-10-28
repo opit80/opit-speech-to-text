@@ -136,7 +136,7 @@ pub async fn transcribe<T: Transcriber>(
 pub async fn transcribe_with_wait<T, W, F>(
     audio: &PreparedAudio,
     ctx: &PipelineContext<'_, T>,
-    mut wait: W,
+    wait: W,
 ) -> Result<Transcript, PipelineError>
 where
     T: Transcriber,
@@ -144,6 +144,21 @@ where
     F: Future<Output = bool>,
 {
     let started = Instant::now();
+    let (raw, used, used_fallback) = transcribe_raw_with_wait(audio, ctx, wait).await?;
+    finish(raw, used, used_fallback, audio, ctx, started)
+}
+
+/// The shared retry ladder without dictation postprocessing, for file transcription callers.
+pub async fn transcribe_raw_with_wait<'a, T, W, F>(
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'a, T>,
+    mut wait: W,
+) -> Result<(RawTranscript, &'a T, bool), PipelineError>
+where
+    T: Transcriber,
+    W: FnMut(RetryWait, Duration) -> F,
+    F: Future<Output = bool>,
+{
     let primary_audio = encode(&audio.samples, ctx.primary.profile().audio_format)?;
     let mut fallback_audio = None;
     let mut result = call(ctx.primary, &primary_audio, audio, ctx).await;
@@ -194,8 +209,17 @@ where
         used = ctx.primary;
         used_fallback = false;
     }
-    let raw = result?;
+    Ok((result?, used, used_fallback))
+}
 
+fn finish<T: Transcriber>(
+    raw: RawTranscript,
+    used: &T,
+    used_fallback: bool,
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'_, T>,
+    started: Instant,
+) -> Result<Transcript, PipelineError> {
     let profile = used.profile();
     let (text, status, hits) = postprocess_with_numbers(
         &raw.text,
@@ -315,7 +339,14 @@ mod tests {
         fn new(id: &str, script: Vec<Result<&str, ProviderError>>) -> Self {
             let script = script
                 .into_iter()
-                .map(|r| r.map(|text| RawTranscript { text: text.into(), language: None, dropped_segments: 0 }))
+                .map(|r| {
+                    r.map(|text| RawTranscript {
+                        text: text.into(),
+                        language: None,
+                        dropped_segments: 0,
+                        segments: Vec::new(),
+                    })
+                })
                 .collect();
             Self {
                 profile: presets::custom(id, id, "http://unused.invalid/v1", "m"),

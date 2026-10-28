@@ -19,12 +19,14 @@
   import Setup from "./pages/Setup.svelte";
   import Guide from "./pages/Guide.svelte";
   import Usage from "./pages/Usage.svelte";
+  import Files from "./pages/Files.svelte";
   import { watchTheme } from "./lib/theme";
 
 
-  const NAV: { route: Route; icon: "home" | "history" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [
+  const NAV: { route: Route; icon: "home" | "history" | "files" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [
     { route: "home", icon: "home" },
     { route: "history", icon: "history" },
+    { route: "files", icon: "files" },
     { route: "rules", icon: "rules" },
     { route: "profiles", icon: "profiles" },
     { route: "settings", icon: "settings" },
@@ -33,7 +35,7 @@
   ];
 
   const navKeys: Record<Route, MessageKey> = {
-    home: "nav.home", history: "nav.history", rules: "nav.rules",
+    home: "nav.home", history: "nav.history", files: "nav.files", rules: "nav.rules",
     profiles: "nav.profiles", settings: "nav.settings", usage: "nav.usage", guide: "nav.guide", setup: "nav.setup",
   };
 
@@ -136,6 +138,7 @@
       {/if}
       {#if router.route === "home"}<Home />
       {:else if router.route === "history"}<History />
+      {:else if router.route === "files"}<Files />
       {:else if router.route === "rules"}<Rules />
       {:else if router.route === "profiles"}<Profiles />
       {:else if router.route === "settings"}<Settings />

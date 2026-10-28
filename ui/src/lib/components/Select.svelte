@@ -2,7 +2,7 @@
   import Field from "./Field.svelte";
   interface Props {
     value: string;
-    options: { value: string; label: string }[];
+    options: { value: string; label: string; disabled?: boolean }[];
     label: string;
     hint?: string;
     disabled?: boolean;
@@ -15,7 +15,7 @@
   {#snippet children(id)}
     <select {id} bind:value {disabled} aria-describedby={hint ? `${id}-description` : undefined}
       onchange={(event) => { value = event.currentTarget.value; onchange?.(value); }}>
-      {#each options as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
+      {#each options as option (option.value)}<option value={option.value} disabled={option.disabled}>{option.label}</option>{/each}
     </select>
   {/snippet}
 </Field>

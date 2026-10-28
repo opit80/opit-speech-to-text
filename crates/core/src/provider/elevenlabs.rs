@@ -12,6 +12,7 @@ pub struct ElevenLabs {
     client: reqwest::Client,
     profile: Profile,
     api_key: Option<String>,
+    file_options: Option<bool>,
 }
 
 impl ElevenLabs {
@@ -23,7 +24,12 @@ impl ElevenLabs {
             .build()
             .map_err(send_error)?;
         let api_key = api_key.map(|key| key.trim().to_string()).filter(|key| !key.is_empty());
-        Ok(Self { client, profile, api_key })
+        Ok(Self { client, profile, api_key, file_options: None })
+    }
+
+    pub fn with_file_options(mut self, diarize: bool) -> Self {
+        self.file_options = Some(diarize);
+        self
     }
 
     fn url(&self, path: &str) -> String {
@@ -66,9 +72,12 @@ impl ElevenLabs {
             .part("file", file)
             .text("model_id", self.profile.model.clone())
             .text("temperature", "0")
-            .text("diarize", "false")
+            .text("diarize", if self.file_options == Some(true) { "true" } else { "false" })
             .text("tag_audio_events", "false")
             .text("no_verbatim", "false");
+        if self.file_options.is_some() {
+            form = form.text("timestamps_granularity", "word");
+        }
         let language = self.profile.language.trim();
         if !language.is_empty() && language != "auto" {
             form = form.text("language_code", language.to_string());
@@ -124,13 +133,52 @@ fn parse_body(body: &str) -> Result<RawTranscript, ProviderError> {
         text: String,
         #[serde(default)]
         language_code: Option<String>,
+        #[serde(default)]
+        words: Vec<Word>,
+    }
+    #[derive(Deserialize)]
+    struct Word {
+        text: String,
+        start: Option<f64>,
+        end: Option<f64>,
+        speaker_id: Option<String>,
+        #[serde(rename = "type", default)]
+        kind: String,
     }
     let transcript: Transcript = serde_json::from_str(body)
         .map_err(|_| ProviderError::BadResponse("invalid ElevenLabs transcription response".into()))?;
+    let mut segments: Vec<crate::files::Segment> = Vec::new();
+    let mut valid = true;
+    for word in transcript.words {
+        if word.kind == "spacing" || word.kind == "audio_event" || word.text.trim().is_empty() {
+            continue;
+        }
+        // Provider speaker identifiers are opaque. Expose only a short safe identifier.
+        let speaker = word
+            .speaker_id
+            .filter(|s| s.len() <= 40 && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')));
+        let Some(next) = crate::files::timed_segment(word.start, word.end, &word.text, speaker) else {
+            valid = false;
+            break;
+        };
+        if let Some(last) = segments.last_mut()
+            && last.speaker == next.speaker
+            && next.start_ms >= last.end_ms
+            && next.end_ms - last.start_ms <= 6000
+            && last.text.chars().count() + next.text.chars().count() < 80
+        {
+            last.text.push(' ');
+            last.text.push_str(&next.text);
+            last.end_ms = next.end_ms;
+        } else {
+            segments.push(next);
+        }
+    }
     Ok(RawTranscript {
         text: transcript.text.trim().to_string(),
         language: transcript.language_code.as_deref().and_then(super::language::normalize),
         dropped_segments: 0,
+        segments: if valid { segments } else { Vec::new() },
     })
 }
 
@@ -158,6 +206,38 @@ mod tests {
     use super::*;
     use crate::audio::encode::{AudioFormat, encode};
     use crate::provider::{ProviderClient, presets};
+
+    #[tokio::test]
+    async fn file_options_request_word_timing_and_diarization_without_changing_dictation_defaults() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/speech-to-text"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "text":"Hello there. Welcome!", "words":[
+                    {"type":"word","text":"Hello","start":0.1,"end":0.5,"speaker_id":"speaker_0"},
+                    {"type":"spacing","text":" ","start":0.5,"end":0.5},
+                    {"type":"word","text":"there.","start":0.5,"end":1.0,"speaker_id":"speaker_0"},
+                    {"type":"word","text":"Welcome!","start":1.1,"end":1.8,"speaker_id":"speaker_1"}
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = ElevenLabs::new(profile(&server), None).unwrap().with_file_options(true);
+        let audio = encode(&[0.4; 32000], AudioFormat::Wav).unwrap();
+        let raw = client
+            .transcribe(&TranscribeRequest { audio: &audio, audio_ms: 2000, prompt: None, keywords: &[] })
+            .await
+            .unwrap();
+        assert_eq!(raw.segments.len(), 2);
+        assert_eq!(raw.segments[0].text, "Hello there.");
+        assert_eq!(raw.segments[0].speaker.as_deref(), Some("speaker_0"));
+        assert_eq!((raw.segments[1].start_ms, raw.segments[1].end_ms), (1100, 1800));
+        let requests = server.received_requests().await.unwrap();
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert_eq!(fields(&body, "diarize"), ["true"]);
+        assert_eq!(fields(&body, "timestamps_granularity"), ["word"]);
+    }
 
     #[test]
     fn parses_language_code_in_both_iso_lengths() {

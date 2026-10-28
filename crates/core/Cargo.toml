@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+symphonia = { version = "0.5.5", features = ["all"] }
 flacenc.workspace = true
 hound.workspace = true
 httpdate = "1.0.3"

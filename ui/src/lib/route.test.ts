@@ -9,6 +9,7 @@ describe("parseRoute", () => {
     expect(parseRoute("#/rules/extra")).toBe("rules");
     expect(parseRoute("#/guide")).toBe("guide");
     expect(parseRoute("#/usage")).toBe("usage");
+    expect(parseRoute("#/files")).toBe("files");
   });
   it("falls back to home", () => {
     expect(parseRoute("")).toBe("home");

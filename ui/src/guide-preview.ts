@@ -4,7 +4,7 @@ import BrowserPreview from "./BrowserPreview.svelte";
 import "./app.css";
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { AppConfig, Dictation, DictationStatus } from "./lib/types";
+import type { AppConfig, Dictation, DictationStatus, FileOptions, FileState } from "./lib/types";
 import { speechDetectionDefaults } from "./lib/speech-detection";
 
 if (!import.meta.env.DEV) throw new Error("Guide preview is only available in the development server");
@@ -46,12 +46,42 @@ if (params.get("failed") === "true" && rows[0]) {
 let paused = params.get("paused") === "true";
 let status: DictationStatus = { state: params.get("recording") === "true" ? "recording" : "idle", can_retry: false, waiting: 0, paused: false };
 let completion: ReturnType<typeof setTimeout> | undefined;
+let fileCompletion: ReturnType<typeof setTimeout> | undefined;
+let fileState: FileState = { revision: 0, name: null, phase: "idle", progress: null, result: null, error: null,
+  options: { language: null, cleanup: false, speakers: false } };
+const fileText = "Toplantı notlarını birlikte gözden geçirelim.";
 async function changeStatus(state: DictationStatus["state"]) {
   status = { state, can_retry: false, waiting: 0, paused: false };
   await emit("dictation-status", status);
 }
 mockIPC(async (command, payload) => {
   switch (command) {
+    // File preview data never reads a real file or contacts a service.
+    case "file_state": return structuredClone(fileState);
+    case "file_pick":
+      fileState = { ...fileState, revision: fileState.revision + 1, name: "meeting-preview.wav", phase: "idle", result: null };
+      return structuredClone(fileState);
+    case "file_start": {
+      fileState = { ...fileState, revision: fileState.revision + 1, phase: "transcribing", progress: { chunk: 1, chunks: 2, percent: 0 }, result: null,
+        options: (payload as { options: FileOptions }).options };
+      fileCompletion = setTimeout(() => {
+        fileState = { ...fileState, revision: fileState.revision + 1, phase: "completed", progress: { chunk: 2, chunks: 2, percent: 100 },
+          result: { text: fileText, segments: [{ start_ms: 1000, end_ms: 4000, text: fileText, speaker: null }],
+            timestamps_available: params.get("fileTiming") !== "false", duration_ms: 5000, cleanup_failed: false } };
+        void emit("file-progress", { revision: fileState.revision, phase: fileState.phase, progress: fileState.progress });
+      }, 1200);
+      return structuredClone(fileState);
+    }
+    case "file_cancel":
+      clearTimeout(fileCompletion);
+      fileState = { ...fileState, revision: fileState.revision + 1, phase: "cancelled" };
+      await emit("file-progress", { revision: fileState.revision, phase: fileState.phase, progress: fileState.progress });
+      return;
+    case "file_render": {
+      const { format, prefixes } = payload as { format: string; prefixes: boolean };
+      return format === "srt" ? `1\n00:00:01,000 --> 00:00:04,000\n${fileText}\n\n` : `${prefixes && fileState.result?.timestamps_available ? "[00:01] " : ""}${fileText}`;
+    }
+    case "file_save": return true;
     case "app_info": return { version: "0.1.1", data_dir: "", log_dir: "", system_locale: "tr-TR", debug_build: true };
     case "get_config": return structuredClone(config);
     case "get_status": return structuredClone(status);

@@ -4,6 +4,7 @@ pub mod app_core;
 pub mod commands;
 pub mod controller;
 pub mod events;
+pub mod file_jobs;
 pub mod history_service;
 pub mod i18n;
 pub mod logging;
@@ -64,6 +65,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| window::show_main(app, None)))
         // In-app updates (updates.rs). Its commands are not exposed to the WebView.
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(commands::handler())
         .setup(move |app| {
             setup(app, paths, start_hidden);
@@ -77,6 +79,9 @@ pub fn run() {
         // `app.exit(n)` arrives as `Some(n)` and is let through.
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         RunEvent::Exit => {
+            if let Some(jobs) = app.try_state::<Arc<file_jobs::FileJobs>>() {
+                jobs.cancel();
+            }
             if let Some(core) = app.try_state::<Arc<AppCore>>() {
                 core.controller.send(Msg::Shutdown);
             }
@@ -89,6 +94,7 @@ pub fn run() {
 fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     // Before anything can emit or invoke: `app.state::<UpdateService>()` panics without it.
     app.manage(updates::UpdateService::default());
+    app.manage(Arc::new(file_jobs::FileJobs::default()));
     let handle = app.handle().clone();
     let loaded = startup::load_config(&paths.config, now_ms());
     let (user_pack, rules_notice) = startup::load_user_pack(&paths.user_rules);

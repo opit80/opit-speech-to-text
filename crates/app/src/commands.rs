@@ -88,7 +88,66 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         get_update_state,
         check_for_updates,
         install_update,
+        file_pick,
+        file_state,
+        file_start,
+        file_cancel,
+        file_render,
+        file_save,
     ]
+}
+
+#[tauri::command]
+async fn file_pick(app: AppHandle) -> Result<crate::file_jobs::FileState> {
+    crate::file_jobs::pick(app).await
+}
+
+#[tauri::command]
+fn file_state(jobs: State<'_, Arc<crate::file_jobs::FileJobs>>) -> crate::file_jobs::FileState {
+    jobs.snapshot()
+}
+
+#[tauri::command]
+fn file_start(
+    app: AppHandle,
+    core: Core<'_>,
+    options: crate::file_jobs::FileOptions,
+) -> Result<crate::file_jobs::FileState> {
+    crate::file_jobs::start(app, core.inner().clone(), options)
+}
+
+#[tauri::command]
+fn file_cancel(app: AppHandle, jobs: State<'_, Arc<crate::file_jobs::FileJobs>>) {
+    jobs.cancel();
+    let state = jobs.snapshot();
+    events::emit(
+        &app,
+        events::FILE_PROGRESS,
+        crate::file_jobs::FileEvent { revision: state.revision, phase: state.phase, progress: state.progress },
+    );
+}
+
+#[tauri::command]
+async fn file_render(
+    jobs: State<'_, Arc<crate::file_jobs::FileJobs>>,
+    format: crate::file_jobs::OutputFormat,
+    prefixes: bool,
+    speakers: bool,
+) -> Result<String> {
+    let jobs = jobs.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || jobs.render(format, prefixes, speakers))
+        .await
+        .map_err(|_| CommandError::new("file_worker", ""))?
+}
+
+#[tauri::command]
+async fn file_save(
+    app: AppHandle,
+    format: crate::file_jobs::OutputFormat,
+    prefixes: bool,
+    speakers: bool,
+) -> Result<bool> {
+    crate::file_jobs::save(app, format, prefixes, speakers).await
 }
 
 #[tauri::command]

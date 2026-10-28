@@ -62,8 +62,16 @@ pub fn encode_flac(pcm: &[i16], sample_rate: u32) -> Result<Vec<u8>, EncodeError
     let config = flacenc::config::Encoder::default().into_verified().map_err(|e| EncodeError(format!("{e:?}")))?;
     let samples: Vec<i32> = pcm.iter().map(|&s| i32::from(s)).collect();
     let source = flacenc::source::MemSource::from_samples(&samples, 1, 16, sample_rate as usize);
-    let stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
+    let mut stream = flacenc::encode_with_fixed_block_size(&config, source, config.block_size)
         .map_err(|e| EncodeError(format!("{e:?}")))?;
+    // Fixed-block streams may have a shorter final frame. Advertise the nominal block
+    // size for both bounds so strict readers identify the fixed blocking strategy.
+    if stream.stream_info().max_block_size() > 0 {
+        stream
+            .stream_info_mut()
+            .set_block_sizes(config.block_size, config.block_size)
+            .map_err(|_| EncodeError("invalid FLAC block size".into()))?;
+    }
     let mut sink = flacenc::bitsink::ByteSink::new();
     stream.write(&mut sink).map_err(|e| EncodeError(format!("{e:?}")))?;
     Ok(sink.into_inner())
