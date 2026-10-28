@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
-  FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, StyleDefaults,
+  FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, RunningApp, StyleDefaults,
 } from "./types";
 
 export const api = {
@@ -35,6 +35,8 @@ export const api = {
   takeStartupNotices: () => invoke<StartupNotice[]>("take_startup_notices"),
 
   listMicrophones: () => invoke<string[]>("list_microphones"),
+  /** For the per-app rule picker only; titles are private and never persisted automatically. */
+  listRunningApps: () => invoke<RunningApp[]>("list_running_apps"),
   micTestStart: (device: string | null) => invoke<string>("mic_test_start", { device }),
   micTestStop: () => invoke<void>("mic_test_stop"),
 

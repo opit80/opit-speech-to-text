@@ -182,6 +182,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     };
     let hotkey = Arc::new(WinHotkey::new());
     let mic = Arc::new(CpalMicrophone::new());
+    let foreground = Arc::new(crate::platform::windows::foreground::WinForegroundApp);
     let media = Arc::new(crate::platform::windows::media::new());
     let sounds = Arc::new(WinSounds::new());
     sounds.warm_up();
@@ -192,6 +193,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
 
     let notices = loaded.notice.into_iter().chain(rules_notice).collect();
     let platform = Platform {
+        foreground: foreground.clone(),
         media: media.clone(),
         secrets: secrets.clone(),
         hotkey: hotkey.clone(),
@@ -237,6 +239,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         });
     }));
     let env = Env {
+        foreground,
         media,
         settings: settings.clone(),
         providers: Arc::new(HttpProviders::new(secrets.clone()).with_local(core.local.clone())),

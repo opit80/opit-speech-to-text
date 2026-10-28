@@ -48,6 +48,7 @@ pub struct AppConfig {
     pub rules: RulesConfig,
     pub ask: crate::ask::AskConfig,
     pub cleanup: crate::cleanup::CleanupConfig,
+    pub app_rules: crate::app_rules::AppRulesConfig,
     pub local: LocalConfig,
     pub ui: UiConfig,
 }
@@ -67,6 +68,7 @@ impl Default for AppConfig {
             rules: RulesConfig::default(),
             ask: crate::ask::AskConfig::default(),
             cleanup: crate::cleanup::CleanupConfig::default(),
+            app_rules: crate::app_rules::AppRulesConfig::default(),
             local: LocalConfig::default(),
             ui: UiConfig::default(),
         }
@@ -356,6 +358,10 @@ impl AppConfig {
                 profile.fallback_profile_id = None;
             }
         }
+        self.app_rules.normalize(
+            &self.cleanup.styles.iter().map(|s| s.id.clone()).collect(),
+            &self.profiles.iter().map(|p| p.id.clone()).collect(),
+        );
     }
 
     pub fn profile(&self, id: &str) -> Option<&Profile> {

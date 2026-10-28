@@ -1,4 +1,6 @@
 <script lang="ts">
+  import AppRules from "../lib/components/AppRules.svelte";
+  import { PASTE_AFTER_KEYS, PASTE_METHOD_KEYS } from "../lib/app-rules";
   import AskSettings from "../lib/components/AskSettings.svelte";
   import CleanupSettings from "../lib/components/CleanupSettings.svelte";
   import CleanupStyles from "../lib/components/CleanupStyles.svelte";
@@ -219,22 +221,11 @@
   const overlayOptions = $derived(
     (Object.keys(overlayKeys) as OverlayPosition[]).map((value) => ({ value, label: t(overlayKeys[value]) })),
   );
-  const pasteMethodKeys: Record<PasteMethod, MessageKey> = {
-    ctrl_v: "settings.paste_method.ctrl_v",
-    shift_insert: "settings.paste_method.shift_insert",
-    ctrl_shift_v: "settings.paste_method.ctrl_shift_v",
-    type: "settings.paste_method.type",
-  };
   const pasteMethodOptions = $derived(
-    (Object.keys(pasteMethodKeys) as PasteMethod[]).map((value) => ({ value, label: t(pasteMethodKeys[value]) })),
+    (Object.keys(PASTE_METHOD_KEYS) as PasteMethod[]).map((value) => ({ value, label: t(PASTE_METHOD_KEYS[value]) })),
   );
-  const pasteAfterKeys: Record<PasteAfter, MessageKey> = {
-    none: "settings.paste_after.none",
-    enter: "settings.paste_after.enter",
-    ctrl_enter: "settings.paste_after.ctrl_enter",
-  };
   const pasteAfterOptions = $derived(
-    (Object.keys(pasteAfterKeys) as PasteAfter[]).map((value) => ({ value, label: t(pasteAfterKeys[value]) })),
+    (Object.keys(PASTE_AFTER_KEYS) as PasteAfter[]).map((value) => ({ value, label: t(PASTE_AFTER_KEYS[value]) })),
   );
   const mediaModeKeys: Record<MediaMode, MessageKey> = {
     pause: "settings.media_mode.pause",
@@ -426,6 +417,11 @@
       <details class="card settings-group">
         <summary>{t("cleanup.title")}</summary>
         <div class="stack group-body"><CleanupSettings /><CleanupStyles /></div>
+      </details>
+
+      <details class="card settings-group">
+        <summary>{t("app_rules.title")}</summary>
+        <div class="stack group-body"><AppRules /></div>
       </details>
 
       <details class="card settings-group" open={installing !== null || !!errors.update_check}>

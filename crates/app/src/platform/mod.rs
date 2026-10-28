@@ -14,6 +14,23 @@ use std::time::{Duration, Instant};
 use opit_core::audio::Recording;
 use opit_core::config::{MediaConfig, MediaMode, OverlayPosition, PasteAfter, PasteMethod};
 
+// ---------- Foreground application ----------
+/// Deliberately not Debug: window titles and process names must never reach logs.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ForegroundInfo {
+    pub exe: String,
+    pub title: String,
+}
+
+pub trait ForegroundApp: Send + Sync {
+    /// Cheap native reads on the controller start path, never on the hotkey hook thread.
+    /// Do not read the title unless requested. Unreadable processes yield None.
+    fn current(&self, include_title: bool) -> Option<ForegroundInfo>;
+    /// Visible, non-tool top-level windows; exclude this process, deduplicate and sort by exe.
+    /// Blocking: only call from a blocking worker. Errors contain no application information.
+    fn list_running(&self) -> Result<Vec<ForegroundInfo>, String>;
+}
+
 // ---------- Media ----------
 pub trait MediaControl: Send + Sync {
     /// Non-blocking, ordered and idempotent. Native work belongs to a dedicated thread.

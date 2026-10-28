@@ -10,6 +10,29 @@ use opit_core::config::OverlayPosition;
 use super::*;
 
 #[derive(Default)]
+pub struct FakeForegroundApp {
+    pub info: Mutex<Option<ForegroundInfo>>,
+    pub calls: Mutex<Vec<bool>>,
+    pub running: Mutex<Vec<ForegroundInfo>>,
+}
+
+impl ForegroundApp for FakeForegroundApp {
+    fn current(&self, include_title: bool) -> Option<ForegroundInfo> {
+        self.calls.lock().unwrap().push(include_title);
+        self.info.lock().unwrap().clone().map(|mut info| {
+            if !include_title {
+                info.title.clear();
+            }
+            info
+        })
+    }
+
+    fn list_running(&self) -> Result<Vec<ForegroundInfo>, String> {
+        Ok(self.running.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
 pub struct FakeMedia {
     pub calls: Mutex<Vec<Option<(MediaMode, u8)>>>,
     active: Mutex<bool>,

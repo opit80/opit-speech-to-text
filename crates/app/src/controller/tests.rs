@@ -19,6 +19,135 @@ use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 // ---------- scripted providers ----------
 
 #[tokio::test]
+async fn app_rule_overrides_are_private_start_snapshots_with_the_selected_profiles_fallback() {
+    use crate::platform::ForegroundInfo;
+    use opit_core::app_rules::AppRule;
+    let mut config = AppConfig::default();
+    config.profiles[1].fallback_profile_id = Some("groq".into());
+    config.app_rules.rules.push(AppRule {
+        id: "editor".into(),
+        exe: "code.exe".into(),
+        title_contains: "İŞ IŞIK".into(),
+        style_id: Some("raw".into()),
+        profile_id: Some("openai".into()),
+        paste_method: Some(PasteMethod::Type),
+        paste_after: Some(PasteAfter::CtrlEnter),
+        ..AppRule::default()
+    });
+    let mut h = harness(config.clone());
+    *h.foreground.info.lock().unwrap() =
+        Some(ForegroundInfo { exe: "CODE.EXE".into(), title: "iş ışık - editor".into() });
+    h.script("openai", vec![Err(ProviderError::Server(503)), Err(ProviderError::Server(503))]);
+    h.script("groq", vec![Ok("fallback words")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    assert_eq!(*h.foreground.calls.lock().unwrap(), [true]);
+    assert!(h.overlay.last().text.contains("Raw"));
+    assert_eq!(h.settings.current().config, config, "global profile/style/paste must stay unchanged");
+    config.app_rules.rules.clear();
+    config.cleanup.active_style_id = "casual".into();
+    config.paste.method = PasteMethod::ShiftInsert;
+    h.settings.replace(settings(config));
+    *h.foreground.info.lock().unwrap() = None;
+    h.send(Msg::Toggle);
+    h.expect(&[Transcribing, Pasting, Idle]).await;
+    let requests = h.paster.requests.lock().unwrap();
+    assert_eq!(requests[0].method, PasteMethod::Type);
+    assert_eq!(requests[0].after, PasteAfter::CtrlEnter);
+    let entries = h.history.entries();
+    assert_eq!(entries[0].profile_id, "groq", "the overridden profile's fallback is used");
+    assert_eq!(entries[0].cleanup_style_id.as_deref(), Some("raw"));
+    assert!(h.providers.scripts.lock().unwrap()["openai"].is_empty(), "overridden primary was tried first");
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn app_rule_profile_and_style_overrides_survive_queueing_and_focus_changes() {
+    use crate::platform::ForegroundInfo;
+    use opit_core::app_rules::AppRule;
+    let mut config = AppConfig::default();
+    config.app_rules.rules.push(AppRule {
+        exe: "code.exe".into(),
+        style_id: Some("formal".into()),
+        profile_id: Some("openai".into()),
+        paste_method: Some(PasteMethod::ShiftInsert),
+        paste_after: Some(PasteAfter::Enter),
+        ..AppRule::default()
+    });
+    let mut h = harness(config);
+    h.providers.gate.forget_permits(1_000);
+    h.script("openai", vec![Ok("first application")]);
+    h.script("groq", vec![Ok("second application")]);
+    *h.foreground.info.lock().unwrap() = Some(ForegroundInfo { exe: "code.exe".into(), title: String::new() });
+    h.handle.control(ControlAction::Start).await.unwrap();
+    h.expect(&[Recording]).await;
+    h.send(Msg::Toggle);
+    h.expect(&[Transcribing]).await;
+    *h.foreground.info.lock().unwrap() = Some(ForegroundInfo { exe: "other.exe".into(), title: String::new() });
+    h.handle.control(ControlAction::Start).await.unwrap();
+    h.expect(&[Recording]).await;
+    h.send(Msg::Toggle);
+    h.providers.gate.add_permits(10);
+    h.wait_for(|s| s.state == Idle).await;
+    let entries = h.history.entries();
+    assert_eq!(entries.iter().map(|e| e.profile_id.as_str()).collect::<Vec<_>>(), ["openai", "groq"]);
+    assert_eq!(
+        entries.iter().map(|e| e.cleanup_style_id.as_deref()).collect::<Vec<_>>(),
+        [Some("formal"), Some("clean")]
+    );
+    let requests = h.paster.requests.lock().unwrap();
+    assert_eq!((requests[0].method, requests[0].after), (PasteMethod::ShiftInsert, PasteAfter::Enter));
+    assert_eq!((requests[1].method, requests[1].after), (PasteMethod::CtrlV, PasteAfter::None));
+    assert_eq!(*h.foreground.calls.lock().unwrap(), [false, false]);
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn app_rules_keep_globals_when_disabled_unmatched_unreadable_or_missing_references() {
+    use crate::platform::ForegroundInfo;
+    use opit_core::app_rules::AppRule;
+    for scenario in ["disabled", "rule_disabled", "unmatched", "unreadable", "missing_refs", "empty"] {
+        let mut config = AppConfig::default();
+        config.app_rules.enabled = scenario != "disabled";
+        config.paste.after = PasteAfter::Enter;
+        if scenario != "empty" {
+            config.app_rules.rules.push(AppRule {
+                id: "editor".into(),
+                enabled: scenario != "rule_disabled",
+                exe: "code.exe".into(),
+                style_id: Some(if scenario == "missing_refs" { "deleted" } else { "raw" }.into()),
+                profile_id: Some(if scenario == "missing_refs" { "deleted" } else { "openai" }.into()),
+                ..AppRule::default()
+            });
+        }
+        let mut h = harness(config.clone());
+        if scenario != "unreadable" {
+            *h.foreground.info.lock().unwrap() = Some(ForegroundInfo {
+                exe: if scenario == "unmatched" { "other.exe" } else { "code.exe" }.into(),
+                title: "private caption".into(),
+            });
+        }
+        h.script("groq", vec![Ok("global words")]);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        assert_eq!(
+            *h.foreground.calls.lock().unwrap(),
+            if ["disabled", "rule_disabled", "empty"].contains(&scenario) { vec![] } else { vec![false] }
+        );
+        h.send(Msg::Toggle);
+        h.expect(&[Transcribing, Pasting, Idle]).await;
+        let entries = h.history.entries();
+        assert_eq!(entries[0].profile_id, "groq", "{scenario}");
+        assert_eq!(entries[0].cleanup_style_id.as_deref(), Some("clean"), "{scenario}");
+        let requests = h.paster.requests.lock().unwrap();
+        assert_eq!(requests[0].method, config.paste.method);
+        assert_eq!(requests[0].after, PasteAfter::Enter);
+        assert_eq!(h.settings.current().config, config);
+        h.send(Msg::Shutdown);
+    }
+}
+
+#[tokio::test]
 async fn cleanup_style_snapshot_survives_unrelated_config_changes_and_raw_skips_clients() {
     for raw in [false, true] {
         let mut config = AppConfig::default();
@@ -615,6 +744,7 @@ impl UiEvents for FakeEvents {
 // ---------- harness ----------
 
 struct Harness {
+    foreground: Arc<FakeForegroundApp>,
     handle: ControllerHandle,
     states: mpsc::UnboundedReceiver<DictationStatus>,
     settings: SettingsHandle,
@@ -733,10 +863,12 @@ fn harness(config: AppConfig) -> Harness {
         (Arc::<FakeOverlay>::default(), Arc::<FakeSounds>::default(), Arc::<FakeHistory>::default());
     let (handle, inbox) = channel();
     let media = Arc::new(FakeMedia::default());
+    let foreground = Arc::new(FakeForegroundApp::default());
     tokio::spawn(run(
         &handle,
         inbox,
         Env {
+            foreground: foreground.clone(),
             settings: settings.clone(),
             providers: Arc::new(TestProviders(providers.clone())),
             mic: mic.clone(),
@@ -750,7 +882,21 @@ fn harness(config: AppConfig) -> Harness {
             retry_delay: Duration::ZERO,
         },
     ));
-    Harness { handle, states, settings, providers, mic, media, hotkey, paster, overlay, sounds, history, events }
+    Harness {
+        foreground,
+        handle,
+        states,
+        settings,
+        providers,
+        mic,
+        media,
+        hotkey,
+        paster,
+        overlay,
+        sounds,
+        history,
+        events,
+    }
 }
 
 impl Harness {

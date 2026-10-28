@@ -91,6 +91,33 @@ export interface MediaConfig {
   duck_volume_percent: number;
 }
 
+/** One per-app rule (crates/core/src/app_rules.rs `AppRule`); null fields keep the global setting. */
+export interface AppRule {
+  id: string;
+  enabled: boolean;
+  /** Process file name such as `code.exe`, stored case-folded; no path or wildcard. */
+  exe: string;
+  /** Case-insensitive part of the window title; "" matches any window of the app. */
+  title_contains: string;
+  style_id: string | null;
+  profile_id: string | null;
+  paste_method: PasteMethod | null;
+  /** "none" turns the global after-key off; null keeps it. */
+  paste_after: PasteAfter | null;
+}
+
+/** The first enabled matching rule (in list order) applies when a dictation starts. */
+export interface AppRulesConfig {
+  enabled: boolean;
+  rules: AppRule[];
+}
+
+/** `list_running_apps`: visible windows of other apps, one per file name, sorted. Titles are private. */
+export interface RunningApp {
+  exe: string;
+  title: string;
+}
+
 export interface AppConfig {
   local: LocalConfig;
   ask: AskConfig;
@@ -117,6 +144,7 @@ export interface AppConfig {
   };
   paste: PasteConfig;
   media: MediaConfig;
+  app_rules: AppRulesConfig;
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
   rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
   ui: {

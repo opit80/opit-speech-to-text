@@ -45,6 +45,10 @@ const config: AppConfig = {
   recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults },
   paste: { method: "ctrl_v", after: "none", restore_clipboard: false, trailing_space: true },
   media: { enabled: true, mode: "pause", duck_volume_percent: 20 },
+  app_rules: { enabled: true, rules: params.get("appRules") === "true" ? [
+    { id: "rule-preview1", enabled: true, exe: "windowsterminal.exe", title_contains: "", style_id: "raw", profile_id: null, paste_method: "ctrl_shift_v", paste_after: null },
+    { id: "rule-preview2", enabled: false, exe: "outlook.exe", title_contains: "Yanıt", style_id: "formal", profile_id: null, paste_method: null, paste_after: "none" },
+  ] : [] },
   history: { enabled: true, save_audio: false, audio_retention_days: 7, max_entries: 1000 },
   rules: { enabled_packs: ["tr-core", "tr-tech"], prompt_context: "", numbers_as_words: false },
   ui: { theme: "system", start_in_tray: false, autostart: false, overlay_position: "right_center", sound_feedback: true, setup_done: params.get("setup") !== "true", check_updates: false },
@@ -189,6 +193,12 @@ mockIPC(async (command, payload) => {
       { id: "fivem", name: "FiveM", language: "tr", terms: 32, corrections: 9, replacements: 2, hallucinations: 0 },
     ];
     case "get_update_state": return { kind: "idle" };
+    // Synthetic window list for the rule picker; no real windows are enumerated.
+    case "list_running_apps": return [
+      { exe: "code.exe", title: "app-rules.ts - Preview - Visual Studio Code" },
+      { exe: "outlook.exe", title: "Gelen Kutusu - Önizleme" },
+      { exe: "windowsterminal.exe", title: "" },
+    ];
     case "take_startup_notices":
     case "list_microphones":
       return [];

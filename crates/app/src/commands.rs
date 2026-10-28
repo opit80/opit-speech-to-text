@@ -68,6 +68,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         ask_status,
         test_ask,
         list_microphones,
+        list_running_apps,
         mic_test_start,
         mic_test_stop,
         has_api_key,
@@ -328,6 +329,18 @@ async fn list_microphones(core: Core<'_>) -> Result<Vec<String>> {
     tauri::async_runtime::spawn_blocking(move || core.microphones())
         .await
         .map_err(|_| CommandError::new("unavailable", "the microphone list could not be read"))
+}
+
+/// Window/process enumeration is confined to a blocking worker. Titles are returned only to the UI.
+#[tauri::command]
+async fn list_running_apps(core: Core<'_>) -> Result<Vec<crate::platform::ForegroundInfo>> {
+    let core = core.inner().clone();
+    let message = core.settings.current().lang.application_list_failed();
+    tauri::async_runtime::spawn_blocking(move || core.platform.foreground.list_running())
+        .await
+        .ok()
+        .and_then(std::result::Result::ok)
+        .ok_or_else(|| CommandError::new("unavailable", message))
 }
 
 /// Opening a device can block for a moment, so this runs on the blocking pool.

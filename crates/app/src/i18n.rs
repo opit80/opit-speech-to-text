@@ -22,6 +22,13 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn application_list_failed(self) -> &'static str {
+        match self {
+            Self::En => "The application list could not be read.",
+            Self::Tr => "Uygulama listesi okunamadı.",
+        }
+    }
+
     pub fn loading_local(self) -> &'static str {
         self.pick("Loading local model…", "Yerel model yükleniyor…")
     }
@@ -312,6 +319,7 @@ mod tests {
         use opit_core::provider::retry::RetryWait;
         let mut out: Vec<(&'static str, String)> = vec![
             ("loading_local", lang.loading_local().into()),
+            ("application_list_failed", lang.application_list_failed().into()),
             ("ask_cleanup_failed", lang.ask_cleanup_failed().into()),
             ("ask_invalid", lang.ask_invalid().into()),
             ("ask_detection_failed", lang.ask_detection_failed().into()),

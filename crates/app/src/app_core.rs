@@ -17,8 +17,8 @@ use tracing::{info, warn};
 use crate::controller::{ControllerHandle, DictationState, DictationStatus, ErrorKind};
 use crate::history_service::HistoryService;
 use crate::platform::{
-    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, HotkeyEvent, MediaControl, Microphone, Overlay,
-    OverlayView, SecretError, SecretStore, Tone,
+    Autostart, Capture, CaptureEvent, CaptureSink, ForegroundApp, Hotkey, HotkeyError, HotkeyEvent, MediaControl,
+    Microphone, Overlay, OverlayView, SecretError, SecretStore, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::{self, Paths, StartupNotice};
@@ -125,6 +125,7 @@ pub const USER_PACK_TEMPLATE: &str = "schema: 1\nid: user\nname: Personal\nlangu
 const STARTUP_NOTICE_HIDE: Duration = Duration::from_secs(6);
 
 pub struct Platform {
+    pub foreground: Arc<dyn ForegroundApp>,
     pub media: Arc<dyn MediaControl>,
     pub secrets: Arc<dyn SecretStore>,
     pub hotkey: Arc<dyn Hotkey>,
@@ -874,6 +875,7 @@ mod tests {
         let mic = Arc::new(FakeMic::default());
         let media = Arc::new(FakeMedia::default());
         let platform = Platform {
+            foreground: Arc::new(FakeForegroundApp::default()),
             media: media.clone(),
             secrets: secrets.clone(),
             hotkey: hotkey.clone(),

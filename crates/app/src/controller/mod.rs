@@ -26,9 +26,9 @@ pub use status::{DictationState, DictationStatus, ErrorKind};
 
 use crate::i18n::Lang;
 use crate::platform::{
-    Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyEvent, HotkeySink, MediaControl, MediaGuard, Microphone, Overlay,
-    OverlayAction, OverlayButton, OverlaySink, OverlayView, PasteOutcome, PasteRequest, Paster, RecordingTiming,
-    SecretError, Sound, Sounds, Tone,
+    Capture, CaptureEvent, CaptureSink, ForegroundApp, Hotkey, HotkeyEvent, HotkeySink, MediaControl, MediaGuard,
+    Microphone, Overlay, OverlayAction, OverlayButton, OverlaySink, OverlayView, PasteOutcome, PasteRequest, Paster,
+    RecordingTiming, SecretError, Sound, Sounds, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 
@@ -95,6 +95,7 @@ pub trait UiEvents: Send + Sync {
 }
 
 pub struct Env<P: Providers> {
+    pub foreground: Arc<dyn ForegroundApp>,
     pub settings: SettingsHandle,
     pub providers: Arc<P>,
     pub mic: Arc<dyn Microphone>,
@@ -440,13 +441,12 @@ struct Pending<C> {
     salvage: bool,
 }
 
-/// Resolve once at request/recording start. Foreground-app overrides can be applied here
-/// later without letting config changes affect recordings or queued jobs already in progress.
+/// Read from the private snapshot, after any per-app overrides at recording start.
 fn effective_paste(settings: &Settings) -> PasteConfig {
     settings.config.paste.clone()
 }
 
-/// Foreground-app overrides can resolve the recording's style at this same boundary.
+/// Read from the same snapshot as the profile and paste policy.
 fn effective_style(settings: &Settings) -> CleanupStyle {
     settings.config.cleanup.active_style()
 }
@@ -840,7 +840,7 @@ impl<P: Providers> Controller<P> {
             self.env.overlay.show(view(Tone::Warning, lang.queue_full(), Some(INFO_HIDE)));
             return;
         }
-        let settings = self.env.settings.current();
+        let settings = self.dictation_settings();
         let clients = match self.clients(&settings) {
             Ok(clients) => clients,
             Err(err) => {
@@ -910,6 +910,20 @@ impl<P: Providers> Controller<P> {
         });
         self.show_recording();
         self.set_state(DictationState::Recording);
+    }
+
+    fn dictation_settings(&self) -> Arc<Settings> {
+        let settings = self.env.settings.current();
+        let app_rules = &settings.config.app_rules;
+        if !app_rules.enabled || !app_rules.rules.iter().any(|r| r.enabled) {
+            return settings;
+        }
+        let Some(app) = self.env.foreground.current(app_rules.needs_title()) else { return settings };
+        let Some(rule) = app_rules.matching(&app.exe, &app.title) else { return settings };
+        let mut config = settings.config.clone();
+        rule.apply(&mut config);
+        info!("app rule applied");
+        Arc::new(Settings { config, rules: settings.rules.clone(), lang: settings.lang })
     }
 
     fn stop(&mut self, auto_paste: bool) {
