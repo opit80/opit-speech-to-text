@@ -104,6 +104,14 @@ pub struct Env<P: Providers> {
 /// Controller input. Deliberately not `Debug`: `Transcribed` carries transcript text,
 /// which must never reach a log line.
 pub enum Msg {
+    Control {
+        action: ControlAction,
+        reply: oneshot::Sender<Result<DictationStatus, ErrorKind>>,
+    },
+    Record {
+        seconds: u32,
+        reply: oneshot::Sender<Result<String, ErrorKind>>,
+    },
     /// Tray left click or UI button: start or stop, keeping stopped items clipboard-only.
     Toggle,
     Stop,
@@ -161,6 +169,37 @@ pub struct ControllerHandle {
 
 pub struct Inbox(mpsc::UnboundedReceiver<Msg>);
 
+#[derive(Clone, Copy)]
+pub enum ControlAction {
+    Toggle,
+    Start,
+    Stop,
+    Cancel,
+    Pause,
+    Resume,
+    Retry,
+}
+
+/// A caller always receives a terminal answer, including cancellation, shutdown,
+/// microphone loss or a job removed from the queue.
+struct TextReply(Option<oneshot::Sender<Result<String, ErrorKind>>>);
+
+impl TextReply {
+    fn finish(mut self, result: Result<String, ErrorKind>) {
+        if let Some(reply) = self.0.take() {
+            let _ = reply.send(result);
+        }
+    }
+}
+
+impl Drop for TextReply {
+    fn drop(&mut self) {
+        if let Some(reply) = self.0.take() {
+            let _ = reply.send(Err(ErrorKind::Cancelled));
+        }
+    }
+}
+
 /// While alive, new dictations and "Try again" are refused; dropping it lifts the hold.
 pub struct UpdateHold {
     tx: mpsc::UnboundedSender<Msg>,
@@ -200,6 +239,17 @@ pub fn run<P: Providers>(
 }
 
 impl ControllerHandle {
+    pub async fn control(&self, action: ControlAction) -> Result<DictationStatus, ErrorKind> {
+        let (reply, result) = oneshot::channel();
+        self.send(Msg::Control { action, reply });
+        result.await.unwrap_or(Err(ErrorKind::Cancelled))
+    }
+
+    pub async fn record(&self, seconds: u32) -> Result<String, ErrorKind> {
+        let (reply, result) = oneshot::channel();
+        self.send(Msg::Record { seconds, reply });
+        result.await.unwrap_or(Err(ErrorKind::Cancelled))
+    }
     /// Never blocks; messages sent after shutdown are dropped.
     pub fn send(&self, msg: Msg) {
         let _ = self.tx.send(msg);
@@ -246,6 +296,7 @@ struct Clients<C> {
 }
 
 struct Job {
+    text_reply: Option<TextReply>,
     settings: Arc<Settings>,
     /// When the user stopped recording (or pressed "Try again"); latency is measured from here.
     started: Instant,
@@ -260,6 +311,7 @@ enum Input {
 }
 
 struct ActiveRecording<C> {
+    text_reply: Option<TextReply>,
     session: u64,
     capture: Box<dyn Capture>,
     settings: Arc<Settings>,
@@ -340,6 +392,36 @@ impl<P: Providers> Controller<P> {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
+            Msg::Control { action, reply } => {
+                let result = self.control(action);
+                self.pump();
+                let status = self.status.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                let _ = reply.send(result.map(|()| status));
+            }
+            Msg::Record { seconds, reply } => {
+                let reply = TextReply(Some(reply));
+                if !(1..=300).contains(&seconds) || self.recording.is_some() || self.update_holds != 0 {
+                    reply.finish(Err(ErrorKind::Rejected));
+                } else {
+                    self.start();
+                    if let Some(r) = self.recording.as_mut() {
+                        r.text_reply = Some(reply);
+                        let mut config = r.settings.config.clone();
+                        config.recording.max_seconds = seconds;
+                        r.settings =
+                            Arc::new(Settings { config, rules: r.settings.rules.clone(), lang: r.settings.lang });
+                        r.limit.abort();
+                        r.remaining = Duration::from_secs(u64::from(seconds));
+                        let session = r.session;
+                        let remaining = r.remaining;
+                        let limit = self.arm_limit(session, remaining);
+                        self.recording.as_mut().unwrap().limit = limit;
+                        self.show_recording();
+                    } else {
+                        reply.finish(Err(ErrorKind::Rejected));
+                    }
+                }
+            }
             Msg::Toggle => self.toggle(false),
             Msg::Stop => self.stop(false),
             Msg::PauseResume => self.pause_resume(),
@@ -395,6 +477,47 @@ impl<P: Providers> Controller<P> {
 
     fn is_idle(&self) -> bool {
         self.recording.is_none() && self.waiting.is_empty() && matches!(self.phase, Phase::Idle)
+    }
+
+    fn control(&mut self, action: ControlAction) -> Result<(), ErrorKind> {
+        match action {
+            ControlAction::Start if self.recording.is_some() => return Err(ErrorKind::Rejected),
+            ControlAction::Start => {
+                self.start();
+                if self.recording.is_none() {
+                    return Err(ErrorKind::Rejected);
+                }
+            }
+            ControlAction::Toggle => {
+                if self.recording.is_some() {
+                    self.stop(false);
+                } else {
+                    self.start();
+                    if self.recording.is_none() {
+                        return Err(ErrorKind::Rejected);
+                    }
+                }
+            }
+            ControlAction::Stop if self.recording.is_none() => return Err(ErrorKind::Rejected),
+            ControlAction::Stop => self.stop(false),
+            ControlAction::Cancel => self.cancel(true),
+            ControlAction::Pause | ControlAction::Resume => {
+                let r = self.recording.as_ref().ok_or(ErrorKind::Rejected)?;
+                if r.paused != matches!(action, ControlAction::Pause) {
+                    self.pause_resume();
+                }
+            }
+            ControlAction::Retry => {
+                if !self.is_idle() || self.retry.is_none() || self.update_holds != 0 {
+                    return Err(ErrorKind::Rejected);
+                }
+                self.retry();
+                if matches!(self.phase, Phase::Idle) {
+                    return Err(ErrorKind::Rejected);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn toggle(&mut self, auto_paste: bool) {
@@ -500,6 +623,7 @@ impl<P: Providers> Controller<P> {
         self.play(Sound::Start);
         info!(session, device = %started.device, profile = %settings.config.active_profile_id, "recording started");
         self.recording = Some(ActiveRecording {
+            text_reply: None,
             session,
             capture: started.capture,
             settings,
@@ -522,7 +646,14 @@ impl<P: Providers> Controller<P> {
         let recording = r.capture.finish();
         self.waiting.push_back(Pending {
             session: r.session,
-            job: Job { settings: r.settings, started: Instant::now(), auto_paste, history_id: None, reply: None },
+            job: Job {
+                text_reply: r.text_reply,
+                settings: r.settings,
+                started: Instant::now(),
+                auto_paste,
+                history_id: None,
+                reply: None,
+            },
             clients: r.clients,
             input: Input::Raw(recording),
             salvage: false,
@@ -551,6 +682,7 @@ impl<P: Providers> Controller<P> {
         info!(session = self.session, "retrying the last dictation");
         self.env.hotkey.set_capture_escape(true);
         let job = Job {
+            text_reply: None,
             settings,
             started: Instant::now(),
             auto_paste: self.env.paster.can_auto_paste(),
@@ -683,7 +815,14 @@ impl<P: Providers> Controller<P> {
         self.session += 1;
         self.waiting.push_back(Pending {
             session: self.session,
-            job: Job { settings, started: Instant::now(), auto_paste: false, history_id: Some(id), reply: Some(reply) },
+            job: Job {
+                text_reply: None,
+                settings,
+                started: Instant::now(),
+                auto_paste: false,
+                history_id: Some(id),
+                reply: Some(reply),
+            },
             clients,
             input: Input::Prepared(audio),
             salvage: false,
@@ -713,11 +852,15 @@ impl<P: Providers> Controller<P> {
                 warn!(session, %reason, "microphone stopped during recording");
                 let r = self.recording.take().unwrap();
                 r.limit.abort();
+                if let Some(reply) = r.text_reply {
+                    reply.finish(Err(ErrorKind::Microphone));
+                }
                 // Keep what was said so far (spec §8): prepare it, but send nothing on our own.
                 let recording = r.capture.finish();
                 self.waiting.push_back(Pending {
                     session,
                     job: Job {
+                        text_reply: None,
                         settings: r.settings,
                         started: Instant::now(),
                         auto_paste: false,
@@ -762,6 +905,28 @@ impl<P: Providers> Controller<P> {
             unreachable!("checked above")
         };
         let lang = job.settings.lang;
+        if let Some(reply) = job.text_reply.take() {
+            match result {
+                Ok(transcript) => {
+                    self.retry = None;
+                    self.record(&job, &transcript, audio.as_deref());
+                    reply.finish(Ok(transcript.text));
+                    if self.recording.is_some() {
+                        self.show_recording();
+                    } else {
+                        self.env.overlay.hide();
+                    }
+                    self.set_state(DictationState::Idle);
+                }
+                Err(error) => {
+                    let kind = ErrorKind::from(&error);
+                    self.retry = audio;
+                    reply.finish(Err(kind));
+                    self.fail(kind, lang);
+                }
+            }
+            return;
+        }
         let transcript = match result {
             Ok(transcript) => transcript,
             Err(PipelineError::TooShort) => {

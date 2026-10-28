@@ -7,6 +7,7 @@ pub mod events;
 pub mod file_jobs;
 pub mod history_service;
 pub mod i18n;
+pub mod ipc;
 pub mod logging;
 pub mod platform;
 pub mod providers;
@@ -180,6 +181,8 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     if let Some(view) = core.startup_overlay() {
         overlay.show(view);
     }
+    #[cfg(windows)]
+    ipc::spawn(handle.clone(), core.clone());
     app.manage(core);
 
     if let Err(err) = tray::create(&handle) {

@@ -18,6 +18,79 @@ use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 
 // ---------- scripted providers ----------
 
+#[tokio::test]
+async fn cli_controls_are_atomic_and_pause_resume_are_idempotent() {
+    let h = harness(AppConfig::default());
+    assert!(h.handle.control(ControlAction::Stop).await.is_err());
+    assert!(h.handle.control(ControlAction::Retry).await.is_err());
+    assert!(h.handle.control(ControlAction::Pause).await.is_err());
+    assert_eq!(h.handle.control(ControlAction::Start).await.unwrap().state, Recording);
+    assert!(h.handle.control(ControlAction::Start).await.is_err());
+    for _ in 0..2 {
+        assert!(h.handle.control(ControlAction::Pause).await.unwrap().paused);
+    }
+    for _ in 0..2 {
+        assert!(!h.handle.control(ControlAction::Resume).await.unwrap().paused);
+    }
+    assert_eq!(h.handle.control(ControlAction::Cancel).await.unwrap().state, Idle);
+}
+
+#[tokio::test]
+async fn cli_timed_record_returns_its_own_text_without_touching_clipboard() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("ordinary"), Ok("CLI sample")]);
+    h.providers.gate.forget_permits(1_000);
+    h.send(Msg::Toggle);
+    h.send(Msg::Stop);
+    h.expect(&[Recording, Transcribing]).await;
+    let handle = h.handle.clone();
+    let result = tokio::spawn(async move { handle.record(1).await });
+    h.expect(&[Recording]).await;
+    assert!(h.handle.record(1).await.is_err(), "cannot replace an existing clip");
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    h.providers.gate.add_permits(1_000);
+    assert_eq!(result.await.unwrap().unwrap(), "CLI sample");
+    assert_eq!(h.paster.texts(), ["ordinary "]);
+    assert_eq!(h.history.entries().len(), 2);
+}
+
+#[tokio::test]
+async fn cli_record_always_replies_on_cancel_and_provider_failure() {
+    let mut h = harness(AppConfig::default());
+    let handle = h.handle.clone();
+    let result = tokio::spawn(async move { handle.record(5).await });
+    h.expect(&[Recording]).await;
+    h.handle.control(ControlAction::Cancel).await.unwrap();
+    assert_eq!(result.await.unwrap(), Err(ErrorKind::Cancelled));
+    h.script("groq", vec![Err(ProviderError::Unauthorized(401))]);
+    let handle = h.handle.clone();
+    let result = tokio::spawn(async move { handle.record(5).await });
+    h.expect(&[Cancelled, Idle, Recording]).await;
+    h.handle.control(ControlAction::Stop).await.unwrap();
+    assert_eq!(result.await.unwrap(), Err(ErrorKind::InvalidKey));
+    assert!(h.paster.texts().is_empty());
+}
+
+#[tokio::test]
+async fn cli_completion_preserves_a_new_recordings_overlay() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("CLI sample")]);
+    h.providers.gate.forget_permits(1_000);
+    let handle = h.handle.clone();
+    let result = tokio::spawn(async move { handle.record(5).await });
+    h.expect(&[Recording]).await;
+    h.handle.control(ControlAction::Stop).await.unwrap();
+    h.expect(&[Transcribing]).await;
+    h.handle.control(ControlAction::Start).await.unwrap();
+    h.expect(&[Recording]).await;
+    h.providers.gate.add_permits(1_000);
+    assert_eq!(result.await.unwrap().unwrap(), "CLI sample");
+    assert_eq!(h.handle.status().state, Recording);
+    assert!(h.overlay.last().recording.is_some(), "the new recording must remain visible");
+    h.handle.control(ControlAction::Cancel).await.unwrap();
+    assert!(h.paster.texts().is_empty());
+}
+
 struct ProviderState {
     scripts: Mutex<HashMap<String, VecDeque<Result<String, ProviderError>>>>,
     missing_keys: Mutex<HashSet<String>>,

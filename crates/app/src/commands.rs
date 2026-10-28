@@ -35,6 +35,7 @@ where
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppInfo {
+    pub cli_path: String,
     pub version: &'static str,
     pub data_dir: String,
     pub log_dir: String,
@@ -153,6 +154,9 @@ async fn file_save(
 #[tauri::command]
 fn app_info(core: Core<'_>) -> AppInfo {
     AppInfo {
+        cli_path: std::env::current_exe()
+            .map(|p| p.with_file_name("opit.exe").to_string_lossy().into_owned())
+            .unwrap_or_default(),
         version: env!("CARGO_PKG_VERSION"),
         data_dir: core.paths.root.display().to_string(),
         log_dir: core.paths.logs.display().to_string(),

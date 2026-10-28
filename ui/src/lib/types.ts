@@ -75,6 +75,7 @@ export interface AppConfig {
 }
 
 export interface AppInfo {
+  cli_path: string;
   version: string;
   data_dir: string;
   log_dir: string;

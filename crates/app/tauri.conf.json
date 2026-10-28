@@ -6,7 +6,7 @@
     "devUrl": "http://localhost:5173",
     "frontendDist": "../../ui/dist",
     "beforeDevCommand": { "script": "npm run dev", "cwd": "../../ui", "wait": false },
-    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../ui" }
+    "beforeBuildCommand": { "script": "node ../scripts/build-cli.mjs && npm run build", "cwd": "../../ui" }
   },
   "app": {
     "windows": [],
@@ -18,6 +18,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "resources": { "../../target/cli-bundle/": "" },
     "createUpdaterArtifacts": true,
     "publisher": "opit80",
     "copyright": "Copyright (c) 2026 opit80",

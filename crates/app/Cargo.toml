@@ -19,6 +19,7 @@ tauri-plugin-dialog = "2.8.4"
 dirs.workspace = true
 hound.workspace = true
 opit-core = { path = "../core" }
+opit-ipc = { path = "../ipc" }
 serde.workspace = true
 serde_json.workspace = true
 sys-locale.workspace = true

@@ -472,6 +472,7 @@ export const en = {
   "settings.about": "About",
   "settings.version": "Version {version}",
   "settings.data_dir": "Data folder",
+  "settings.cli_path": "Command-line tool",
   "settings.log_dir": "Log folder",
   "settings.keys_note": "API keys are stored in Windows Credential Manager, never in these files.",
   "settings.logs_note": "Transcript text is never written to the logs.",

@@ -1,5 +1,5 @@
-//! One independent file worker. Native dialogs are the only source of paths; commands
-//! accept options, never paths or arbitrary output content. Results stay in memory.
+//! Reusable app file worker. WebView commands accept only native-dialog paths;
+//! authenticated local IPC supplies its own paths. Results stay in memory.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -231,45 +231,68 @@ pub fn start(app: AppHandle, core: Arc<AppCore>, mut options: FileOptions) -> Re
     let worker_jobs = jobs.clone();
     let worker_app = app.clone();
     let worker = tauri::async_runtime::spawn_blocking(move || {
-        let primary = client(&core, profile.clone(), &options)?;
-        let fallback = settings.config.fallback_for(&profile).cloned().and_then(|p| client(&core, p, &options).ok());
-        let cleanup = if options.cleanup {
-            HttpProviders::new(core.platform.secrets.clone()).cleanup_client(&settings.config.cleanup).ok()
-        } else {
-            None
-        };
-        let samples = files::decode::decode(&path, &cancel).map_err(|e| file_error(e, settings.lang, &path))?;
-        let ctx = PipelineContext {
-            primary: &primary,
-            fallback: fallback.as_ref(),
-            rules: &settings.rules,
-            prompt_context: &settings.config.rules.prompt_context,
-            retry_delay: opit_core::provider::retry::RETRY_DELAY,
-            numbers_as_words: settings.config.rules.numbers_as_words,
-        };
-        let mut result = handle
-            .block_on(files::transcribe(
-                &samples,
-                &ctx,
-                cleanup.as_deref().map(|client| FileCleanup {
-                    client,
-                    ui_language: if settings.lang == Lang::Tr { "tr" } else { "en" },
-                }),
-                &cancel,
-                files::TARGET_SAMPLES,
-                |p| {
-                    crate::events::emit(&worker_app, crate::events::FILE_PROGRESS, worker_jobs.progress(p));
-                },
-            ))
-            .map_err(|e| file_error(e, settings.lang, &path))?;
-        result.cleanup_failed |= options.cleanup && cleanup.is_none();
-        Ok(result)
+        transcribe_path(
+            &core,
+            settings,
+            &options,
+            &path,
+            &cancel,
+            |p| {
+                crate::events::emit(&worker_app, crate::events::FILE_PROGRESS, worker_jobs.progress(p));
+            },
+            handle.inner(),
+        )
     });
     tauri::async_runtime::spawn(async move {
         let result = worker.await.unwrap_or_else(|_| Err(CommandError::new("file_worker", "")));
         crate::events::emit(&app, crate::events::FILE_PROGRESS, jobs.finish(result));
     });
     Ok(initial)
+}
+
+/// Runs decoding and encoding on a blocking worker, using the same engine and
+/// credential/profile policy for the UI and Opit Speech to Text's CLI.
+pub fn transcribe_path(
+    core: &AppCore,
+    settings: Arc<crate::settings::Settings>,
+    options: &FileOptions,
+    path: &std::path::Path,
+    cancel: &AtomicBool,
+    progress: impl Fn(Progress),
+    runtime: &tokio::runtime::Handle,
+) -> Result<FileResult> {
+    let profile =
+        settings.config.active_profile().cloned().ok_or_else(|| CommandError::new("config", "no active profile"))?;
+    let primary = client(core, profile.clone(), options)?;
+    let fallback = settings.config.fallback_for(&profile).cloned().and_then(|p| client(core, p, options).ok());
+    let cleanup = if options.cleanup {
+        HttpProviders::new(core.platform.secrets.clone()).cleanup_client(&settings.config.cleanup).ok()
+    } else {
+        None
+    };
+    let samples = files::decode::decode(path, cancel).map_err(|e| file_error(e, settings.lang, path))?;
+    let ctx = PipelineContext {
+        primary: &primary,
+        fallback: fallback.as_ref(),
+        rules: &settings.rules,
+        prompt_context: &settings.config.rules.prompt_context,
+        retry_delay: opit_core::provider::retry::RETRY_DELAY,
+        numbers_as_words: settings.config.rules.numbers_as_words,
+    };
+    let mut result = runtime
+        .block_on(files::transcribe(
+            &samples,
+            &ctx,
+            cleanup
+                .as_deref()
+                .map(|client| FileCleanup { client, ui_language: if settings.lang == Lang::Tr { "tr" } else { "en" } }),
+            cancel,
+            files::TARGET_SAMPLES,
+            progress,
+        ))
+        .map_err(|e| file_error(e, settings.lang, path))?;
+    result.cleanup_failed |= options.cleanup && cleanup.is_none();
+    Ok(result)
 }
 
 fn file_error(error: FileError, lang: Lang, path: &std::path::Path) -> CommandError {

@@ -474,6 +474,7 @@ export const tr: Record<MessageKey, string> = {
   "settings.about": "Hakkında",
   "settings.version": "Sürüm {version}",
   "settings.data_dir": "Veri klasörü",
+  "settings.cli_path": "Komut satırı aracı",
   "settings.log_dir": "Log klasörü",
   "settings.keys_note": "API anahtarları bu dosyalarda değil, Windows Kimlik Bilgisi Yöneticisi'nde saklanır.",
   "settings.logs_note": "Dikte metni loglara asla yazılmaz.",

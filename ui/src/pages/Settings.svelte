@@ -381,7 +381,7 @@
       </div>
       </details>
 
-      <details class="card settings-group" open={!!errors.copy_data || !!errors.copy_log}>
+      <details class="card settings-group" open={!!errors.copy_data || !!errors.copy_log || !!errors.copy_cli}>
         <summary>{t("settings.about")}</summary>
         <div class="stack group-body">
         {#if app.info}
@@ -390,6 +390,7 @@
             {#each [
               { field: "copy_data", label: t("settings.data_dir"), path: app.info.data_dir },
               { field: "copy_log", label: t("settings.log_dir"), path: app.info.log_dir },
+              { field: "copy_cli", label: t("settings.cli_path"), path: app.info.cli_path },
             ] as item (item.field)}
               <div>
                 <dt id={`settings-${item.field}`}>{item.label}</dt>

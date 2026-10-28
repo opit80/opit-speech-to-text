@@ -10,6 +10,16 @@ fn conf() -> serde_json::Value {
 }
 
 #[test]
+fn the_cli_is_staged_before_build_and_installed_next_to_the_app() {
+    let config = conf();
+    assert_eq!(config["bundle"]["resources"]["../../target/cli-bundle/"], "");
+    assert_eq!(config["build"]["beforeBuildCommand"]["script"], "node ../scripts/build-cli.mjs && npm run build");
+    let script = include_str!("../../../scripts/build-cli.mjs");
+    assert!(script.contains("\"opit-cli\""));
+    assert!(script.contains("\"opit.exe\""));
+}
+
+#[test]
 fn the_uninstaller_removes_the_run_value_the_app_writes() {
     // Tauri's uninstaller deletes HKCU\...\Run\<productName> (outside update mode).
     assert_eq!(conf()["productName"], VALUE_NAME);

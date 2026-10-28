@@ -3109,6 +3109,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "opit-cli"
+version = "0.1.3"
+dependencies = [
+ "clap",
+ "opit-ipc",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "opit-core"
 version = "0.1.3"
 dependencies = [
@@ -3145,6 +3155,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "opit-ipc"
+version = "0.1.3"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tokio",
+ "windows",
+]
+
+[[package]]
 name = "opit-speech-to-text"
 version = "0.1.3"
 dependencies = [
@@ -3153,6 +3173,7 @@ dependencies = [
  "hound",
  "keyring-core",
  "opit-core",
+ "opit-ipc",
  "serde",
  "serde_json",
  "sys-locale",

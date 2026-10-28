@@ -704,6 +704,93 @@ mod tests {
         fixture_with(tempfile::tempdir().unwrap(), Vec::new())
     }
 
+    #[tokio::test]
+    async fn cli_dispatcher_uses_fake_services_validates_and_sanitizes_errors() {
+        use crate::ipc::dispatch;
+        use opit_ipc::{Command, Request};
+        let f = fixture();
+        let core = Arc::new(f.core);
+        let status = dispatch(core.clone(), Request::new(Command::Status)).await.unwrap();
+        assert_eq!(status["state"], "idle");
+        let profiles = dispatch(core.clone(), Request::new(Command::ProfilesList)).await.unwrap();
+        assert!(profiles.as_array().unwrap().iter().any(|p| p["id"] == "groq" && p["active"] == true));
+        assert!(!profiles.to_string().contains("api_key"));
+        let selected = dispatch(core.clone(), Request::new(Command::ProfileUse { id: "openai".into() })).await.unwrap();
+        assert_eq!(selected["active_profile_id"], "openai");
+        assert_eq!(AppConfig::load(&core.paths.config).unwrap().active_profile_id, "openai");
+        let error = dispatch(core.clone(), Request::new(Command::ProfileUse { id: "sensitive input".into() }))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert!(!error.message.contains("sensitive input"));
+        let rows =
+            dispatch(core.clone(), Request::new(Command::HistoryList { limit: 10, search: None })).await.unwrap();
+        assert_eq!(rows, serde_json::json!([]));
+        let error = dispatch(core.clone(), Request::new(Command::HistoryRetry { id: 999 })).await.unwrap_err();
+        assert_eq!(error.code, "unavailable");
+        let mut invalid = Request::new(Command::ProfileUse { id: "groq".into() });
+        invalid.version += 1;
+        assert_eq!(dispatch(core.clone(), invalid).await.unwrap_err().code, "protocol_version");
+        assert_eq!(core.config().active_profile_id, "openai");
+        assert_eq!(dispatch(core, Request::new(Command::Version)).await.unwrap()["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn cli_file_dispatch_uses_the_shared_engine_and_requires_real_timestamps() {
+        use crate::ipc::dispatch;
+        use opit_ipc::{Command, Format, Request};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let f = fixture();
+        let audio = f._dir.path().join("clip.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&audio, spec).unwrap();
+        for i in 0..16_000 {
+            writer.write_sample((5000.0 * (i as f32 * 0.08).sin()) as i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        let server = MockServer::start().await;
+        let timed = Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "text":"sample words", "segments":[{"start":0.1,"end":0.8,"text":"sample words"}]
+            })))
+            .mount_as_scoped(&server)
+            .await;
+        let mut config = f.core.config();
+        config.profiles.truncate(1);
+        config.profiles[0].base_url = server.uri();
+        config.profiles[0].api_key_ref = None;
+        config.profiles[0].apply_rules = false;
+        f.core.save_config(config).unwrap();
+        let core = Arc::new(f.core);
+        let request = |format, timestamps| {
+            Request::new(Command::Transcribe {
+                path: audio.to_str().unwrap().into(),
+                format,
+                timestamps,
+                cleanup: false,
+            })
+        };
+        let txt = dispatch(core.clone(), request(Format::Txt, false)).await.unwrap();
+        assert_eq!(txt["text"], "sample words");
+        let srt = dispatch(core.clone(), request(Format::Srt, false)).await.unwrap();
+        assert!(srt["text"].as_str().unwrap().contains("00:00:00,100 --> 00:00:00,800"));
+        drop(timed);
+        Mock::given(method("POST"))
+            .and(path("/audio/transcriptions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"text":"sample words"})))
+            .mount(&server)
+            .await;
+        assert_eq!(dispatch(core.clone(), request(Format::Txt, true)).await.unwrap_err().code, "file_timestamps");
+        assert!(core.history_recent(10, None).unwrap().is_empty(), "file jobs do not add dictation history");
+    }
+
     fn fixture_with(dir: tempfile::TempDir, notices: Vec<StartupNotice>) -> Fixture {
         let paths = Paths::under(dir.path().join("opit"));
         let settings = SettingsHandle::new(Settings::build(AppConfig::default(), None, Some("en-US")).0);
