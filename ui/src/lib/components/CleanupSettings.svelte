@@ -60,7 +60,8 @@
   function choose(id: string) {
     const preset = presets.find((p) => p.id === id);
     if (!preset || !draft) return;
-    draft = { ...structuredClone(preset.config), enabled: draft.enabled, prompt_override: draft.prompt_override };
+    // Presets are reactive proxies, which structuredClone rejects; snapshot first.
+    draft = { ...structuredClone($state.snapshot(preset.config)), enabled: draft.enabled, prompt_override: draft.prompt_override };
     keyInput = "";
     error = null;
     result = null;
