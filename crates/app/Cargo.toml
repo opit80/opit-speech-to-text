@@ -36,9 +36,18 @@ tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+windows-future = "0.3"
 cpal.workspace = true
 keyring-core.workspace = true
 windows = { workspace = true, features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Control",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_WinRT",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Media_Audio",

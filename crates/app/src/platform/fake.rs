@@ -9,6 +9,34 @@ use opit_core::config::OverlayPosition;
 
 use super::*;
 
+#[derive(Default)]
+pub struct FakeMedia {
+    pub calls: Mutex<Vec<Option<(MediaMode, u8)>>>,
+    active: Mutex<bool>,
+}
+
+impl MediaControl for FakeMedia {
+    fn engage(&self, mode: MediaMode, percent: u8) {
+        let mut active = self.active.lock().unwrap();
+        if !*active {
+            self.calls.lock().unwrap().push(Some((mode, percent)));
+            *active = true;
+        }
+    }
+
+    fn release(&self) {
+        let mut active = self.active.lock().unwrap();
+        if *active {
+            self.calls.lock().unwrap().push(None);
+            *active = false;
+        }
+    }
+
+    fn shutdown(&self) {
+        self.release();
+    }
+}
+
 /// A 1 s 220 Hz tone at 48 kHz stereo: passes the silence gate.
 pub fn speech_recording() -> Recording {
     let samples = (0..48_000)

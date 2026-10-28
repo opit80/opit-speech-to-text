@@ -96,14 +96,18 @@ pub fn run() {
             }
             let local = app.try_state::<Arc<AppCore>>().map(|core| {
                 core.controller.send(Msg::Shutdown);
-                core.local.clone()
+                (core.local.clone(), core.platform.media.clone())
             });
             let app = app.clone();
             let exit_state = exit_state.clone();
             tauri::async_runtime::spawn(async move {
                 // Bounded, so a stuck local server can never keep the app from exiting.
                 let stopped = match local {
-                    Some(local) => tokio::time::timeout(std::time::Duration::from_secs(10), local.shutdown()).await,
+                    Some((local, media)) => {
+                        // Drain restoration before exiting, without blocking the event loop/runtime.
+                        let _ = tauri::async_runtime::spawn_blocking(move || media.shutdown()).await;
+                        tokio::time::timeout(std::time::Duration::from_secs(10), local.shutdown()).await
+                    }
                     None => Ok(Ok(())),
                 };
                 if !matches!(stopped, Ok(Ok(()))) {
@@ -178,6 +182,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     };
     let hotkey = Arc::new(WinHotkey::new());
     let mic = Arc::new(CpalMicrophone::new());
+    let media = Arc::new(crate::platform::windows::media::new());
     let sounds = Arc::new(WinSounds::new());
     sounds.warm_up();
     let history_sink: Arc<dyn HistorySink> = match &history {
@@ -187,6 +192,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
 
     let notices = loaded.notice.into_iter().chain(rules_notice).collect();
     let platform = Platform {
+        media: media.clone(),
         secrets: secrets.clone(),
         hotkey: hotkey.clone(),
         mic: mic.clone(),
@@ -231,6 +237,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         });
     }));
     let env = Env {
+        media,
         settings: settings.clone(),
         providers: HttpProviders::new(secrets.clone()).with_local(core.local.clone()),
         mic: mic.clone(),

@@ -43,6 +43,7 @@ pub struct AppConfig {
     pub hotkey: HotkeyConfig,
     pub recording: RecordingConfig,
     pub paste: PasteConfig,
+    pub media: MediaConfig,
     pub history: HistoryConfig,
     pub rules: RulesConfig,
     pub ask: crate::ask::AskConfig,
@@ -61,6 +62,7 @@ impl Default for AppConfig {
             hotkey: HotkeyConfig::default(),
             recording: RecordingConfig::default(),
             paste: PasteConfig::default(),
+            media: MediaConfig::default(),
             history: HistoryConfig::default(),
             rules: RulesConfig::default(),
             ask: crate::ask::AskConfig::default(),
@@ -76,6 +78,28 @@ impl Default for AppConfig {
 pub enum HotkeyMode {
     Toggle,
     PushToTalk,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaMode {
+    #[default]
+    Pause,
+    Duck,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MediaConfig {
+    pub enabled: bool,
+    pub mode: MediaMode,
+    pub duck_volume_percent: u8,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self { enabled: true, mode: MediaMode::Pause, duck_volume_percent: 20 }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,6 +319,7 @@ impl AppConfig {
 
     /// Repairs values a hand edit or an old version could leave inconsistent.
     pub fn normalize(&mut self) {
+        self.media.duck_volume_percent = self.media.duck_volume_percent.min(100);
         self.history.max_entries = self.history.max_entries.min(MAX_HISTORY_ENTRIES);
         self.cleanup.timeout_seconds = self.cleanup.timeout_seconds.clamp(1, 120);
         self.schema_version = CONFIG_SCHEMA_VERSION;
@@ -356,6 +381,31 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn media_defaults_are_backward_compatible_and_partial_objects_keep_defaults() {
+        for json in [r#"{}"#, r#"{"media":{}}"#] {
+            let config = AppConfig::from_json(json).unwrap();
+            assert_eq!(config.media, MediaConfig { enabled: true, mode: MediaMode::Pause, duck_volume_percent: 20 });
+        }
+        let config =
+            AppConfig::from_json(r#"{"media":{"enabled":false,"mode":"duck","duck_volume_percent":255}}"#).unwrap();
+        assert!(!config.media.enabled);
+        assert_eq!(config.media.mode, MediaMode::Duck);
+        assert_eq!(config.media.duck_volume_percent, 100);
+        assert_eq!(AppConfig::from_json(&config.to_json()).unwrap(), config);
+        assert_eq!(
+            AppConfig::from_json(r#"{"media":{"duck_volume_percent":0}}"#).unwrap().media.duck_volume_percent,
+            0
+        );
+        for json in [
+            r#"{"media":{"mode":"toggle"}}"#,
+            r#"{"media":{"duck_volume_percent":-1}}"#,
+            r#"{"media":{"duck_volume_percent":256}}"#,
+        ] {
+            assert!(AppConfig::from_json(json).is_err());
+        }
+    }
 
     #[test]
     fn history_cap_and_theme_defaults_normalize_and_round_trip() {

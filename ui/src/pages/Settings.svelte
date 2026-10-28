@@ -6,7 +6,8 @@
   import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
-  import type { AppConfig, HotkeyMode, OverlayPosition, PasteAfter, PasteMethod, Theme } from "../lib/types";
+  import type { AppConfig, HotkeyMode, MediaMode, OverlayPosition, PasteAfter, PasteMethod, Theme } from "../lib/types";
+  import { duckPercentRange, parseNumberInput } from "../lib/number-input";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
   import Field from "../lib/components/Field.svelte";
@@ -104,6 +105,8 @@
       restoreClipboard: c.paste.restore_clipboard,
       trailingSpace: c.paste.trailing_space,
       overlay: c.ui.overlay_position as string,
+      mediaEnabled: c.media.enabled,
+      mediaMode: c.media.mode as string,
       historyEnabled: c.history.enabled,
       saveAudio: c.history.save_audio,
       checkUpdates: c.ui.check_updates,
@@ -173,12 +176,8 @@
     read: (c: AppConfig) => number,
     write: (c: AppConfig, n: number) => void,
   ) {
-    const n = Number(input.value);
-    if (input.value.trim() !== "" && Number.isFinite(n)) {
-      const rounded = step < 1 ? Number(n.toFixed(2)) : Math.round(n);
-      const value = Math.min(max, Math.max(min, rounded));
-      await save(field, (c) => write(c, value));
-    }
+    const value = parseNumberInput(input.value, min, max, step);
+    if (value !== null) await save(field, (c) => write(c, value));
     if (disposed || !app.config) return;
     const stored = String(Number(read(app.config).toFixed(2)));
     input.value = stored;
@@ -235,6 +234,13 @@
   };
   const pasteAfterOptions = $derived(
     (Object.keys(pasteAfterKeys) as PasteAfter[]).map((value) => ({ value, label: t(pasteAfterKeys[value]) })),
+  );
+  const mediaModeKeys: Record<MediaMode, MessageKey> = {
+    pause: "settings.media_mode.pause",
+    duck: "settings.media_mode.duck",
+  };
+  const mediaModeOptions = $derived(
+    (Object.keys(mediaModeKeys) as MediaMode[]).map((value) => ({ value, label: t(mediaModeKeys[value]) })),
   );
   const modeOptions = $derived([
     { value: "toggle", label: t("settings.mode_toggle") },
@@ -328,6 +334,25 @@
         {@render numberInput("max_seconds", t("settings.max_seconds"), t("settings.max_seconds_hint"), 10, 600, 10, false,
           (c) => c.recording.max_seconds, (c, n) => { c.recording.max_seconds = n; })}
       </section>
+
+      <details class="card settings-group" open={["media_enabled", "media_mode", "duck_volume"].some((field) => !!errors[field])}>
+        <summary>{t("settings.media")}</summary>
+        <div class="stack group-body">
+          <Switch label={t("settings.media_enabled")} info={t("settings.media_enabled_hint")} checked={view.mediaEnabled}
+            onchange={(v) => void save("media_enabled", (c) => { c.media.enabled = v; })} />
+          {@render fieldError("media_enabled")}
+          <Select label={t("settings.media_mode")} options={mediaModeOptions} value={view.mediaMode}
+            disabled={!config.media.enabled}
+            info={config.media.mode === "duck" ? t("settings.media_mode_duck_hint") : t("settings.media_mode_pause_hint")}
+            onchange={(v) => void save("media_mode", (c) => { c.media.mode = v as MediaMode; })} />
+          {@render fieldError("media_mode")}
+          {#if config.media.mode === "duck"}
+            {@render numberInput("duck_volume", t("settings.media_duck_volume"), t("settings.media_duck_volume_hint"),
+              duckPercentRange.min, duckPercentRange.max, duckPercentRange.step, !config.media.enabled,
+              (c) => c.media.duck_volume_percent, (c, n) => { c.media.duck_volume_percent = n; })}
+          {/if}
+        </div>
+      </details>
 
       <details class="card settings-group" open={["speech_floor_db", "noise_margin_db", "min_speech_seconds", "speech_reset"].some((field) => !!errors[field])}>
         <summary>{t("settings.speech_detection")}</summary>

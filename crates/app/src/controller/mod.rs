@@ -26,9 +26,9 @@ pub use status::{DictationState, DictationStatus, ErrorKind};
 
 use crate::i18n::Lang;
 use crate::platform::{
-    Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyEvent, HotkeySink, Microphone, Overlay, OverlayAction,
-    OverlayButton, OverlaySink, OverlayView, PasteOutcome, PasteRequest, Paster, RecordingTiming, SecretError, Sound,
-    Sounds, Tone,
+    Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyEvent, HotkeySink, MediaControl, MediaGuard, Microphone, Overlay,
+    OverlayAction, OverlayButton, OverlaySink, OverlayView, PasteOutcome, PasteRequest, Paster, RecordingTiming,
+    SecretError, Sound, Sounds, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 
@@ -96,6 +96,7 @@ pub struct Env<P: Providers> {
     pub settings: SettingsHandle,
     pub providers: P,
     pub mic: Arc<dyn Microphone>,
+    pub media: Arc<dyn MediaControl>,
     pub hotkey: Arc<dyn Hotkey>,
     pub paster: Arc<dyn Paster>,
     pub overlay: Arc<dyn Overlay>,
@@ -415,6 +416,7 @@ struct ActiveRecording<C> {
     text_reply: Option<TextReply>,
     session: u64,
     capture: Box<dyn Capture>,
+    media: MediaGuard,
     settings: Arc<Settings>,
     paste: PasteConfig,
     clients: Clients<C>,
@@ -822,6 +824,7 @@ impl<P: Providers> Controller<P> {
                 return self.fail(ErrorKind::Microphone, settings.lang);
             }
         };
+        let media = MediaGuard::engage(self.env.media.clone(), &settings.config.media);
         if started.fell_back {
             warn!(device = %started.device, "configured microphone unavailable; using the default device");
         }
@@ -841,6 +844,7 @@ impl<P: Providers> Controller<P> {
         self.play(Sound::Start);
         info!(session, device = %started.device, profile = %settings.config.active_profile_id, "recording started");
         self.recording = Some(ActiveRecording {
+            media,
             ask: false,
             text_reply: None,
             session,
@@ -864,6 +868,7 @@ impl<P: Providers> Controller<P> {
         r.limit.abort();
         let auto_paste = auto_paste && self.env.paster.can_auto_paste();
         let recording = r.capture.finish();
+        drop(r.media);
         self.waiting.push_back(Pending {
             session: r.session,
             job: Job {
@@ -1162,6 +1167,7 @@ impl<P: Providers> Controller<P> {
                         reply.finish(Err(ErrorKind::Microphone));
                     }
                     drop(r.capture);
+                    drop(r.media);
                     return self.fail(ErrorKind::Microphone, r.settings.lang);
                 }
                 if let Some(reply) = r.text_reply {
@@ -1169,6 +1175,7 @@ impl<P: Providers> Controller<P> {
                 }
                 // Keep what was said so far (spec §8): prepare it, but send nothing on our own.
                 let recording = r.capture.finish();
+                drop(r.media);
                 self.waiting.push_back(Pending {
                     session,
                     job: Job {
@@ -1399,6 +1406,7 @@ impl<P: Providers> Controller<P> {
         if let Some(r) = self.recording.take() {
             r.limit.abort();
             drop(r.capture);
+            drop(r.media);
             if announce {
                 self.play(Sound::Cancel);
             }

@@ -3,6 +3,7 @@
 pub mod autostart;
 pub mod clipboard;
 pub mod hotkey;
+pub mod media;
 pub mod microphone;
 pub mod overlay;
 pub mod paster;

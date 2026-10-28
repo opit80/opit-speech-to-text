@@ -80,6 +80,17 @@ export interface PasteConfig {
   trailing_space: boolean;
 }
 
+/** "pause": pause media sessions that are playing and resume exactly those; "duck": lower other apps' volume. */
+export type MediaMode = "pause" | "duck";
+
+/** What happens to other audio while a recording runs. */
+export interface MediaConfig {
+  enabled: boolean;
+  mode: MediaMode;
+  /** 0–100: the volume other apps are lowered to, as a percent of their own level ("duck" only). */
+  duck_volume_percent: number;
+}
+
 export interface AppConfig {
   local: LocalConfig;
   ask: AskConfig;
@@ -97,6 +108,7 @@ export interface AppConfig {
     min_speech_seconds: number;
   };
   paste: PasteConfig;
+  media: MediaConfig;
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
   rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
   ui: {

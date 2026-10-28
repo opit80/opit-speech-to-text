@@ -3,6 +3,8 @@
 #[cfg(test)]
 pub mod fake;
 pub mod keys;
+#[cfg(any(windows, test))]
+mod media;
 #[cfg(windows)]
 pub mod windows;
 
@@ -10,7 +12,39 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use opit_core::audio::Recording;
-use opit_core::config::{OverlayPosition, PasteAfter, PasteMethod};
+use opit_core::config::{MediaConfig, MediaMode, OverlayPosition, PasteAfter, PasteMethod};
+
+// ---------- Media ----------
+pub trait MediaControl: Send + Sync {
+    /// Non-blocking, ordered and idempotent. Native work belongs to a dedicated thread.
+    fn engage(&self, mode: MediaMode, percent: u8);
+    fn release(&self);
+    /// Drains restoration and stops the worker. Blocking; only call from a blocking thread.
+    fn shutdown(&self);
+}
+
+/// Lives exactly as long as a dictation capture; unwinding also queues restoration.
+pub struct MediaGuard(Option<Arc<dyn MediaControl>>);
+
+impl MediaGuard {
+    pub fn engage(media: Arc<dyn MediaControl>, config: &MediaConfig) -> Self {
+        if config.enabled {
+            let guard = Self(Some(media));
+            guard.0.as_ref().unwrap().engage(config.mode, config.duck_volume_percent);
+            guard
+        } else {
+            Self(None)
+        }
+    }
+}
+
+impl Drop for MediaGuard {
+    fn drop(&mut self) {
+        if let Some(media) = &self.0 {
+            media.release();
+        }
+    }
+}
 
 // ---------- Microphone ----------
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -285,6 +319,20 @@ impl Autostart for DebugAutostart {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_guard_releases_during_unwind_and_disabled_guard_does_nothing() {
+        let media = Arc::new(fake::FakeMedia::default());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = MediaGuard::engage(media.clone(), &MediaConfig::default());
+            panic!("synthetic recording worker panic");
+        }));
+        assert!(result.is_err());
+        assert_eq!(*media.calls.lock().unwrap(), [Some((MediaMode::Pause, 20)), None]);
+        let config = MediaConfig { enabled: false, ..Default::default() };
+        drop(MediaGuard::engage(media.clone(), &config));
+        assert_eq!(media.calls.lock().unwrap().len(), 2);
+    }
 
     #[test]
     fn debug_autostart_accepts_requests_but_stays_disabled() {

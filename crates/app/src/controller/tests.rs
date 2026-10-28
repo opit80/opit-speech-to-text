@@ -19,6 +19,104 @@ use DictationState::{Cancelled, Idle, Pasting, Recording, Transcribing};
 // ---------- scripted providers ----------
 
 #[tokio::test]
+async fn media_releases_on_every_recording_end_before_transcription_finishes() {
+    use opit_core::config::MediaMode;
+    for mode in [MediaMode::Pause, MediaMode::Duck] {
+        for end in ["stop", "escape", "error", "limit", "shutdown"] {
+            let mut config = AppConfig::default();
+            config.media.mode = mode;
+            config.media.duck_volume_percent = 35;
+            let mut h = harness(config);
+            h.script("groq", vec![Ok("sample")]);
+            h.providers.gate.forget_permits(1_000);
+            h.send(Msg::Toggle);
+            h.expect(&[Recording]).await;
+            assert_eq!(*h.media.calls.lock().unwrap(), [Some((mode, 35))]);
+            match end {
+                "stop" => h.send(Msg::Stop),
+                "escape" => h.hotkey(HotkeyEvent::Escape),
+                "error" => h.mic.emit(CaptureEvent::Failed("unplugged".into())),
+                "limit" => {
+                    tokio::time::pause();
+                    tokio::time::advance(Duration::from_secs(181)).await;
+                }
+                "shutdown" => h.send(Msg::Shutdown),
+                _ => unreachable!(),
+            }
+            h.settle().await;
+            assert_eq!(*h.media.calls.lock().unwrap(), [Some((mode, 35)), None], "{end}");
+            if end == "stop" || end == "limit" {
+                assert!(h.paster.texts().is_empty(), "media must release while provider is blocked");
+            }
+            h.send(Msg::Shutdown);
+            h.settle().await;
+            assert_eq!(h.media.calls.lock().unwrap().len(), 2, "double release is harmless");
+            if end == "limit" {
+                tokio::time::resume();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn media_is_disabled_or_not_engaged_if_microphone_cannot_start() {
+    for disabled in [true, false] {
+        let mut config = AppConfig::default();
+        config.media.enabled = !disabled;
+        let h = harness(config);
+        if !disabled {
+            *h.mic.fail_start.lock().unwrap() = Some(MicError::NoDevice);
+        }
+        h.send(Msg::Toggle);
+        h.settle().await;
+        h.send(Msg::Shutdown);
+        h.settle().await;
+        assert!(h.media.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn media_stays_engaged_during_user_pause_and_uses_start_settings() {
+    use opit_core::config::MediaMode;
+    let config = AppConfig::default();
+    let h = harness(config.clone());
+    h.handle.control(ControlAction::Start).await.unwrap();
+    let mut changed = config;
+    changed.media.enabled = false;
+    h.settings.replace(settings(changed));
+    h.handle.control(ControlAction::Pause).await.unwrap();
+    h.handle.control(ControlAction::Pause).await.unwrap();
+    h.handle.control(ControlAction::Resume).await.unwrap();
+    assert_eq!(*h.media.calls.lock().unwrap(), [Some((MediaMode::Pause, 20))]);
+    h.handle.control(ControlAction::Cancel).await.unwrap();
+    assert_eq!(*h.media.calls.lock().unwrap(), [Some((MediaMode::Pause, 20)), None]);
+}
+
+#[tokio::test]
+async fn media_engages_for_microphone_ask_but_not_text_ask() {
+    let mut h = harness(AppConfig::default());
+    h.send(Msg::Ask { text: None, reply: None });
+    h.expect(&[Recording]).await;
+    assert_eq!(h.media.calls.lock().unwrap().len(), 1);
+    h.handle.control(ControlAction::Cancel).await.unwrap();
+    assert_eq!(h.media.calls.lock().unwrap().len(), 2);
+    h.send(Msg::Ask { text: Some("request".into()), reply: None });
+    h.settle().await;
+    assert_eq!(h.media.calls.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn media_releases_when_microphone_ask_fails() {
+    let mut h = harness(AppConfig::default());
+    h.send(Msg::Ask { text: None, reply: None });
+    h.expect(&[Recording]).await;
+    h.mic.emit(CaptureEvent::Failed("unplugged".into()));
+    h.expect_error(ErrorKind::Microphone).await;
+    assert_eq!(h.media.calls.lock().unwrap().len(), 2);
+    assert_eq!(h.mic.dropped.load(SeqCst), 1);
+}
+
+#[tokio::test]
 async fn paste_method_and_after_are_snapshotted_at_start_and_type_leaves_clipboard_alone() {
     for method in [PasteMethod::CtrlV, PasteMethod::ShiftInsert, PasteMethod::CtrlShiftV, PasteMethod::Type] {
         let mut config = AppConfig::default();
@@ -173,6 +271,7 @@ async fn cli_timed_record_returns_its_own_text_without_touching_clipboard() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
     h.providers.gate.add_permits(1_000);
     assert_eq!(result.await.unwrap().unwrap(), "CLI sample");
+    assert_eq!(h.media.calls.lock().unwrap().len(), 4, "each microphone recording engages and releases media");
     assert_eq!(h.paster.texts(), ["ordinary "]);
     assert_eq!(h.history.entries().len(), 2);
 }
@@ -396,6 +495,7 @@ struct Harness {
     settings: SettingsHandle,
     providers: Arc<ProviderState>,
     mic: Arc<FakeMic>,
+    media: Arc<FakeMedia>,
     hotkey: Arc<FakeHotkey>,
     paster: Arc<FakePaster>,
     overlay: Arc<FakeOverlay>,
@@ -501,6 +601,7 @@ fn harness(config: AppConfig) -> Harness {
     let (overlay, sounds, history) =
         (Arc::<FakeOverlay>::default(), Arc::<FakeSounds>::default(), Arc::<FakeHistory>::default());
     let (handle, inbox) = channel();
+    let media = Arc::new(FakeMedia::default());
     tokio::spawn(run(
         &handle,
         inbox,
@@ -508,6 +609,7 @@ fn harness(config: AppConfig) -> Harness {
             settings: settings.clone(),
             providers: TestProviders(providers.clone()),
             mic: mic.clone(),
+            media: media.clone(),
             hotkey: hotkey.clone(),
             paster: paster.clone(),
             overlay: overlay.clone(),
@@ -517,7 +619,7 @@ fn harness(config: AppConfig) -> Harness {
             retry_delay: Duration::ZERO,
         },
     ));
-    Harness { handle, states, settings, providers, mic, hotkey, paster, overlay, sounds, history, events }
+    Harness { handle, states, settings, providers, mic, media, hotkey, paster, overlay, sounds, history, events }
 }
 
 impl Harness {
@@ -1420,6 +1522,7 @@ async fn provider_worker_panic_does_not_wedge_the_controller() {
     h.send(Msg::Stop);
     h.expect(&[Recording, Transcribing]).await;
     h.expect_error(ErrorKind::Audio).await;
+    assert_eq!(h.media.calls.lock().unwrap().len(), 2, "media was released before the provider panicked");
     h.script("groq", vec![Ok("recovered")]);
     h.send(Msg::Toggle);
     h.send(Msg::Stop);

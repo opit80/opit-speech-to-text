@@ -3203,6 +3203,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "windows",
+ "windows-future",
  "windows-native-keyring-store",
  "windows-registry",
  "wiremock",

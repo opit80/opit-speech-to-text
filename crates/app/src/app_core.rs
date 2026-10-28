@@ -17,8 +17,8 @@ use tracing::{info, warn};
 use crate::controller::{ControllerHandle, DictationState, DictationStatus, ErrorKind};
 use crate::history_service::HistoryService;
 use crate::platform::{
-    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, Microphone, Overlay, OverlayView, SecretError,
-    SecretStore, Tone,
+    Autostart, Capture, CaptureEvent, CaptureSink, Hotkey, HotkeyError, MediaControl, Microphone, Overlay, OverlayView,
+    SecretError, SecretStore, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::{self, Paths, StartupNotice};
@@ -125,6 +125,7 @@ pub const USER_PACK_TEMPLATE: &str = "schema: 1\nid: user\nname: Personal\nlangu
 const STARTUP_NOTICE_HIDE: Duration = Duration::from_secs(6);
 
 pub struct Platform {
+    pub media: Arc<dyn MediaControl>,
     pub secrets: Arc<dyn SecretStore>,
     pub hotkey: Arc<dyn Hotkey>,
     pub mic: Arc<dyn Microphone>,
@@ -713,6 +714,7 @@ mod tests {
         _dir: tempfile::TempDir,
         core: AppCore,
         mic: Arc<FakeMic>,
+        media: Arc<FakeMedia>,
         hotkey: Arc<FakeHotkey>,
         overlay: Arc<FakeOverlay>,
         autostart: Arc<FakeAutostart>,
@@ -818,7 +820,9 @@ mod tests {
         let (hotkey, overlay) = (Arc::new(FakeHotkey::default()), Arc::new(FakeOverlay::default()));
         let (autostart, secrets) = (Arc::new(FakeAutostart::default()), Arc::new(FakeSecrets::default()));
         let mic = Arc::new(FakeMic::default());
+        let media = Arc::new(FakeMedia::default());
         let platform = Platform {
+            media: media.clone(),
             secrets: secrets.clone(),
             hotkey: hotkey.clone(),
             mic: mic.clone(),
@@ -826,7 +830,7 @@ mod tests {
             autostart: autostart.clone(),
         };
         let core = AppCore::new(paths, settings, channel().0, Some(history), platform, None, None, notices);
-        Fixture { _dir: dir, core, mic, hotkey, overlay, autostart, secrets }
+        Fixture { _dir: dir, core, mic, media, hotkey, overlay, autostart, secrets }
     }
 
     /// A damaged config.json that start-up could not move aside, because another program
@@ -991,6 +995,7 @@ mod tests {
     #[test]
     fn mic_test_forwards_levels_and_stops() {
         let f = fixture();
+        let media = f.media.clone();
         let (mic, core) = (f.mic.clone(), Arc::new(f.core));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = seen.clone();
@@ -1004,6 +1009,7 @@ mod tests {
         );
         core.mic_test_stop();
         assert_eq!(mic.dropped.load(Ordering::SeqCst), 1, "stopping drops (cancels) the capture");
+        assert!(media.calls.lock().unwrap().is_empty(), "Settings microphone tests never engage media control");
     }
 
     #[test]
