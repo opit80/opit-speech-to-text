@@ -1,11 +1,13 @@
 <script lang="ts">
   import { api } from "../api";
   import { app, errorText, t } from "../app.svelte";
+  import { fileBlocksUpdate } from "../files";
   import { dictationBusy } from "../update";
   import Button from "./Button.svelte";
 
   let busy = $state(false);
   const dictating = $derived(dictationBusy(app.status.state));
+  const fileBusy = $derived(fileBlocksUpdate(app.fileWork));
   const debugBuild = $derived(app.info?.debug_build ?? false);
 
   async function install() {
@@ -23,9 +25,10 @@
 </script>
 
 <span class="install">
-  <Button variant="primary" {busy} disabled={dictating || debugBuild || app.update.kind !== "available"}
+  <Button variant="primary" {busy} disabled={dictating || fileBusy || debugBuild || app.update.kind !== "available"}
     title={t("update.install_note")} onclick={() => void install()}>{t("update.install")}</Button>
-  {#if dictating}<span class="muted">{t("update.busy")}</span>{/if}
+  {#if dictating}<span class="muted">{t("update.busy")}</span>
+  {:else if fileBusy}<span class="muted">{t("update.file_busy")}</span>{/if}
   {#if app.updateError}<span class="error" role="alert">{app.updateError}</span>{/if}
 </span>
 

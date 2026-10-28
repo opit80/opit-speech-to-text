@@ -21,10 +21,32 @@ describe("translate", () => {
   });
 });
 
+/**
+ * Signs of broken encoding rather than legitimate punctuation: a "?" replacing a letter (it is
+ * followed by a letter, a digit or another "?"), U+FFFD, and UTF-8 read as Windows-1252/Latin-1
+ * (a lead byte shown as Â/Ã/Ä/Å followed by a continuation byte, or "â€" for a 3-byte sequence).
+ */
+const corruption = /\?(?=[\p{L}\p{N}?])|\uFFFD|[ÂÃÄÅ][\u0080-\u00BF\u0152\u0153\u0160\u0161\u0178\u017D\u017E\u0192\u02C6\u02DC\u2013\u2014\u2018-\u201A\u201C-\u201E\u2020-\u2022\u2026\u2030\u2039\u203A\u20AC\u2122]|â€/u;
+
+describe("corruption check", () => {
+  it("catches replaced letters and mojibake", () => {
+    for (const bad of ["Yerel (?evrimd???)", "?al???yor", "ba?ar?s?z", "Ã§alÄ±ÅŸÄ±yor", "Ã¼cret", "Ã¶nizleme", "Ä°ptal",
+      "deÄŸil", "Ã‡alÄ±ÅŸma", "Ãœcret", "Ã–nizleme", "Åžimdi", "YÃ¼kleniyorâ€¦", "bozuk \uFFFD metin"]) {
+      expect(bad, bad).toMatch(corruption);
+    }
+  });
+  it("accepts legitimate questions and Turkish circumflex letters", () => {
+    for (const good of ["Delete 3 items? This cannot be undone.", "Silinsin mi?", "Continue? (y/n)", "Âdem’in kâr payı",
+      "Hâlâ yükleniyor…", "hâlâ…", "Kâğıt", "İptal edilsin mi?"]) {
+      expect(good, good).not.toMatch(corruption);
+    }
+  });
+});
+
 describe("message tables", () => {
-  it("all translations preserve text encoding and question punctuation", () => {
+  it("all translations preserve text encoding", () => {
     for (const table of [tr, en]) for (const [key, value] of Object.entries(table)) {
-      expect(value, key).not.toMatch(/\?(?!$)|\uFFFD|Ã|Â|Ä|Å/u);
+      expect(value, key).not.toMatch(corruption);
     }
     expect(tr["ask.description"]).toContain("isteğe bağlı bir özelliğidir");
     expect(tr["ask.permission_warning"]).toContain("Çalışma dizinine erişim");
@@ -34,9 +56,6 @@ describe("message tables", () => {
   it("local transcription messages preserve Turkish characters", () => {
     expect(tr["profiles.preset.local"]).toBe("Yerel (çevrimdışı)");
     expect(tr["local.running"]).toBe("Çalışıyor");
-    for (const [key,value] of Object.entries(tr)) {
-      if (key.startsWith("local.") || key.startsWith("error.code.local")) expect(value,key).not.toContain("?");
-    }
   });
   it("tr has exactly the en keys", () => {
     expect(Object.keys(tr).sort()).toEqual(Object.keys(en).sort());

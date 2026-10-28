@@ -12,7 +12,7 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tracing::{info, warn};
 
 use crate::app_core::CommandError;
-use crate::controller::ControllerHandle;
+use crate::controller::{ControllerHandle, HoldRefusal};
 use crate::events;
 use crate::settings::SettingsHandle;
 
@@ -104,14 +104,16 @@ impl<T: Clone> UpdateMachine<T> {
         self.pending = pending;
     }
 
-    /// Hands out the pending update for installing. Refused without one, and while a dictation is
-    /// in flight (the installer closes the app).
-    pub fn begin_install(&mut self, dictation_busy: bool) -> Result<T, CommandError> {
+    /// Hands out the pending update for installing. Refused without one, and while a dictation or
+    /// file work is in flight (the installer closes the app). The UI localizes the refusal codes.
+    pub fn begin_install(&mut self, blocked: Option<HoldRefusal>) -> Result<T, CommandError> {
         let (UpdateState::Available { info }, Some(update)) = (&self.state, &self.pending) else {
             return Err(CommandError::new("unavailable", "there is no update to install; check for updates first"));
         };
-        if dictation_busy {
-            return Err(CommandError::new("unavailable", "finish the current dictation first"));
+        match blocked {
+            Some(HoldRefusal::Dictation) => return Err(CommandError::new("update_blocked_by_dictation", "")),
+            Some(HoldRefusal::FileWork) => return Err(CommandError::new("update_blocked_by_file_job", "")),
+            None => {}
         }
         let (info, update) = (info.clone(), update.clone());
         self.state = UpdateState::Installing { info, downloaded: 0, total: None };
@@ -201,7 +203,7 @@ pub async fn install(app: &AppHandle, controller: &ControllerHandle) -> Result<(
     }
     // Lives until this function returns, i.e. until the app exits or the install failed.
     let hold = controller.hold_for_update().await;
-    let mut update = app.state::<UpdateService>().with(|m| m.begin_install(hold.is_none()))?;
+    let mut update = app.state::<UpdateService>().with(|m| m.begin_install(hold.as_ref().err().copied()))?;
     publish(app);
     update.timeout = Some(DOWNLOAD_TIMEOUT);
     info!(version = %update.version, "downloading the update");
@@ -277,29 +279,34 @@ mod tests {
             m.state(),
             UpdateState::CheckFailed { message: "Could not fetch a valid release JSON from the remote".into() }
         );
-        assert_eq!(m.begin_install(false).unwrap_err().code, "unavailable");
+        assert_eq!(m.begin_install(None).unwrap_err().code, "unavailable");
     }
 
     #[test]
-    fn install_needs_an_update_and_no_running_dictation() {
+    fn install_needs_an_update_and_no_running_dictation_or_file_work() {
         let mut m = UpdateMachine::<&str>::default();
-        assert_eq!(m.begin_install(false).unwrap_err().code, "unavailable");
+        assert_eq!(m.begin_install(None).unwrap_err().code, "unavailable");
+        assert_eq!(m.begin_install(Some(HoldRefusal::FileWork)).unwrap_err().code, "unavailable");
 
         let mut m = available();
-        let err = m.begin_install(true).unwrap_err();
-        assert!(err.message.contains("dictation"), "{}", err.message);
+        let err = m.begin_install(Some(HoldRefusal::Dictation)).unwrap_err();
+        assert_eq!(err.code, "update_blocked_by_dictation");
+        assert_eq!(m.state(), UpdateState::Available { info: info("0.2.0") }, "a refusal changes nothing");
+        let err = m.begin_install(Some(HoldRefusal::FileWork)).unwrap_err();
+        assert_eq!(err.code, "update_blocked_by_file_job", "not reported as a dictation");
+        assert!(err.message.is_empty(), "the UI localizes the reason");
         assert_eq!(m.state(), UpdateState::Available { info: info("0.2.0") }, "a refusal changes nothing");
 
-        assert_eq!(m.begin_install(false).unwrap(), "update");
+        assert_eq!(m.begin_install(None).unwrap(), "update");
         assert_eq!(m.state(), UpdateState::Installing { info: info("0.2.0"), downloaded: 0, total: None });
         assert!(!m.begin_check(), "no check while installing");
-        assert_eq!(m.begin_install(false).unwrap_err().code, "unavailable", "no second install");
+        assert_eq!(m.begin_install(None).unwrap_err().code, "unavailable", "no second install");
     }
 
     #[test]
     fn progress_is_reported_once_per_whole_percent() {
         let mut m = available();
-        m.begin_install(false).unwrap();
+        m.begin_install(None).unwrap();
         let reports = (0..1000).filter(|_| m.progress(1, Some(1000))).count();
         assert_eq!(reports, 101, "marks 0..=100");
         assert_eq!(m.state(), UpdateState::Installing { info: info("0.2.0"), downloaded: 1000, total: Some(1000) });
@@ -308,7 +315,7 @@ mod tests {
     #[test]
     fn progress_without_a_size_is_reported_per_mib() {
         let mut m = available();
-        m.begin_install(false).unwrap();
+        m.begin_install(None).unwrap();
         let reports = (0..8).filter(|_| m.progress(512 * 1024, None)).count();
         assert_eq!(reports, 5, "0.5 … 4 MiB → marks 0, 1, 2, 3, 4");
     }
@@ -316,11 +323,11 @@ mod tests {
     #[test]
     fn a_failed_install_can_be_retried() {
         let mut m = available();
-        m.begin_install(false).unwrap();
+        m.begin_install(None).unwrap();
         m.progress(10, Some(100));
         m.install_failed();
         assert_eq!(m.state(), UpdateState::Available { info: info("0.2.0") });
-        assert_eq!(m.begin_install(false).unwrap(), "update");
+        assert_eq!(m.begin_install(None).unwrap(), "update");
         assert!(m.progress(1, Some(100)), "progress starts over");
     }
 

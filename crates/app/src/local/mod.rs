@@ -11,7 +11,7 @@ use opit_core::provider::{Profile, ProviderError, RawTranscript, TranscribeReque
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, Mutex, OnceLock, PoisonError,
+    Arc, Mutex, PoisonError,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
@@ -114,7 +114,7 @@ pub struct LocalService {
     gate: tokio::sync::Mutex<()>,
     operation: tokio::sync::Mutex<()>,
     session: Arc<Mutex<Session>>,
-    hardware: OnceLock<hardware::Hardware>,
+    hardware: hardware::HardwareCache,
     progress: Mutex<Option<Progress>>,
     cancel: Mutex<Option<watch::Sender<bool>>>,
     closed: AtomicBool,
@@ -158,7 +158,7 @@ impl LocalService {
             gate: tokio::sync::Mutex::new(()),
             operation: tokio::sync::Mutex::new(()),
             session: Arc::new(Mutex::new(Session::default())),
-            hardware: OnceLock::new(),
+            hardware: hardware::HardwareCache::default(),
             progress: Mutex::new(None),
             cancel: Mutex::new(None),
             closed: AtomicBool::new(false),
@@ -173,7 +173,7 @@ impl LocalService {
         )
     }
     fn hardware(&self) -> hardware::Hardware {
-        self.hardware.get_or_init(hardware::detect).clone()
+        self.hardware.get(hardware::detect, std::time::Instant::now())
     }
     pub fn set_loading(&self, sink: LoadingSink) {
         *self.loading.lock().unwrap_or_else(PoisonError::into_inner) = Some(sink);

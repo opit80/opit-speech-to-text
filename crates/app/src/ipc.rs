@@ -93,8 +93,10 @@ pub async fn dispatch(core: Arc<AppCore>, request: Request) -> Result<Value, Err
             Ok(json!({"active_profile_id":config.active_profile_id}))
         }
         Command::Transcribe { path, format, timestamps, cleanup } => {
-            let work =
-                core.controller.begin_file_work().ok_or_else(|| Error::new("file_busy", "An update is installing."))?;
+            let work = core
+                .controller
+                .begin_file_work()
+                .ok_or_else(|| Error::new("file_blocked_by_update", "An update is installing."))?;
             let runtime = tokio::runtime::Handle::current();
             let result = blocking(core, move |core| {
                 let _work = work;

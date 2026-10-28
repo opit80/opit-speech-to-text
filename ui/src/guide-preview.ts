@@ -59,7 +59,8 @@ let status: DictationStatus = { state: params.get("recording") === "true" ? "rec
 let completion: ReturnType<typeof setTimeout> | undefined;
 let fileCompletion: ReturnType<typeof setTimeout> | undefined;
 let fileState: FileState = { revision: 0, name: null, phase: "idle", progress: null, result: null, error: null,
-  options: { language: null, cleanup: false, speakers: false } };
+  options: { language: null, cleanup: false, speakers: false }, unsaved: false };
+const fileEvent = () => ({ revision: fileState.revision, phase: fileState.phase, progress: fileState.progress, unsaved: fileState.unsaved });
 const fileText = "Toplantı notlarını birlikte gözden geçirelim.";
 async function changeStatus(state: DictationStatus["state"]) {
   status = { state, can_retry: false, waiting: 0, paused: false };
@@ -72,29 +73,41 @@ mockIPC(async (command, payload) => {
     // File preview data never reads a real file or contacts a service.
     case "file_state": return structuredClone(fileState);
     case "file_pick":
-      fileState = { ...fileState, revision: fileState.revision + 1, name: "meeting-preview.wav", phase: "idle", result: null };
+      fileState = { ...fileState, revision: fileState.revision + 1, name: "meeting-preview.wav", phase: "idle", result: null, unsaved: false };
       return structuredClone(fileState);
     case "file_start": {
-      fileState = { ...fileState, revision: fileState.revision + 1, phase: "transcribing", progress: { chunk: 1, chunks: 2, percent: 0 }, result: null,
+      fileState = { ...fileState, revision: fileState.revision + 1, phase: "transcribing", progress: { chunk: 1, chunks: 2, percent: 0 }, result: null, unsaved: false,
         options: (payload as { options: FileOptions }).options };
       fileCompletion = setTimeout(() => {
-        fileState = { ...fileState, revision: fileState.revision + 1, phase: "completed", progress: { chunk: 2, chunks: 2, percent: 100 },
+        fileState = { ...fileState, revision: fileState.revision + 1, phase: "completed", progress: { chunk: 2, chunks: 2, percent: 100 }, unsaved: true,
           result: { text: fileText, segments: [{ start_ms: 1000, end_ms: 4000, text: fileText, speaker: null }],
             timestamps_available: params.get("fileTiming") !== "false", duration_ms: 5000, cleanup_failed: false } };
-        void emit("file-progress", { revision: fileState.revision, phase: fileState.phase, progress: fileState.progress });
+        void emit("file-progress", fileEvent());
       }, 1200);
       return structuredClone(fileState);
     }
     case "file_cancel":
       clearTimeout(fileCompletion);
       fileState = { ...fileState, revision: fileState.revision + 1, phase: "cancelled" };
-      await emit("file-progress", { revision: fileState.revision, phase: fileState.phase, progress: fileState.progress });
+      await emit("file-progress", fileEvent());
       return;
     case "file_render": {
       const { format, prefixes } = payload as { format: string; prefixes: boolean };
       return format === "srt" ? `1\n00:00:01,000 --> 00:00:04,000\n${fileText}\n\n` : `${prefixes && fileState.result?.timestamps_available ? "[00:01] " : ""}${fileText}`;
     }
-    case "file_save": return true;
+    case "file_save":
+      fileState = { ...fileState, unsaved: false };
+      await emit("file-progress", fileEvent());
+      return true;
+    case "file_handled":
+      if ((payload as { revision: number }).revision === fileState.revision) fileState = { ...fileState, unsaved: false };
+      await emit("file-progress", fileEvent());
+      return structuredClone(fileState);
+    case "file_discard":
+      if ((payload as { revision: number }).revision === fileState.revision && fileState.result)
+        fileState = { ...fileState, revision: fileState.revision + 1, phase: "idle", progress: null, result: null, unsaved: false };
+      await emit("file-progress", fileEvent());
+      return structuredClone(fileState);
     case "app_info": return { version: "0.1.1", data_dir: "", log_dir: "", system_locale: "tr-TR", debug_build: true };
     case "get_config": return structuredClone(config);
     case "get_status": return structuredClone(status);

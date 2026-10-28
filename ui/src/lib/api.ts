@@ -21,6 +21,8 @@ export const api = {
     invoke<string>("file_render", { format, prefixes, speakers }),
   fileSave: (format: FileOutputFormat, prefixes: boolean, speakers: boolean) =>
     invoke<boolean>("file_save", { format, prefixes, speakers }),
+  fileHandled: (revision: number) => invoke<FileState>("file_handled", { revision }),
+  fileDiscard: (revision: number) => invoke<FileState>("file_discard", { revision }),
   appInfo: () => invoke<AppInfo>("app_info"),
   getStatus: () => invoke<DictationStatus>("get_status"),
   toggleDictation: () => invoke<void>("toggle_dictation"),

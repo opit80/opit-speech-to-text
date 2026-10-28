@@ -8,6 +8,7 @@
   import type { FileOutputFormat, FileState } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
+  import Dialog from "../lib/components/Dialog.svelte";
   import Field from "../lib/components/Field.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -15,7 +16,7 @@
   import Switch from "../lib/components/Switch.svelte";
 
   let job = $state<FileState>({ revision: -1, name: null, phase: "idle", progress: null, result: null, error: null,
-    options: { language: null, cleanup: false, speakers: false } });
+    options: { language: null, cleanup: false, speakers: false }, unsaved: false });
   let loading = $state(true);
   let busy = $state(false);
   let error = $state<string | null>(null);
@@ -27,6 +28,7 @@
   let format = $state<FileOutputFormat>("txt");
   let preview = $state("");
   let rendering = $state(false);
+  let discardOpen = $state(false);
   let disposed = false;
   let renderRequest = 0;
   const running = $derived(fileRunning(job.phase));
@@ -96,10 +98,31 @@
     if (!disposed) accept(next);
   }); }
   function cancel() { return act(async () => { await api.fileCancel(); await load(); }); }
+  // Saving or copying keeps the revision and the result; only `unsaved` changes, set in place so
+  // the preview is not rendered again.
+  function markHandled(revision: number) {
+    if (!disposed && job.revision === revision) job.unsaved = false;
+  }
   function save() { return act(async () => {
-    if (await api.fileSave(format, prefixes, speakers && job.options.speakers)) notice = t("files.saved");
+    const revision = job.revision;
+    if (await api.fileSave(format, prefixes, speakers && job.options.speakers)) {
+      markHandled(revision);
+      notice = t("files.saved");
+    }
   }); }
-  function copy() { return act(async () => { await navigator.clipboard.writeText(preview); notice = t("files.copied"); }); }
+  function copy() { return act(async () => {
+    const revision = job.revision;
+    await navigator.clipboard.writeText(preview);
+    notice = t("files.copied");
+    if (!(await api.fileHandled(revision)).unsaved) markHandled(revision);
+  }); }
+  function discard() { return act(async () => {
+    discardOpen = false;
+    const next = await api.fileDiscard(job.revision);
+    if (!disposed) accept(next);
+  }); }
+  // A result that was not saved or copied cannot be restored, so discarding it asks first.
+  function askDiscard() { if (job.unsaved) discardOpen = true; else void discard(); }
 </script>
 
 <div class="files">
@@ -147,11 +170,20 @@
         <div class="actions">
           <Button disabled={rendering} {busy} onclick={save}>{t("files.save")}</Button>
           <Button disabled={rendering} {busy} onclick={copy}><Icon name="copy" />{t("common.copy")}</Button>
+          <Button {busy} onclick={askDiscard}>{t("files.discard")}</Button>
         </div>
       </section>
     {/if}
   {/if}
 </div>
+
+<Dialog bind:open={discardOpen} title={t("files.discard_title")}>
+  <p>{t("files.discard_body")}</p>
+  {#snippet actions()}
+    <Button onclick={() => discardOpen = false}>{t("common.cancel")}</Button>
+    <Button variant="danger" {busy} onclick={discard}>{t("files.discard")}</Button>
+  {/snippet}
+</Dialog>
 
 <style>
   .files, .result, fieldset { display: flex; flex-direction: column; gap: var(--space-4); }

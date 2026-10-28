@@ -101,6 +101,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         file_cancel,
         file_render,
         file_save,
+        file_handled,
+        file_discard,
     ]
 }
 
@@ -127,11 +129,30 @@ fn file_start(
 fn file_cancel(app: AppHandle, jobs: State<'_, Arc<crate::file_jobs::FileJobs>>) {
     jobs.cancel();
     let state = jobs.snapshot();
-    events::emit(
-        &app,
-        events::FILE_PROGRESS,
-        crate::file_jobs::FileEvent { revision: state.revision, phase: state.phase, progress: state.progress },
-    );
+    events::emit(&app, events::FILE_PROGRESS, crate::file_jobs::FileEvent::from(&state));
+}
+
+/// The UI copied the result of `revision`; it no longer blocks update installation.
+#[tauri::command]
+fn file_handled(
+    app: AppHandle,
+    jobs: State<'_, Arc<crate::file_jobs::FileJobs>>,
+    revision: u64,
+) -> crate::file_jobs::FileState {
+    let state = jobs.handled(revision);
+    events::emit(&app, events::FILE_PROGRESS, crate::file_jobs::FileEvent::from(&state));
+    state
+}
+
+#[tauri::command]
+fn file_discard(
+    app: AppHandle,
+    jobs: State<'_, Arc<crate::file_jobs::FileJobs>>,
+    revision: u64,
+) -> crate::file_jobs::FileState {
+    let state = jobs.discard(revision);
+    events::emit(&app, events::FILE_PROGRESS, crate::file_jobs::FileEvent::from(&state));
+    state
 }
 
 #[tauri::command]

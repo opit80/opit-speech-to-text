@@ -1,4 +1,4 @@
-import type { FileEvent, FilePhase, FileState } from "./types";
+import type { FileEvent, FilePhase, FileState, FileWork } from "./types";
 
 export function fileRunning(phase: FilePhase): boolean {
   return phase === "decoding" || phase === "transcribing" || phase === "cancelling";
@@ -13,4 +13,19 @@ export function mergeFileEvent(state: FileState, event: FileEvent): FileState {
 
 export function acceptFileSnapshot(state: FileState, snapshot: FileState): FileState {
   return snapshot.revision >= state.revision ? snapshot : state;
+}
+
+/**
+ * Merges a file snapshot or event into the shell's view. Saving or copying a result keeps its
+ * revision and only clears `unsaved`, so within one revision `unsaved` may only turn false.
+ */
+export function mergeFileWork(current: FileWork, next: FileWork): FileWork {
+  if (next.revision > current.revision) return { revision: next.revision, phase: next.phase, unsaved: next.unsaved };
+  if (next.revision === current.revision && current.unsaved && !next.unsaved) return { ...current, unsaved: false };
+  return current;
+}
+
+/** Installing an update closes the app, which would lose a running job or an unsaved result. */
+export function fileBlocksUpdate(work: FileWork): boolean {
+  return fileRunning(work.phase) || work.unsaved;
 }

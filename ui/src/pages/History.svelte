@@ -5,7 +5,7 @@
   import { onHistoryAdded } from "../lib/events";
   import { formatClock, formatDateTime, formatSeconds } from "../lib/format";
   import { expandToWords } from "../lib/selection";
-  import { refreshHistory } from "../lib/history";
+  import { HISTORY_PAGE, refreshHistory, refreshWindow, sameList } from "../lib/history";
   import { toast } from "../lib/toast.svelte";
   import type { Dictation } from "../lib/types";
   import Banner from "../lib/components/Banner.svelte";
@@ -60,10 +60,10 @@
     listBusy = true;
     listError = null;
     try {
-      const snapshot = live && !search ? await refreshHistory(api.historyRecent, rows.length) : null;
-      const page = snapshot?.rows ?? (search ? await api.historySearch(search, 100) : await api.historyRecent(50, null));
+      const snapshot = live && !search ? await refreshHistory(api.historyRecent, refreshWindow(rows.length, moreBusy)) : null;
+      const page = snapshot?.rows ?? (search ? await api.historySearch(search, 100) : await api.historyRecent(HISTORY_PAGE, null));
       if (disposed || epoch !== generation || request !== listRequest) return;
-      hasMore = snapshot?.hasMore ?? (!search && page.length === 50);
+      hasMore = snapshot?.hasMore ?? (!search && page.length === HISTORY_PAGE);
       rows = page;
       if (audioId !== null && !rows.some(row => row.id === audioId)) stopAudio();
     } catch (error) {
@@ -112,18 +112,20 @@
   async function loadMore() {
     if (disposed || query || listBusy || moreBusy || mutationBusy || !hasMore || !rows.length) return;
     const epoch = generation;
-    const request = listRequest;
+    const started = { epoch, request: listRequest };
+    const current = () => ({ epoch: generation, request: listRequest });
     moreBusy = true;
     moreError = null;
     try {
-      const page = await api.historyRecent(50, rows[rows.length - 1].id);
-      // A live refresh meanwhile re-read the window from storage; this older page may be stale.
-      if (!disposed && epoch === generation && request === listRequest) {
+      const page = await api.historyRecent(HISTORY_PAGE, rows[rows.length - 1].id);
+      // A live refresh meanwhile re-read the window from storage, including the rows of this
+      // page (see refreshWindow), so a stale page is dropped.
+      if (!disposed && sameList(started, current())) {
         rows = merge(page, rows);
-        hasMore = page.length === 50;
+        hasMore = page.length === HISTORY_PAGE;
       }
     } catch (error) {
-      if (!disposed && epoch === generation) moreError = errorText(error);
+      if (!disposed && sameList(started, current())) moreError = errorText(error);
     } finally {
       if (!disposed && epoch === generation) moreBusy = false;
     }

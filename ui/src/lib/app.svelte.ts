@@ -1,13 +1,14 @@
 // The one place the UI keeps live app state. Filled by commands at start-up, then by events.
 import { api } from "./api";
 import { describeError } from "./errors";
-import { onConfigChanged, onHotkeyState, onNavigate, onStatus, onUpdateState, type UnlistenFn } from "./events";
+import { onConfigChanged, onFileProgress, onHotkeyState, onNavigate, onStatus, onUpdateState, type UnlistenFn } from "./events";
+import { mergeFileWork } from "./files";
 import { resolveLang, translate, type MessageKey, type Params } from "./i18n";
 import { parseRoute } from "./route";
 import { navigate } from "./router.svelte";
 import { createSerialQueue } from "./serial";
 import { checkUpdateState, keepInstallError } from "./update";
-import type { AppConfig, AppInfo, DictationStatus, HotkeyState, Lang, StartupNotice, UpdateState } from "./types";
+import type { AppConfig, AppInfo, DictationStatus, FileWork, HotkeyState, Lang, StartupNotice, UpdateState } from "./types";
 
 interface AppState {
   info: AppInfo | null;
@@ -22,6 +23,8 @@ interface AppState {
   updateDismissed: string | null;
   /** Why the last install failed; see `keepInstallError`. */
   updateError: string | null;
+  /** The file job as far as update installation cares; see `fileBlocksUpdate`. */
+  fileWork: FileWork;
 }
 
 export const app = $state<AppState>({
@@ -36,7 +39,12 @@ export const app = $state<AppState>({
   update: { kind: "idle" },
   updateDismissed: null,
   updateError: null,
+  fileWork: { revision: -1, phase: "idle", unsaved: false },
 });
+
+function setFileWork(next: FileWork): void {
+  app.fileWork = mergeFileWork(app.fileWork, next);
+}
 
 let updateRevision = 0;
 
@@ -93,6 +101,7 @@ export async function initApp(): Promise<() => void> {
         updateSeen = true;
         setUpdate(u);
       }),
+      onFileProgress(setFileWork),
     ]);
     for (const result of subscriptions) {
       if (result.status === "fulfilled") stops.push(result.value);
@@ -100,14 +109,16 @@ export async function initApp(): Promise<() => void> {
     for (const result of subscriptions) {
       if (result.status === "rejected") throw result.reason;
     }
-    const [info, config, status, hotkey, notices, update] = await Promise.all([
+    const [info, config, status, hotkey, notices, update, file] = await Promise.all([
       api.appInfo(),
       api.getConfig(),
       api.getStatus(),
       api.getHotkeyState(),
       api.takeStartupNotices(),
       api.getUpdateState(),
+      api.fileState(),
     ]);
+    setFileWork(file);
     app.info = info;
     setConfig(configSeen && app.config ? app.config : config);
     if (!statusSeen) app.status = status;

@@ -203,7 +203,8 @@ export type StartupNotice =
 export type CommandErrorCode =
   | "config" | "rules" | "history" | "secrets" | "provider" | "invalid_input" | "unavailable" | "update"
   | "file_busy" | "file_pick" | "file_result" | "file_timestamps" | "file_language" | "file_speakers"
-  | "file_decode" | "file_limit" | "file_cancelled" | "file_worker" | "file_save";
+  | "file_decode" | "file_limit" | "file_cancelled" | "file_worker" | "file_save" | "file_blocked_by_update"
+  | "update_blocked_by_dictation" | "update_blocked_by_file_job";
 export interface CommandError {
   code: CommandErrorCode;
   message: string;
@@ -250,8 +251,12 @@ export interface FileResult { text: string; segments: FileSegment[]; timestamps_
 export interface FileState {
   revision: number; name: string | null; phase: FilePhase; progress: FileProgress | null;
   result: FileResult | null; error: CommandError | null; options: FileOptions;
+  /** A completed result that exists only in memory: not saved, copied or discarded yet. */
+  unsaved: boolean;
 }
-export type FileEvent = Pick<FileState, "revision" | "phase" | "progress">;
+export type FileEvent = Pick<FileState, "revision" | "phase" | "progress" | "unsaved">;
+/** What the shell tracks about the file job: enough to know whether an update may install. */
+export type FileWork = Pick<FileState, "revision" | "phase" | "unsaved">;
 export type FileOutputFormat = "txt" | "srt";
 
 export type AskAgent = "chat" | "claude" | "codex";

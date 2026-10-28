@@ -1,5 +1,7 @@
 //! Reusable app file worker. WebView commands accept only native-dialog paths;
-//! authenticated local IPC supplies its own paths. Results stay in memory.
+//! authenticated local IPC supplies its own paths. Results stay in memory, so a finished result
+//! keeps the shared work guard (which blocks update installation) until it is saved, copied,
+//! discarded or replaced.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +15,7 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::app_core::{AppCore, CommandError};
-use crate::controller::Providers;
+use crate::controller::{Providers, WorkGuard};
 use crate::i18n::Lang;
 use crate::providers::HttpProviders;
 
@@ -54,14 +56,26 @@ pub struct FileState {
     pub result: Option<FileResult>,
     pub error: Option<CommandError>,
     pub options: FileOptions,
+    /// A completed result exists only in memory and was not saved, copied or discarded yet.
+    /// Within one revision it only ever changes from true to false.
+    pub unsaved: bool,
 }
 
 /// Progress events carry no transcript. The UI retrieves a snapshot after completion.
+/// Marking a result as saved or copied keeps the revision (the result is unchanged) and
+/// sends an event with the same revision and `unsaved: false`.
 #[derive(Clone, Serialize)]
 pub struct FileEvent {
     pub revision: u64,
     pub phase: Phase,
     pub progress: Option<Progress>,
+    pub unsaved: bool,
+}
+
+impl From<&FileState> for FileEvent {
+    fn from(state: &FileState) -> Self {
+        Self { revision: state.revision, phase: state.phase, progress: state.progress, unsaved: state.unsaved }
+    }
 }
 
 #[derive(Default)]
@@ -70,6 +84,15 @@ struct Inner {
     state: FileState,
     cancel: Arc<AtomicBool>,
     dialog_open: bool,
+    /// The work guard of a completed job whose result is unsaved.
+    retained: Option<WorkGuard>,
+}
+
+impl Inner {
+    fn release(&mut self) -> Option<WorkGuard> {
+        self.state.unsaved = false;
+        self.retained.take()
+    }
 }
 
 #[derive(Default)]
@@ -95,6 +118,8 @@ impl FileJobs {
             return Err(CommandError::new("file_busy", ""));
         }
         let path = inner.path.clone().ok_or_else(|| CommandError::new("file_pick", ""))?;
+        // The new job replaces the previous result; its own guard covers the work from here.
+        drop(inner.release());
         inner.cancel = Arc::new(AtomicBool::new(false));
         inner.state.revision += 1;
         inner.state.phase = Phase::Decoding;
@@ -112,10 +137,12 @@ impl FileJobs {
         }
         inner.state.progress = Some(progress);
         inner.state.revision += 1;
-        event(&inner.state)
+        FileEvent::from(&inner.state)
     }
 
-    fn finish(&self, result: Result<FileResult>) -> FileEvent {
+    /// A completed result keeps `work` until it is saved, copied, discarded or replaced;
+    /// otherwise the guard is released here.
+    fn finish(&self, result: Result<FileResult>, work: Option<WorkGuard>) -> FileEvent {
         let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         inner.state.revision += 1;
         if inner.cancel.load(Ordering::Relaxed) {
@@ -125,6 +152,8 @@ impl FileJobs {
                 Ok(result) => {
                     inner.state.phase = Phase::Completed;
                     inner.state.result = Some(result);
+                    inner.state.unsaved = true;
+                    inner.retained = work;
                 }
                 Err(error) => {
                     inner.state.phase = Phase::Failed;
@@ -132,29 +161,54 @@ impl FileJobs {
                 }
             }
         }
-        event(&inner.state)
+        FileEvent::from(&inner.state)
+    }
+
+    /// The result of `revision` was saved or copied: it stays visible but no longer blocks
+    /// update installation. Stale revisions change nothing.
+    pub fn handled(&self, revision: u64) -> FileState {
+        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if inner.state.revision == revision {
+            drop(inner.release());
+        }
+        inner.state.clone()
+    }
+
+    /// Drops the completed result of `revision`, keeping the picked file for another run.
+    pub fn discard(&self, revision: u64) -> FileState {
+        let mut inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if inner.state.revision == revision && !inner.state.phase.running() && inner.state.result.is_some() {
+            drop(inner.release());
+            inner.state.revision += 1;
+            inner.state.phase = Phase::Idle;
+            inner.state.result = None;
+            inner.state.progress = None;
+        }
+        inner.state.clone()
     }
 
     pub fn render(&self, format: OutputFormat, prefixes: bool, speakers: bool) -> Result<String> {
+        self.render_revision(format, prefixes, speakers).map(|(text, _)| text)
+    }
+
+    fn render_revision(&self, format: OutputFormat, prefixes: bool, speakers: bool) -> Result<(String, u64)> {
         let inner = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let result = inner.state.result.as_ref().ok_or_else(|| CommandError::new("file_result", ""))?;
         let speakers = speakers && inner.state.options.speakers;
-        match format {
-            OutputFormat::Txt => Ok(files::render_txt(result, prefixes, speakers)),
+        let text = match format {
+            OutputFormat::Txt => files::render_txt(result, prefixes, speakers),
             OutputFormat::Srt => {
-                files::render_srt(result, speakers).ok_or_else(|| CommandError::new("file_timestamps", ""))
+                files::render_srt(result, speakers).ok_or_else(|| CommandError::new("file_timestamps", ""))?
             }
-        }
+        };
+        Ok((text, inner.state.revision))
     }
-}
-
-fn event(state: &FileState) -> FileEvent {
-    FileEvent { revision: state.revision, phase: state.phase, progress: state.progress }
 }
 
 pub async fn pick(app: AppHandle) -> Result<FileState> {
     let jobs = app.state::<Arc<FileJobs>>().inner().clone();
     let lang = app.state::<Arc<AppCore>>().settings.current().lang;
+    let app_events = app.clone();
     {
         let mut inner = jobs.0.lock().unwrap_or_else(PoisonError::into_inner);
         if inner.state.phase.running() || inner.dialog_open {
@@ -176,13 +230,18 @@ pub async fn pick(app: AppHandle) -> Result<FileState> {
         Ok(Some(Ok(path))) => {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
             let revision = inner.state.revision + 1;
+            // A new file replaces the previous result.
+            drop(inner.release());
             inner.path = Some(path);
             inner.state = FileState { name, revision, ..FileState::default() };
+            let state = inner.state.clone();
+            drop(inner);
+            crate::events::emit(&app_events, crate::events::FILE_PROGRESS, FileEvent::from(&state));
+            Ok(state)
         }
-        Ok(None) => {}
-        _ => return Err(CommandError::new("file_pick", "")),
+        Ok(None) => Ok(inner.state.clone()),
+        _ => Err(CommandError::new("file_pick", "")),
     }
-    Ok(inner.state.clone())
 }
 
 fn client(core: &AppCore, mut profile: Profile, options: &FileOptions) -> Result<crate::providers::AppProvider> {
@@ -231,15 +290,15 @@ pub fn start(app: AppHandle, core: Arc<AppCore>, mut options: FileOptions) -> Re
         return Err(CommandError::new("file_speakers", ""));
     }
     let jobs = app.state::<Arc<FileJobs>>().inner().clone();
-    let work = core.controller.begin_file_work().ok_or_else(|| CommandError::new("file_busy", ""))?;
+    let work = core.controller.begin_file_work().ok_or_else(|| CommandError::new("file_blocked_by_update", ""))?;
     let (path, cancel) = jobs.begin(options.clone())?;
     let initial = jobs.snapshot();
     let handle = tauri::async_runtime::handle();
     let worker_jobs = jobs.clone();
     let worker_app = app.clone();
     let worker = tauri::async_runtime::spawn_blocking(move || {
-        let _work = work;
-        transcribe_path(
+        // The guard travels with the result; a panic drops it while unwinding.
+        let result = transcribe_path(
             &core,
             settings,
             &options,
@@ -249,11 +308,15 @@ pub fn start(app: AppHandle, core: Arc<AppCore>, mut options: FileOptions) -> Re
                 crate::events::emit(&worker_app, crate::events::FILE_PROGRESS, worker_jobs.progress(p));
             },
             handle.inner(),
-        )
+        );
+        (result, work)
     });
     tauri::async_runtime::spawn(async move {
-        let result = worker.await.unwrap_or_else(|_| Err(CommandError::new("file_worker", "")));
-        crate::events::emit(&app, crate::events::FILE_PROGRESS, jobs.finish(result));
+        let (result, work) = match worker.await {
+            Ok((result, work)) => (result, Some(work)),
+            Err(_) => (Err(CommandError::new("file_worker", "")), None),
+        };
+        crate::events::emit(&app, crate::events::FILE_PROGRESS, jobs.finish(result, work));
     });
     Ok(initial)
 }
@@ -339,7 +402,7 @@ pub enum OutputFormat {
 pub async fn save(app: AppHandle, format: OutputFormat, prefixes: bool, speakers: bool) -> Result<bool> {
     let jobs = app.state::<Arc<FileJobs>>().inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let text = jobs.render(format, prefixes, speakers)?;
+        let (text, revision) = jobs.render_revision(format, prefixes, speakers)?;
         let extension = match format {
             OutputFormat::Txt => "txt",
             OutputFormat::Srt => "srt",
@@ -355,6 +418,8 @@ pub async fn save(app: AppHandle, format: OutputFormat, prefixes: bool, speakers
         };
         let path = path.into_path().map_err(|_| CommandError::new("file_save", ""))?;
         std::fs::write(path, text).map_err(|_| CommandError::new("file_save", ""))?;
+        let state = jobs.handled(revision);
+        crate::events::emit(&app, crate::events::FILE_PROGRESS, FileEvent::from(&state));
         Ok(true)
     })
     .await
@@ -374,13 +439,75 @@ mod tests {
         assert_eq!(jobs.begin(FileOptions::default()).unwrap_err().code, "file_busy");
         jobs.cancel();
         assert!(cancel.load(Ordering::Relaxed));
-        jobs.finish(Ok(FileResult::default()));
+        jobs.finish(Ok(FileResult::default()), None);
         assert_eq!(jobs.snapshot().phase, Phase::Cancelled);
         assert!(jobs.snapshot().result.is_none());
         let (_, next) = jobs.begin(FileOptions::default()).unwrap();
         assert!(!next.load(Ordering::Relaxed));
-        jobs.finish(Err(CommandError::new("file_worker", "")));
+        jobs.finish(Err(CommandError::new("file_worker", "")), None);
         assert_eq!(jobs.snapshot().phase, Phase::Failed);
         assert!(jobs.begin(FileOptions::default()).is_ok());
+    }
+
+    fn picked() -> FileJobs {
+        let jobs = FileJobs::default();
+        jobs.0.lock().unwrap().path = Some(PathBuf::from("test.wav"));
+        jobs
+    }
+
+    /// Refused for file work without reaching the (absent) controller actor.
+    fn update_blocked(handle: &crate::controller::ControllerHandle) -> bool {
+        let mut hold = std::pin::pin!(handle.hold_for_update());
+        let waker = std::task::Waker::noop();
+        matches!(
+            hold.as_mut().poll(&mut std::task::Context::from_waker(waker)),
+            std::task::Poll::Ready(Err(crate::controller::HoldRefusal::FileWork))
+        )
+    }
+
+    #[test]
+    fn an_unsaved_result_blocks_updates_until_saved_copied_discarded_or_replaced() {
+        let (handle, _inbox) = crate::controller::channel();
+        let complete = |jobs: &FileJobs| {
+            jobs.begin(FileOptions::default()).unwrap();
+            jobs.finish(Ok(FileResult::default()), Some(handle.begin_file_work().unwrap()));
+            assert!(jobs.snapshot().unsaved);
+            assert!(update_blocked(&handle), "an update would discard the in-memory result");
+        };
+        let jobs = picked();
+
+        // Saved or copied: the result stays visible.
+        complete(&jobs);
+        let revision = jobs.snapshot().revision;
+        assert!(jobs.handled(revision - 1).unsaved, "a stale revision changes nothing");
+        assert!(update_blocked(&handle));
+        let state = jobs.handled(revision);
+        assert_eq!((state.revision, state.unsaved, state.result.is_some()), (revision, false, true));
+        assert!(!update_blocked(&handle));
+
+        // Discarded.
+        complete(&jobs);
+        let revision = jobs.snapshot().revision;
+        let state = jobs.discard(revision);
+        assert_eq!((state.phase, state.unsaved, state.result.is_none()), (Phase::Idle, false, true));
+        assert!(state.revision > revision);
+        assert!(!update_blocked(&handle));
+
+        // Replaced by a new job: only the new worker's guard remains.
+        complete(&jobs);
+        let running = handle.begin_file_work().unwrap();
+        jobs.begin(FileOptions::default()).unwrap();
+        assert!(!jobs.snapshot().unsaved);
+        drop(running);
+        assert!(!update_blocked(&handle));
+
+        // Failed and cancelled jobs keep nothing.
+        jobs.finish(Err(CommandError::new("file_worker", "")), Some(handle.begin_file_work().unwrap()));
+        assert!(!update_blocked(&handle));
+        jobs.begin(FileOptions::default()).unwrap();
+        jobs.cancel();
+        jobs.finish(Ok(FileResult::default()), Some(handle.begin_file_work().unwrap()));
+        assert!(!jobs.snapshot().unsaved);
+        assert!(!update_blocked(&handle));
     }
 }

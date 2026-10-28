@@ -1005,9 +1005,9 @@ async fn file_work_and_updates_exclude_each_other_in_both_orders() {
     let h = harness(AppConfig::default());
     let ui = h.handle.begin_file_work().unwrap();
     let ipc = h.handle.begin_file_work().unwrap();
-    assert!(h.handle.hold_for_update().await.is_none());
+    assert_eq!(h.handle.hold_for_update().await.err(), Some(HoldRefusal::FileWork));
     drop(ui);
-    assert!(h.handle.hold_for_update().await.is_none());
+    assert_eq!(h.handle.hold_for_update().await.err(), Some(HoldRefusal::FileWork));
     drop(ipc);
     let update = h.handle.hold_for_update().await.unwrap();
     assert!(h.handle.begin_file_work().is_none());
@@ -1058,15 +1058,15 @@ async fn no_update_hold_while_a_dictation_is_in_flight() {
     h.providers.gate.forget_permits(1_000);
     h.send(Msg::Toggle);
     h.expect(&[Recording]).await;
-    assert!(h.handle.hold_for_update().await.is_none(), "recording");
+    assert_eq!(h.handle.hold_for_update().await.err(), Some(HoldRefusal::Dictation), "recording");
     h.send(Msg::Toggle);
     h.expect(&[Transcribing]).await;
-    assert!(h.handle.hold_for_update().await.is_none(), "transcribing");
+    assert!(h.handle.hold_for_update().await.is_err(), "transcribing");
 
     h.providers.gate.add_permits(1_000);
     h.expect(&[Pasting, Idle]).await;
     assert_eq!(h.paster.texts(), ["bitti "], "the refused hold changed nothing");
-    assert!(h.handle.hold_for_update().await.is_some());
+    assert!(h.handle.hold_for_update().await.is_ok());
 }
 
 #[tokio::test]
@@ -1165,7 +1165,7 @@ async fn bounded_fifo_preserves_profiles_paste_policy_and_history_order() {
         h.send(Msg::Stop);
         wait_for(&mut h, Transcribing, waiting).await;
     }
-    assert!(h.handle.hold_for_update().await.is_none(), "waiting recordings block updates");
+    assert!(h.handle.hold_for_update().await.is_err(), "waiting recordings block updates");
     h.send(Msg::Toggle);
     h.send(Msg::Retry);
     h.settle().await;
@@ -1192,7 +1192,7 @@ async fn bounded_fifo_preserves_profiles_paste_policy_and_history_order() {
         ["groq", "openai", "openai", "openai"]
     );
     assert_eq!(*h.events.history.lock().unwrap(), [1, 2, 3, 4]);
-    assert!(h.handle.hold_for_update().await.is_some());
+    assert!(h.handle.hold_for_update().await.is_ok());
 }
 
 #[tokio::test]
@@ -1338,7 +1338,7 @@ async fn recording_continues_while_paste_and_restore_are_blocked() {
     h.send(Msg::Stop);
     wait_for(&mut h, Pasting, 1).await;
     assert_eq!(h.providers.calls(), 1, "the next job waits for paste and restore to return");
-    assert!(h.handle.hold_for_update().await.is_none());
+    assert!(h.handle.hold_for_update().await.is_err());
     h.hotkey(HotkeyEvent::Escape);
     h.settle().await;
     assert_eq!(h.handle.status().waiting, 1, "Escape cannot interrupt a paste in progress");

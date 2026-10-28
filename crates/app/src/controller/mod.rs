@@ -198,8 +198,18 @@ struct WorkState {
     updates: usize,
 }
 
+/// Why an update may not install right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldRefusal {
+    /// A dictation is recording, waiting, transcribing or pasting (or the controller stopped).
+    Dictation,
+    /// A file job is running or holds a result that was not saved, copied or discarded yet.
+    FileWork,
+}
+
 /// Shared by UI/IPC workers and update installation. Held until the worker finishes,
-/// including when its async caller is cancelled.
+/// including when its async caller is cancelled. A UI file job keeps it while its finished
+/// result exists only in memory.
 pub struct WorkGuard {
     state: Arc<Mutex<WorkState>>,
     update: bool,
@@ -327,23 +337,29 @@ impl ControllerHandle {
         result.await.unwrap_or(Err(ErrorKind::Cancelled))
     }
 
-    /// Stops new dictations so an update can install. `None` while a dictation is recording,
-    /// waiting, transcribing or pasting (or after shutdown). The controller answers in order with its
-    /// other messages, so no dictation can slip in between the answer and the hold.
-    pub async fn hold_for_update(&self) -> Option<UpdateHold> {
+    /// Stops new dictations so an update can install. Refused while file work is active, and
+    /// while a dictation is recording, waiting, transcribing or pasting (or after shutdown). The
+    /// controller answers in order with its other messages, so no dictation can slip in between
+    /// the answer and the hold.
+    pub async fn hold_for_update(&self) -> Result<UpdateHold, HoldRefusal> {
         let work = {
             let mut state = self.work.lock().unwrap_or_else(PoisonError::into_inner);
             if state.files != 0 {
-                return None;
+                return Err(HoldRefusal::FileWork);
             }
             state.updates += 1;
             WorkGuard { state: self.work.clone(), update: true }
         };
         let (reply, answer) = oneshot::channel();
         self.send(Msg::HoldForUpdate(reply));
-        answer.await.unwrap_or(false).then(|| UpdateHold { tx: self.tx.clone(), _work: work })
+        if answer.await.unwrap_or(false) {
+            Ok(UpdateHold { tx: self.tx.clone(), _work: work })
+        } else {
+            Err(HoldRefusal::Dictation)
+        }
     }
 
+    /// `None` while an update holds the work state (it is installing or about to).
     pub fn begin_file_work(&self) -> Option<WorkGuard> {
         let mut state = self.work.lock().unwrap_or_else(PoisonError::into_inner);
         if state.updates != 0 {

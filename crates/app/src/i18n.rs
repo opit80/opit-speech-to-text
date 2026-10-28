@@ -276,16 +276,143 @@ impl Lang {
 mod tests {
     use super::*;
 
+    /// Signs of broken encoding rather than legitimate punctuation: a `?` replacing a letter (it is
+    /// followed by a letter, a digit or another `?`), U+FFFD, and UTF-8 read as Windows-1252 or
+    /// Latin-1 (a lead byte shown as Â/Ã/Ä/Å followed by a continuation byte, or "â€").
+    fn corrupted(text: &str) -> bool {
+        // Windows-1252 renderings of the continuation bytes 0x80..=0x9F.
+        const CP1252: &str = "€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ";
+        let continuation = |c: char| ('\u{80}'..='\u{bf}').contains(&c) || CP1252.contains(c);
+        let chars: Vec<char> = text.chars().collect();
+        text.contains('\u{fffd}')
+            || text.contains("â€")
+            || chars.windows(2).any(|pair| match pair {
+                ['?', next] => next.is_alphanumeric() || *next == '?',
+                [lead, next] => "ÂÃÄÅ".contains(*lead) && continuation(*next),
+                _ => false,
+            })
+    }
+
+    /// Every message `Lang` produces, with each variant of its arguments, in one language.
+    fn messages(lang: Lang) -> Vec<(&'static str, String)> {
+        use opit_core::cleanup::CleanupError;
+        use opit_core::provider::retry::RetryWait;
+        let mut out: Vec<(&'static str, String)> = vec![
+            ("loading_local", lang.loading_local().into()),
+            ("ask_cleanup_failed", lang.ask_cleanup_failed().into()),
+            ("ask_invalid", lang.ask_invalid().into()),
+            ("ask_detection_failed", lang.ask_detection_failed().into()),
+            ("tray_ask", lang.tray_ask().into()),
+            ("new_conversation", lang.new_conversation().into()),
+            ("asking", lang.asking("Claude", 12)),
+            ("file_media_filter", lang.file_media_filter().into()),
+            ("shortcut_collision", lang.shortcut_collision().into()),
+            ("pause_escape_reserved", lang.pause_escape_reserved().into()),
+            ("queue_full", lang.queue_full().into()),
+            ("recording_paused", lang.recording_paused().into()),
+            ("with_waiting", lang.with_waiting(lang.listening(), 2)),
+            ("listening", lang.listening().into()),
+            ("listening_default_mic", lang.listening_default_mic().into()),
+            ("cleaning", lang.cleaning().into()),
+            ("transcribing", lang.transcribing().into()),
+            ("pasted", lang.pasted(1.25)),
+            ("clipboard_only", lang.clipboard_only().into()),
+            ("no_speech", lang.no_speech(-52.0)),
+            ("too_short", lang.too_short().into()),
+            ("empty", lang.empty().into()),
+            ("cancelled", lang.cancelled().into()),
+            ("retry", lang.retry().into()),
+            ("open_settings", lang.open_settings().into()),
+            ("config_reset", lang.config_reset().into()),
+            ("user_rules_broken", lang.user_rules_broken().into()),
+            ("update_installing", lang.update_installing().into()),
+            ("hotkey_failed", lang.hotkey_failed().into()),
+            ("tray_open", lang.tray_open().into()),
+            ("tray_profile", lang.tray_profile().into()),
+            ("tray_pause_hotkey", lang.tray_pause_hotkey().into()),
+            ("tray_quit", lang.tray_quit().into()),
+        ];
+        for flag in [false, true] {
+            out.push(("tray_recording_pause", lang.tray_recording_pause(flag).into()));
+            out.push(("paste_failed", lang.paste_failed(flag).into()));
+            out.push(("tray_tooltip", lang.tray_tooltip(flag).into()));
+        }
+        for format in [
+            "read",
+            "container",
+            "audio track",
+            "audio codec",
+            "packet",
+            "sample rate",
+            "sample rate change",
+            "channels",
+            "empty audio",
+            "other",
+        ] {
+            for container in ["media", "WAV"] {
+                out.push(("file_decode", lang.file_decode(container, format)));
+            }
+        }
+        for error in [
+            CleanupError::MissingKey,
+            CleanupError::InvalidKey,
+            CleanupError::Network,
+            CleanupError::Timeout,
+            CleanupError::Rejected,
+            CleanupError::BadResponse,
+        ] {
+            for clipboard_only in [false, true] {
+                out.push(("cleanup_failed", lang.cleanup_failed(error, clipboard_only)));
+            }
+        }
+        for kind in ["rate_limited", "server", "timeout", "network"] {
+            out.push(("retry_wait", lang.retry_wait(RetryWait { kind, seconds: 5, attempt: 1, total: 3 })));
+        }
+        for kind in ErrorKind::ALL {
+            out.push(("error", lang.error(kind).into()));
+        }
+        out
+    }
+
+    #[test]
+    fn corruption_check_catches_mojibake_but_accepts_legitimate_text() {
+        for bad in [
+            "Yerel (?evrimd???)",
+            "ba?ar?s?z",
+            "Ã§alÄ±ÅŸÄ±yor",
+            "Ä°ptal",
+            "deÄŸil",
+            "Ã‡alÄ±ÅŸma",
+            "Ãœcret",
+            "Ã–nizleme",
+            "Åžimdi",
+            "YÃ¼kleniyorâ€¦",
+            "bozuk \u{fffd} metin",
+        ] {
+            assert!(corrupted(bad), "{bad}");
+        }
+        for good in
+            ["Delete 3 items? This cannot be undone.", "Silinsin mi?", "Âdem’in kâr payı", "hâlâ…", "\"quoted\""]
+        {
+            assert!(!corrupted(good), "{good}");
+        }
+    }
+
     #[test]
     fn native_strings_preserve_utf8_and_ask_wording() {
-        // Inspect all production literals, including formatted overlay messages.
+        // Covers what users see, including formatted overlay messages, in both languages.
+        let covered: std::collections::BTreeSet<&str> = messages(Lang::En).into_iter().map(|(name, _)| name).collect();
         let source = include_str!("i18n.rs").split("#[cfg(test)]").next().unwrap();
-        for line in source.lines() {
-            for literal in line.split('"').skip(1).step_by(2) {
-                assert!(!literal.contains('?'), "unexpected question mark in a native string");
-                for corrupt in ['\u{fffd}', '\u{c3}', '\u{c2}', '\u{c4}', '\u{c5}'] {
-                    assert!(!literal.contains(corrupt), "corrupted UTF-8 in a native string");
-                }
+        let methods: std::collections::BTreeSet<&str> = source
+            .lines()
+            .filter_map(|line| line.strip_prefix("    pub fn "))
+            .filter_map(|rest| rest.split('(').next())
+            .collect();
+        assert_eq!(covered, methods, "every Lang message is checked");
+        for lang in [Lang::En, Lang::Tr] {
+            for (name, text) in messages(lang) {
+                assert!(!text.trim().is_empty(), "{name} is empty");
+                assert!(!corrupted(&text), "{name} ({lang:?}) looks like corrupted text");
             }
         }
         assert_eq!(Lang::Tr.ask_cleanup_failed(), "İstek düzenlenemedi. Algılanan istek ajana gönderildi.");
