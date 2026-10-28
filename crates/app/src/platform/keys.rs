@@ -27,8 +27,13 @@ impl KeyTracker {
     }
 
     /// Switches to a new combo but keeps the held-key set, so keys already down while
-    /// re-registering are still accounted for. Pending ComboDown/LoneCtrl state is dropped.
+    /// re-registering are still accounted for. An unchanged key set keeps its pending release
+    /// and lone-Ctrl state; a changed combination drops that activation state.
     pub fn retarget(&mut self, combo: Vec<u32>) {
+        if same_combo(&self.combo, &combo) {
+            self.combo = combo;
+            return;
+        }
         self.combo = combo;
         self.combo_active = false;
         self.lone_candidate = None;
@@ -116,6 +121,33 @@ impl KeyTracker {
     }
 }
 
+pub fn same_combo(left: &[u32], right: &[u32]) -> bool {
+    left.len() == right.len() && left.iter().all(|key| right.contains(key))
+}
+
+/// Preserve each unchanged action's tracker, including an active push-to-talk release.
+/// New/changed bindings inherit physical held keys without synthesizing a key-down.
+pub fn retarget_shortcuts(
+    main: &KeyTracker,
+    shortcuts: &mut Vec<(HotkeyEvent, KeyTracker)>,
+    mappings: Vec<(HotkeyEvent, Vec<u32>)>,
+) {
+    let mut old = std::mem::take(shortcuts);
+    *shortcuts = mappings
+        .into_iter()
+        .map(|(action, combo)| {
+            let tracker = match old
+                .iter()
+                .position(|(previous, tracker)| *previous == action && same_combo(tracker.combo(), &combo))
+            {
+                Some(index) => old.remove(index).1,
+                None => KeyTracker { held: main.held().to_vec(), ..KeyTracker::new(combo) },
+            };
+            (action, tracker)
+        })
+        .collect();
+}
+
 /// Prune missed key-ups using physical state before feeding a new key-down. Inside the
 /// hook, async key state predates this event: a fresh press reads as up, a repeat as down.
 pub fn track_transition(
@@ -164,6 +196,47 @@ pub fn track_shortcuts(
 mod tests {
     use super::*;
     use HotkeyEvent::*;
+
+    #[test]
+    fn retargeting_an_unchanged_combination_preserves_its_release_and_lone_ctrl() {
+        let mut tracker = rctrl_rshift();
+        assert_eq!(run(&mut tracker, &[(RCTRL, true), (RSHIFT, true)]), [ComboDown]);
+        tracker.retarget(vec![RSHIFT, RCTRL]);
+        assert_eq!(tracker.on_key(RSHIFT, false), Some(ComboUp));
+        assert_eq!(tracker.on_key(RCTRL, false), None);
+        assert_eq!(tracker.on_key(LCTRL, true), None);
+        tracker.retarget(vec![RCTRL, RSHIFT]);
+        assert_eq!(tracker.on_key(LCTRL, false), Some(LoneCtrl));
+    }
+
+    #[test]
+    fn reconfiguring_other_shortcuts_preserves_held_dictation_edit_and_translate_releases() {
+        for (pressed, released, vk) in
+            [(ComboDown, ComboUp, 0x7C), (Edit, EditUp, 0x7D), (Translate, TranslateUp, 0x7E)]
+        {
+            let mut main = KeyTracker::new(vec![0x7C]);
+            let mut shortcuts = vec![(Edit, KeyTracker::new(vec![0x7D])), (Translate, KeyTracker::new(vec![0x7E]))];
+            assert_eq!(track_shortcuts(&mut main, &mut shortcuts, vk, true, |_| true), [pressed]);
+            main.retarget(vec![0x7C]);
+            retarget_shortcuts(
+                &main,
+                &mut shortcuts,
+                vec![(StyleCycle, vec![0x7F]), (Translate, vec![0x7E]), (Edit, vec![0x7D])],
+            );
+            assert!(track_shortcuts(&mut main, &mut shortcuts, vk, true, |_| true).is_empty());
+            assert_eq!(track_shortcuts(&mut main, &mut shortcuts, vk, false, |_| true), [released]);
+            assert!(track_shortcuts(&mut main, &mut shortcuts, vk, false, |_| true).is_empty());
+        }
+    }
+
+    #[test]
+    fn new_bindings_do_not_synthesize_a_release_for_an_unreported_press() {
+        let mut main = KeyTracker::new(vec![0x7C]);
+        let mut shortcuts = Vec::new();
+        assert!(track_shortcuts(&mut main, &mut shortcuts, 0xA2, true, |_| true).is_empty());
+        retarget_shortcuts(&main, &mut shortcuts, vec![(Edit, vec![0xA2])]);
+        assert_eq!(track_shortcuts(&mut main, &mut shortcuts, 0xA2, false, |_| true), [LoneCtrl]);
+    }
 
     #[test]
     fn voice_shortcuts_deliver_down_and_up_without_lone_ctrl() {

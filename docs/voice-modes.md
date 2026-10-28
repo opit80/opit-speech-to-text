@@ -162,8 +162,8 @@ result/pre-rule text; selection and instruction remain retrievable through retur
 
 ## Selection and output boundaries
 
-Windows selection capture runs on a blocking worker before the microphone opens. It takes
-the existing clipboard snapshot, notes its sequence number, sends Ctrl+C, and polls for
+Windows selection capture runs on a blocking worker before the microphone opens. It requires
+a complete, restorable clipboard snapshot, notes its sequence number, sends Ctrl+C, and polls for
 up to 400 ms. It reads only newly copied Unicode text and restores the snapshot before
 recording. Own windows, shell windows, elevated windows and unreadable integrity are treated
 as having no selection. A simultaneous unrelated user copy is preserved and capture fails
@@ -171,8 +171,17 @@ safely rather than treating that clipboard content as the selection. Selection c
 paste/restore share a lock. Held shortcut modifiers are neutralized and restored in the
 same injected input batch, supporting modifier-based push-to-talk.
 
+Every advertised clipboard format must be supported and successfully backed up. Unsupported
+formats (including enhanced metafiles and other GDI handles), failed retrieval/locking, or
+enumeration errors make selection unavailable before Ctrl+C is sent. The original clipboard
+is left intact, Edit shows the existing selection-unavailable hint, and recording does not start.
+This safety check applies even when `paste.restore_clipboard` is false; that setting controls
+only restoration after inserting a result.
+
 Selections are limited to 32,000 Unicode characters. A read/restore failure or oversized
 selection stops the operation and shows a localized hint; it does not silently generate text.
+An absent Unicode text format means no text selection. If Unicode text is advertised but
+retrieval fails, capture instead restores the backup and reports selection unavailable.
 An unchanged clipboard after the copy timeout means no selection, so Edit generates new text.
 The selection and instruction are separate JSON values in the LLM user message; the system
 prompt explicitly makes selection material non-instructional. Edit/generation prompts use
@@ -202,8 +211,11 @@ Use a scratch `OPIT_DATA_DIR` and the user's configured cleanup connection for t
    no source/instruction is pasted, the failed History row retains original material, and
    the next queued dictation proceeds.
 5. Test elevated and own windows, focus changes, concurrent user copies, busy clipboard,
-   long selections, and rich/image clipboard payloads. The existing snapshot supports only
-   HGLOBAL-backed formats; GDI/uncopyable formats retain that preexisting restoration limit.
+   long selections, and rich/image clipboard payloads. Selection capture requires a complete
+   HGLOBAL-backed backup; verify that GDI/uncopyable formats abort capture before Ctrl+C and
+   leave the clipboard intact, including with paste restoration disabled. An advertised
+   Unicode format that cannot be retrieved must restore the backup and show the existing
+   selection-unavailable hint instead of starting generation.
    Applications using clipboard brokers may fail the owner-process check safely. Clipboard
    owners that block delayed rendering can exceed the nominal polling time.
 

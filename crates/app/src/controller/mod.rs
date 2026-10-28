@@ -102,7 +102,7 @@ pub trait UiEvents: Send + Sync {
     fn status_changed(&self, status: &DictationStatus);
     fn history_added(&self, id: i64);
     fn open_settings(&self);
-    /// Called on a blocking worker, serialized with controller input.
+    /// Called on a blocking worker by the ordered style writer, independently of controller input.
     fn save_style(&self, id: &str) -> Option<CleanupStyle>;
 }
 
@@ -131,6 +131,10 @@ pub enum Msg {
     },
     VoiceReady(u64),
     StyleChanged(CleanupStyle),
+    StyleSaved {
+        generation: u64,
+        style: Option<CleanupStyle>,
+    },
     Ask {
         text: Option<String>,
         reply: Option<oneshot::Sender<Result<String, ErrorKind>>>,
@@ -307,6 +311,7 @@ pub fn run<P: Providers>(
     inbox: Inbox,
     env: Env<P>,
 ) -> impl Future<Output = ()> + Send + 'static {
+    let (style_writer, style_requests) = mpsc::unbounded_channel();
     let controller = Controller {
         env,
         tx: handle.tx.clone(),
@@ -318,8 +323,12 @@ pub fn run<P: Providers>(
         session: 0,
         retry: None,
         update_holds: 0,
+        style_writer,
+        style_generation: 0,
+        pending_style: None,
+        style_fallback: None,
     };
-    controller.serve(inbox)
+    controller.serve(inbox, style_requests)
 }
 
 impl ControllerHandle {
@@ -546,6 +555,17 @@ enum Phase {
     },
 }
 
+struct StyleWrite {
+    generation: u64,
+    id: String,
+}
+
+struct PendingStyle {
+    generation: u64,
+    style: CleanupStyle,
+    recording_session: Option<u64>,
+}
+
 struct Controller<P: Providers> {
     env: Env<P>,
     tx: mpsc::UnboundedSender<Msg>,
@@ -559,10 +579,25 @@ struct Controller<P: Providers> {
     retry: Option<Arc<PreparedAudio>>,
     /// Live [`UpdateHold`]s; no dictation starts while there is one.
     update_holds: usize,
+    style_writer: mpsc::UnboundedSender<StyleWrite>,
+    style_generation: u64,
+    pending_style: Option<PendingStyle>,
+    style_fallback: Option<CleanupStyle>,
 }
 
 impl<P: Providers> Controller<P> {
-    async fn serve(mut self, mut inbox: Inbox) {
+    async fn serve(mut self, mut inbox: Inbox, mut style_requests: mpsc::UnboundedReceiver<StyleWrite>) {
+        let events = self.env.events.clone();
+        let tx = self.tx.clone();
+        // One writer preserves press order and drains queued writes even after actor shutdown.
+        // Spawn only once the controller future is polled, since Tauri setup has no Tokio context.
+        tokio::spawn(async move {
+            while let Some(request) = style_requests.recv().await {
+                let events = events.clone();
+                let style = tokio::task::spawn_blocking(move || events.save_style(&request.id)).await.ok().flatten();
+                let _ = tx.send(Msg::StyleSaved { generation: request.generation, style });
+            }
+        });
         while let Some(msg) = inbox.0.recv().await {
             if let Msg::Shutdown = msg {
                 if let Some(preparing) = self.preparing.take() {
@@ -580,8 +615,8 @@ impl<P: Providers> Controller<P> {
             }
             match msg {
                 Msg::VoiceReady(session) => self.voice_ready(session).await,
-                Msg::Hotkey(HotkeyEvent::StyleCycle) => self.select_style(None).await,
-                Msg::Hotkey(HotkeyEvent::Style(id)) => self.select_style(Some(id)).await,
+                Msg::Hotkey(HotkeyEvent::StyleCycle) => self.select_style(None),
+                Msg::Hotkey(HotkeyEvent::Style(id)) => self.select_style(Some(id)),
                 msg => self.handle(msg),
             }
             self.pump();
@@ -597,7 +632,16 @@ impl<P: Providers> Controller<P> {
                 }
             }
             Msg::VoiceReady(_) => {} // handled by the async actor loop
-            Msg::StyleChanged(style) => self.style_changed(style),
+            Msg::StyleChanged(style) => {
+                if self.pending_style.is_some() {
+                    // A tray/UI save may overtake a queued hotkey write under config_lock.
+                    // Append its choice so older queued writes cannot become the final config.
+                    self.queue_style(style);
+                } else {
+                    self.style_changed(style);
+                }
+            }
+            Msg::StyleSaved { generation, style } => self.style_saved(generation, style),
             Msg::TestAsk { config, reply } => {
                 let before = self.session;
                 self.ask(Some(opit_core::ask::TEST_REQUEST.into()), Some(reply));
@@ -1002,20 +1046,79 @@ impl<P: Providers> Controller<P> {
         }
     }
 
-    async fn select_style(&mut self, id: Option<String>) {
+    fn select_style(&mut self, id: Option<String>) {
         let settings = self.env.settings.current();
         let config = &settings.config.cleanup;
         let style = match id {
             Some(id) => config.style(&id).cloned(),
-            None => config
-                .next_style(self.recording.as_ref().map_or(config.active_style_id.as_str(), |r| &r.cleanup_style.id)),
+            None => {
+                let current = self
+                    .recording
+                    .as_ref()
+                    .filter(|r| r.voice.is_none())
+                    .map(|r| r.cleanup_style.id.as_str())
+                    .or_else(|| self.pending_style.as_ref().map(|pending| pending.style.id.as_str()))
+                    .unwrap_or(&config.active_style_id);
+                config.next_style(current)
+            }
         };
         let Some(style) = style else { return };
-        let events = self.env.events.clone();
-        let saved = tokio::task::spawn_blocking(move || events.save_style(&style.id)).await;
-        if let Ok(Some(style)) = saved {
+        self.queue_style(style);
+    }
+
+    fn queue_style(&mut self, style: CleanupStyle) {
+        let recording = self.recording.as_ref().filter(|r| r.voice.is_none());
+        if self.pending_style.is_none() {
+            self.style_fallback = Some(recording.map_or_else(
+                || self.env.settings.current().config.cleanup.active_style(),
+                |r| r.cleanup_style.clone(),
+            ));
+        }
+        self.style_generation += 1;
+        let generation = self.style_generation;
+        if self.style_writer.send(StyleWrite { generation, id: style.id.clone() }).is_err() {
+            return;
+        }
+        self.pending_style =
+            Some(PendingStyle { generation, style: style.clone(), recording_session: recording.map(|r| r.session) });
+        // A following Stop must use this choice even while persistence is blocked.
+        self.style_changed(style);
+    }
+
+    fn style_saved(&mut self, generation: u64, saved: Option<CleanupStyle>) {
+        let Some(pending) = &self.pending_style else { return };
+        if generation > pending.generation {
+            return;
+        }
+        if let Some(style) = &saved {
+            self.style_fallback = Some(style.clone());
+        }
+        if generation != pending.generation {
+            return;
+        }
+        let pending = self.pending_style.take().unwrap();
+        let fallback = self.style_fallback.take();
+        // Never apply an older acknowledgement to a newer recording or explicit tray/UI choice.
+        let current_session = self.recording.as_ref().map(|r| r.session);
+        if saved.is_none()
+            && current_session == pending.recording_session
+            && let Some(style) = fallback
+        {
             self.style_changed(style);
         }
+    }
+
+    fn style_settings(&self) -> Arc<Settings> {
+        let settings = self.env.settings.current();
+        let Some(pending) = &self.pending_style else { return settings };
+        let mut config = settings.config.clone();
+        config.cleanup.active_style_id = pending.style.id.clone();
+        if let Some(style) = config.cleanup.styles.iter_mut().find(|s| s.id == pending.style.id) {
+            *style = pending.style.clone();
+        } else {
+            config.cleanup.styles.push(pending.style.clone());
+        }
+        Arc::new(Settings { config, rules: settings.rules.clone(), lang: settings.lang })
     }
 
     fn style_changed(&mut self, style: CleanupStyle) {
@@ -1179,7 +1282,7 @@ impl<P: Providers> Controller<P> {
     }
 
     fn dictation_settings(&self) -> Arc<Settings> {
-        let settings = self.env.settings.current();
+        let settings = self.style_settings();
         let app_rules = &settings.config.app_rules;
         if !app_rules.enabled || !app_rules.rules.iter().any(|r| r.enabled) {
             return settings;
@@ -1230,7 +1333,7 @@ impl<P: Providers> Controller<P> {
         if self.held_for_update() {
             return;
         }
-        let settings = self.env.settings.current();
+        let settings = self.style_settings();
         let clients = match self.clients(&settings) {
             Ok(clients) => clients,
             Err(err) => {
@@ -1525,7 +1628,7 @@ impl<P: Providers> Controller<P> {
     fn retry_history(&mut self, id: i64, audio: Arc<PreparedAudio>, reply: oneshot::Sender<Result<(), ErrorKind>>) {
         let duplicate = matches!(&self.phase, Phase::Transcribing { job, .. } | Phase::Pasting { job, .. } if job.history_id == Some(id))
             || self.waiting.iter().any(|p| p.job.history_id == Some(id));
-        let settings = self.env.settings.current();
+        let settings = self.style_settings();
         // A live recording already owns one future queue slot.
         let occupied = self.waiting.len() + usize::from(self.recording.is_some() || self.preparing.is_some());
         if duplicate || occupied >= MAX_WAITING || self.update_holds != 0 || !settings.config.history.enabled {

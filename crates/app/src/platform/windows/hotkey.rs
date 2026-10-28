@@ -22,7 +22,7 @@ use windows::core::PCWSTR;
 use super::call_guarded;
 #[cfg(test)]
 use crate::platform::keys::track_transition as track;
-use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo, track_shortcuts};
+use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo, retarget_shortcuts, track_shortcuts};
 use crate::platform::{Hotkey, HotkeyError, HotkeyEvent, HotkeySink};
 
 struct HookState {
@@ -94,18 +94,10 @@ impl Hotkey for WinHotkey {
         let shortcuts = shortcuts
             .iter()
             .filter(|(_, keys)| !keys.is_empty())
-            .map(|(action, keys)| Ok((action.clone(), KeyTracker::new(parse_combo(keys)?))))
+            .map(|(action, keys)| Ok((action.clone(), parse_combo(keys)?)))
             .collect::<Result<Vec<_>, HotkeyError>>()?;
         if let Some(st) = state().as_mut() {
-            let held = st.tracker.held().to_vec();
-            st.shortcuts = shortcuts;
-            for (_, tracker) in &mut st.shortcuts {
-                // Retargeting while keys are held must not create a false lone-Ctrl release.
-                for vk in &held {
-                    let _ = tracker.on_key(*vk, true);
-                }
-                tracker.retarget(tracker.combo().to_vec());
-            }
+            retarget_shortcuts(&st.tracker, &mut st.shortcuts, shortcuts);
         }
         Ok(())
     }

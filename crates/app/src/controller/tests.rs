@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use opit_core::config::{AppConfig, HotkeyMode, PasteAfter, PasteMethod};
@@ -186,19 +186,19 @@ async fn style_hotkeys_persist_in_order_and_switch_the_recording_before_stop() {
     h.hotkey(HotkeyEvent::StyleCycle);
     h.handle.control(ControlAction::Start).await.unwrap();
     h.expect(&[Recording]).await;
-    assert_eq!(h.settings.current().config.cleanup.active_style_id, "formal");
     assert!(h.overlay.last().text.contains("Formal"));
     h.hotkey(HotkeyEvent::Style("prompt".into()));
     h.hotkey(HotkeyEvent::StyleCycle);
-    // The actor awaits each blocking persistence operation before processing this stop.
+    // The recording uses the latest choice without waiting for persistence.
     h.script("groq", vec![Ok("three clear words")]);
     h.send(Msg::Stop);
     h.wait_for(|s| s.state == Idle).await;
+    h.wait_for_style_saves(3).await;
     assert_eq!(*h.events.style_saves.lock().unwrap(), ["formal", "prompt", "raw"]);
     assert_eq!(h.history.entries()[0].cleanup_style_id.as_deref(), Some("raw"));
     assert_eq!(h.settings.current().config.cleanup.active_style_id, "raw");
     h.hotkey(HotkeyEvent::Style("clean".into()));
-    // A control round-trip waits for the idle switch and its notification.
+    // A control round-trip waits for the immediate idle feedback, not its disk write.
     h.handle.control(ControlAction::Cancel).await.unwrap();
     assert!(
         h.overlay
@@ -208,6 +208,133 @@ async fn style_hotkeys_persist_in_order_and_switch_the_recording_before_stop() {
             .iter()
             .any(|v| v.text == "Clean" && v.hide_after == Some(Duration::from_millis(1500)))
     );
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn blocked_style_save_does_not_delay_lifecycle_or_media_release() {
+    for end in ["stop", "escape", "shutdown", "limit"] {
+        let mut h = harness(AppConfig::default());
+        h.providers.gate.forget_permits(1_000);
+        h.send(Msg::Toggle);
+        h.expect(&[Recording]).await;
+        let blocked = h.block_style_saves();
+        h.hotkey(HotkeyEvent::Style("formal".into()));
+        tokio::time::timeout(Duration::from_secs(2), blocked.0.entered.acquire()).await.unwrap().unwrap().forget();
+        match end {
+            "stop" => {
+                tokio::time::timeout(Duration::from_secs(1), h.handle.control(ControlAction::Stop))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            "escape" => {
+                h.hotkey(HotkeyEvent::Escape);
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(1), h.handle.control(ControlAction::Pause)).await.unwrap();
+            }
+            "shutdown" => {
+                h.hotkey(HotkeyEvent::Style("prompt".into()));
+                h.hotkey(HotkeyEvent::StyleCycle);
+                h.send(Msg::Shutdown);
+                tokio::time::timeout(Duration::from_secs(1), h.wait_for(|s| s.state == Idle)).await.unwrap();
+            }
+            "limit" => {
+                let session = h.overlay.last().recording.unwrap().session;
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(181)).await;
+                h.send(Msg::LimitReached { session });
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(1), h.handle.control(ControlAction::Pause)).await.unwrap();
+                tokio::time::resume();
+            }
+            _ => unreachable!(),
+        }
+        let calls = h.media.calls.lock().unwrap().clone();
+        assert_eq!(calls, [Some((opit_core::config::MediaMode::Pause, 20)), None], "{end}");
+        assert!(h.events.style_saves.lock().unwrap().is_empty());
+        drop(blocked);
+        h.wait_for_style_saves(if end == "shutdown" { 3 } else { 1 }).await;
+        if end == "shutdown" {
+            assert_eq!(*h.events.style_saves.lock().unwrap(), ["formal", "prompt", "raw"]);
+        }
+        h.providers.gate.add_permits(10);
+        h.send(Msg::Shutdown);
+    }
+}
+
+#[tokio::test]
+async fn queued_style_switches_apply_immediately_and_persist_in_order_after_stop() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("three clear words")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    let blocked = h.block_style_saves();
+    h.hotkey(HotkeyEvent::StyleCycle);
+    tokio::time::timeout(Duration::from_secs(2), blocked.0.entered.acquire()).await.unwrap().unwrap().forget();
+    h.hotkey(HotkeyEvent::Style("prompt".into()));
+    h.hotkey(HotkeyEvent::StyleCycle);
+    tokio::time::timeout(Duration::from_secs(1), h.handle.control(ControlAction::Stop)).await.unwrap().unwrap();
+    h.wait_for(|s| s.state == Idle).await;
+    assert_eq!(h.history.entries()[0].cleanup_style_id.as_deref(), Some("raw"));
+    assert!(h.events.style_saves.lock().unwrap().is_empty());
+    drop(blocked);
+    h.wait_for_style_saves(3).await;
+    assert_eq!(*h.events.style_saves.lock().unwrap(), ["formal", "prompt", "raw"]);
+    assert_eq!(h.settings.current().config.cleanup.active_style_id, "raw");
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn pending_style_is_used_at_next_start_and_old_completion_keeps_its_snapshot() {
+    let mut h = harness(AppConfig::default());
+    h.script("groq", vec![Ok("three clear words")]);
+    let blocked = h.block_style_saves();
+    h.hotkey(HotkeyEvent::Style("formal".into()));
+    tokio::time::timeout(Duration::from_secs(2), blocked.0.entered.acquire()).await.unwrap().unwrap().forget();
+    h.hotkey(HotkeyEvent::StyleCycle);
+    h.handle.control(ControlAction::Start).await.unwrap();
+    h.expect(&[Recording]).await;
+    assert!(h.overlay.last().text.contains("Casual"));
+    // A newer explicit selection must not be replaced by an older save completion.
+    let style = h.settings.current().config.cleanup.style("prompt").unwrap().clone();
+    h.send(Msg::StyleChanged(style));
+    h.handle.control(ControlAction::Pause).await.unwrap();
+    drop(blocked);
+    h.wait_for_style_saves(3).await;
+    assert_eq!(*h.events.style_saves.lock().unwrap(), ["formal", "casual", "prompt"]);
+    assert_eq!(h.settings.current().config.cleanup.active_style_id, "prompt");
+    h.handle.control(ControlAction::Stop).await.unwrap();
+    h.wait_for(|s| s.state == Idle).await;
+    assert_eq!(h.history.entries()[0].cleanup_style_id.as_deref(), Some("prompt"));
+    h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn failed_latest_style_save_restores_last_confirmed_style_for_the_same_recording() {
+    let mut h = harness(AppConfig::default());
+    h.events.style_failures.lock().unwrap().insert("prompt".into());
+    h.script("groq", vec![Ok("three clear words")]);
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    let blocked = h.block_style_saves();
+    h.hotkey(HotkeyEvent::Style("formal".into()));
+    tokio::time::timeout(Duration::from_secs(2), blocked.0.entered.acquire()).await.unwrap().unwrap().forget();
+    h.hotkey(HotkeyEvent::Style("prompt".into()));
+    h.handle.control(ControlAction::Pause).await.unwrap();
+    assert!(h.overlay.last().text.contains("AI prompt"));
+    drop(blocked);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !h.overlay.last().text.contains("Formal") {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    h.handle.control(ControlAction::Stop).await.unwrap();
+    h.wait_for(|s| s.state == Idle).await;
+    assert_eq!(h.history.entries()[0].cleanup_style_id.as_deref(), Some("formal"));
+    assert_eq!(h.settings.current().config.cleanup.active_style_id, "formal");
     h.send(Msg::Shutdown);
 }
 
@@ -222,9 +349,79 @@ async fn cycle_advances_from_the_recording_style_snapshot() {
     h.settings.replace(settings(config));
     h.hotkey(HotkeyEvent::StyleCycle);
     h.handle.control(ControlAction::Pause).await.unwrap();
+    h.wait_for_style_saves(1).await;
     assert_eq!(h.settings.current().config.cleanup.active_style_id, "casual");
     assert!(h.overlay.last().text.contains("Casual"));
     h.send(Msg::Shutdown);
+}
+
+#[tokio::test]
+async fn saving_style_metadata_while_holding_each_recording_shortcut_keeps_the_stop_release() {
+    use crate::app_core::{AppCore, Platform};
+    use crate::platform::keys::{KeyTracker, track_shortcuts};
+    for vk in [0x7C, 0x7D, 0x7E] {
+        let (server, mut h) = voice_harness(200, "Edited output.").await;
+        if vk == 0x7C {
+            server.reset().await;
+        }
+        let mut config = h.settings.current().config.clone();
+        config.hotkey.mode = HotkeyMode::PushToTalk;
+        config.hotkey.keys = vec!["F13".into()];
+        config.hotkey.edit_keys = vec!["F14".into()];
+        config.hotkey.translate_keys = vec!["F15".into()];
+        h.settings.replace(settings(config.clone()));
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(AppCore::new(
+            crate::startup::Paths::under(scratch.path().to_owned()),
+            h.settings.clone(),
+            h.handle.clone(),
+            None,
+            Platform {
+                foreground: h.foreground.clone(),
+                media: h.media.clone(),
+                secrets: Arc::new(FakeSecrets::default()),
+                hotkey: h.hotkey.clone(),
+                mic: h.mic.clone(),
+                overlay: h.overlay.clone(),
+                autostart: Arc::new(FakeAutostart::default()),
+            },
+            None,
+            Some("en-US".into()),
+            Vec::new(),
+        ));
+        let install = core.clone();
+        tokio::task::spawn_blocking(move || install.apply_hotkey(&install.config())).await.unwrap();
+        let registered = h.hotkey.registered.lock().unwrap().len();
+        let mut main = KeyTracker::new(vec![0x7C]);
+        let mut auxiliary = vec![
+            (HotkeyEvent::Edit, KeyTracker::new(vec![0x7D])),
+            (HotkeyEvent::Translate, KeyTracker::new(vec![0x7E])),
+        ];
+        h.script("groq", vec![Ok("three clear words")]);
+        for event in track_shortcuts(&mut main, &mut auxiliary, vk, true, |_| true) {
+            h.hotkey(event);
+        }
+        h.wait_for(|status| status.state == Recording).await;
+        config.cleanup.styles[0].name = "Renamed style".into();
+        config.cleanup.styles[0].prompt = "Updated prompt".into();
+        tokio::task::spawn_blocking(move || core.save_config(config)).await.unwrap().unwrap();
+        assert_eq!(h.hotkey.registered.lock().unwrap().len(), registered);
+        for event in track_shortcuts(&mut main, &mut auxiliary, vk, false, |_| true) {
+            h.hotkey(event);
+        }
+        h.wait_for(|status| status.state == Idle).await;
+        assert_eq!(h.mic.finished.load(SeqCst), 1);
+        assert_eq!(h.media.calls.lock().unwrap().last(), Some(&None));
+        assert_eq!(
+            h.history.entries()[0].mode,
+            match vk {
+                0x7C => "dictation",
+                0x7D => "edit",
+                _ => "translate",
+            }
+        );
+        h.send(Msg::Shutdown);
+    }
 }
 
 #[tokio::test]
@@ -731,7 +928,24 @@ impl HistorySink for FakeHistory {
     }
 }
 
+struct StyleSaveGate {
+    released: Mutex<bool>,
+    wake: Condvar,
+    entered: Semaphore,
+}
+
+/// Always release a blocked worker, including when an assertion fails.
+struct BlockedStyleSave(Arc<StyleSaveGate>);
+impl Drop for BlockedStyleSave {
+    fn drop(&mut self) {
+        *self.0.released.lock().unwrap() = true;
+        self.0.wake.notify_all();
+    }
+}
+
 struct FakeEvents {
+    style_gate: Mutex<Option<Arc<StyleSaveGate>>>,
+    style_failures: Mutex<HashSet<String>>,
     settings: SettingsHandle,
     style_saves: Mutex<Vec<String>>,
     tx: mpsc::UnboundedSender<DictationStatus>,
@@ -741,6 +955,17 @@ struct FakeEvents {
 
 impl UiEvents for FakeEvents {
     fn save_style(&self, id: &str) -> Option<CleanupStyle> {
+        let gate = self.style_gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.entered.add_permits(1);
+            let mut released = gate.released.lock().unwrap();
+            while !*released {
+                released = gate.wake.wait(released).unwrap();
+            }
+        }
+        if self.style_failures.lock().unwrap().contains(id) {
+            return None;
+        }
         let mut config = self.settings.current().config.clone();
         let style = config.cleanup.style(id)?.clone();
         config.cleanup.active_style_id = id.into();
@@ -872,6 +1097,8 @@ fn harness(config: AppConfig) -> Harness {
     let providers = Arc::new(ProviderState::new());
     let settings = SettingsHandle::new(settings(config));
     let events = Arc::new(FakeEvents {
+        style_gate: Mutex::default(),
+        style_failures: Mutex::default(),
         settings: settings.clone(),
         style_saves: Mutex::default(),
         tx,
@@ -920,6 +1147,22 @@ fn harness(config: AppConfig) -> Harness {
 }
 
 impl Harness {
+    fn block_style_saves(&self) -> BlockedStyleSave {
+        let gate =
+            Arc::new(StyleSaveGate { released: Mutex::new(false), wake: Condvar::new(), entered: Semaphore::new(0) });
+        *self.events.style_gate.lock().unwrap() = Some(gate.clone());
+        BlockedStyleSave(gate)
+    }
+
+    async fn wait_for_style_saves(&self, count: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while self.events.style_saves.lock().unwrap().len() < count {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("style persistence did not complete");
+    }
     async fn wait_for(&mut self, predicate: impl Fn(&DictationStatus) -> bool) -> DictationStatus {
         loop {
             let status = tokio::time::timeout(Duration::from_secs(5), self.states.recv())
@@ -2213,6 +2456,28 @@ async fn voice_shortcuts_require_connection_and_safe_selection_before_opening_mi
         assert_eq!(h.mic.starts(), 0);
         assert!(h.paster.texts().is_empty());
     }
+}
+
+#[tokio::test]
+async fn unavailable_selection_shows_hint_without_recording_or_generating() {
+    let mut config = AppConfig::default();
+    config.cleanup.api_key_ref = None;
+    config.paste.restore_clipboard = false;
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    // Both an incomplete clipboard backup and a failed advertised-text read use this error.
+    *h.paster.selection.lock().unwrap() = Some("private selected text".into());
+    *h.paster.selection_error.lock().unwrap() = Some(SelectionError::Unavailable);
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing]).await;
+    h.expect_error(ErrorKind::Rejected).await;
+    assert_eq!(h.overlay.last().text, Lang::En.selection_failed());
+    assert_eq!(h.mic.starts(), 0);
+    assert_eq!(h.providers.calls(), 0);
+    assert!(h.paster.texts().is_empty());
+    assert!(h.history.entries().is_empty());
+    h.send(Msg::Shutdown);
 }
 
 #[tokio::test]

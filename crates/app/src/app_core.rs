@@ -24,6 +24,35 @@ use crate::platform::{
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::{self, Paths, StartupNotice};
 
+fn auxiliary_shortcuts(config: &AppConfig) -> Vec<(HotkeyEvent, Vec<String>)> {
+    vec![
+        (HotkeyEvent::Pause, config.hotkey.pause_keys.clone()),
+        (HotkeyEvent::Ask, config.hotkey.ask_keys.clone()),
+        (HotkeyEvent::Edit, config.hotkey.edit_keys.clone()),
+        (HotkeyEvent::Translate, config.hotkey.translate_keys.clone()),
+        (HotkeyEvent::StyleCycle, config.hotkey.style_cycle_keys.clone()),
+    ]
+    .into_iter()
+    .chain(config.cleanup.styles.iter().map(|s| (HotkeyEvent::Style(s.id.clone()), s.hotkey.clone())))
+    .collect()
+}
+
+fn shortcut_mappings_changed(old: &AppConfig, new: &AppConfig) -> bool {
+    let mappings = |config: &AppConfig| {
+        std::iter::once((HotkeyEvent::ComboDown, config.hotkey.keys.clone()))
+            .chain(auxiliary_shortcuts(config))
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(action, keys)| {
+                let mut combo = crate::platform::keys::parse_combo(&keys).unwrap_or_default();
+                combo.sort_unstable();
+                (action, combo)
+            })
+            .collect::<Vec<_>>()
+    };
+    let (old, new) = (mappings(old), mappings(new));
+    old.len() != new.len() || old.iter().any(|mapping| !new.contains(mapping))
+}
+
 /// Error shape every invoke command returns to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
 #[error("{message}")]
@@ -287,8 +316,10 @@ impl AppCore {
         let old = self.config();
         config.save(&self.paths.config)?;
         self.rebuild(config.clone());
-        if old.hotkey != config.hotkey || old.cleanup.styles != config.cleanup.styles {
+        if shortcut_mappings_changed(&old, &config) {
             self.apply_hotkey(&config);
+        } else if old.hotkey.enabled != config.hotkey.enabled {
+            self.sync_pause(&config);
         }
         if notify_style && old.cleanup.active_style_id != config.cleanup.active_style_id {
             self.controller.send(crate::controller::Msg::StyleChanged(config.cleanup.active_style()));
@@ -398,13 +429,7 @@ impl AppCore {
 
     /// (Re-)installs the global hook for the configured keys.
     pub fn apply_hotkey(&self, config: &AppConfig) {
-        let shortcuts = std::iter::once((HotkeyEvent::Pause, config.hotkey.pause_keys.clone()))
-            .chain(std::iter::once((HotkeyEvent::Ask, config.hotkey.ask_keys.clone())))
-            .chain(std::iter::once((HotkeyEvent::Edit, config.hotkey.edit_keys.clone())))
-            .chain(std::iter::once((HotkeyEvent::Translate, config.hotkey.translate_keys.clone())))
-            .chain(std::iter::once((HotkeyEvent::StyleCycle, config.hotkey.style_cycle_keys.clone())))
-            .chain(config.cleanup.styles.iter().map(|s| (HotkeyEvent::Style(s.id.clone()), s.hotkey.clone())))
-            .collect::<Vec<_>>();
+        let shortcuts = auxiliary_shortcuts(config);
         let result = crate::platform::keys::validate_list(&config.shortcuts())
             .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
             .and_then(|()| self.platform.hotkey.register_shortcuts(&shortcuts));
@@ -762,19 +787,15 @@ impl AppCore {
         }
         let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
         let settings = self.settings.current();
-        // Load preferences before committing the edit, so a read failure is safely retryable.
-        let dismissed = if settings.config.learning.enabled {
-            Dismissals::load(&self.paths.root.join("learning.json")).map_err(Self::learning_error)?
-        } else {
-            Dismissals::default()
-        };
         let history = self.history()?;
         let store = history.store();
         let before = store.get(id)?.ok_or_else(|| CommandError::new("unavailable", "history row is missing"))?;
         if before.status != opit_core::pipeline::TranscriptStatus::Ok {
             return Err(CommandError::new("invalid_input", "only successful transcripts can be edited"));
         }
-        let suggestions = if settings.config.learning.enabled {
+        let suggestions = if settings.config.learning.enabled && before.mode == "dictation" {
+            // Load preferences before committing the edit, so a read failure is safely retryable.
+            let dismissed = Dismissals::load(&self.paths.root.join("learning.json")).map_err(Self::learning_error)?;
             opit_core::learning::filter_suggestions(
                 opit_core::learning::diff_terms(&before.text, text),
                 true,
@@ -898,6 +919,10 @@ mod tests {
     }
 
     fn learning_history(core: &AppCore, text: &str) -> i64 {
+        learning_history_in_mode(core, text, "dictation")
+    }
+
+    fn learning_history_in_mode(core: &AppCore, text: &str, mode: &str) -> i64 {
         core.history
             .as_ref()
             .unwrap()
@@ -917,7 +942,7 @@ mod tests {
                 cleanup_style_id: None,
                 source_text: None,
                 instruction: None,
-                mode: "dictation",
+                mode,
                 agent: None,
             })
             .unwrap()
@@ -937,6 +962,27 @@ mod tests {
         let next = f.core.history_update_text(id, "use OmegaSuite today").unwrap();
         assert_eq!(next.suggestions, [learning_pair("ZetaSuite", "OmegaSuite")]);
         assert_eq!(f.core.history_search("OmegaSuite", 10).unwrap()[0].id, id);
+    }
+
+    #[test]
+    fn learning_history_edits_non_dictation_modes_without_offering_suggestions() {
+        let f = fixture();
+        for mode in ["translate", "edit", "ask", "unknown"] {
+            let id = learning_history_in_mode(&f.core, "use zeta wrong today", mode);
+            let mut expected = f.core.history.as_ref().unwrap().store().get(id).unwrap().unwrap();
+            expected.text = "use ZetaSuite today".into();
+            let updated = f.core.history_update_text(id, &expected.text).unwrap();
+            assert!(updated.suggestions.is_empty(), "mode: {mode}");
+            assert_eq!(updated.dictation, expected);
+            assert_eq!(f.core.history.as_ref().unwrap().store().get(id).unwrap().unwrap(), expected);
+        }
+        // Unrelated learning preferences must not prevent editing other modes.
+        std::fs::create_dir_all(&f.core.paths.root).unwrap();
+        std::fs::write(f.core.paths.root.join("learning.json"), "invalid preferences").unwrap();
+        let id = learning_history_in_mode(&f.core, "use zeta wrong today", "translate");
+        let updated = f.core.history_update_text(id, "use ZetaSuite today").unwrap();
+        assert!(updated.suggestions.is_empty());
+        assert_eq!(updated.dictation.text, "use ZetaSuite today");
     }
 
     #[test]
@@ -1614,6 +1660,40 @@ mod tests {
         f.core.save_config(removed).unwrap();
         assert!(f.core.validate_shortcut(vec!["F16".into()], "style:clean", None).is_ok());
         assert!(f.core.validate_shortcut(vec!["F16".into()], "style:clean", Some(saved)).is_err());
+    }
+
+    #[test]
+    fn editing_style_metadata_does_not_reregister_held_shortcuts() {
+        let f = fixture();
+        let mut config = f.core.config();
+        config.hotkey.mode = opit_core::config::HotkeyMode::PushToTalk;
+        config.hotkey.keys = vec!["F13".into()];
+        config.hotkey.edit_keys = vec!["F14".into()];
+        config.hotkey.translate_keys = vec!["F15".into()];
+        config.cleanup.styles[0].hotkey = vec!["F16".into()];
+        f.core.save_config(config.clone()).unwrap();
+        let registered = f.hotkey.registered.lock().unwrap().len();
+        // Any of these recording shortcuts may be held while Settings saves a style.
+        for key in ["F13", "F14", "F15"] {
+            let mut held =
+                crate::platform::keys::KeyTracker::new(crate::platform::keys::parse_combo(&[key.into()]).unwrap());
+            let vk = crate::platform::keys::vk_for(key).unwrap();
+            assert_eq!(held.on_key(vk, true), Some(HotkeyEvent::ComboDown));
+            config.cleanup.styles[0].name = format!("Name for {key}");
+            config.cleanup.styles[0].prompt = format!("Prompt for {key}");
+            config.cleanup.styles[0].model = Some("edited-model".into());
+            config.cleanup.styles[0].in_cycle = false;
+            f.core.save_config(config.clone()).unwrap();
+            assert_eq!(f.hotkey.registered.lock().unwrap().len(), registered, "{key}");
+            assert_eq!(held.on_key(vk, false), Some(HotkeyEvent::ComboUp));
+        }
+        config.cleanup.styles.reverse();
+        config.hotkey.keys = vec![" f13 ".into()];
+        f.core.save_config(config.clone()).unwrap();
+        assert_eq!(f.hotkey.registered.lock().unwrap().len(), registered);
+        config.cleanup.styles.iter_mut().find(|s| s.id == "raw").unwrap().hotkey = vec!["F17".into()];
+        f.core.save_config(config).unwrap();
+        assert_eq!(f.hotkey.registered.lock().unwrap().len(), registered + 1);
     }
 
     #[test]

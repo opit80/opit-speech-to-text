@@ -6,16 +6,18 @@ use std::marker::PhantomData;
 use std::thread;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
+use windows::Win32::Foundation::{ERROR_SUCCESS, GetLastError, GlobalFree, HANDLE, HGLOBAL, HWND, SetLastError};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
-    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    GetClipboardSequenceNumber, IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DestroyWindow, HWND_MESSAGE, WINDOW_EX_STYLE, WINDOW_STYLE,
 };
 use windows::core::{HSTRING, w};
+
+use crate::platform::SelectionError;
 
 /// Standard clipboard format ids (winuser.h). Defined here to avoid the large `Win32_System_Ole`
 /// feature, which is where windows-rs puts `CF_*`.
@@ -77,6 +79,29 @@ pub fn sequence_number() -> u32 {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub formats: Vec<(u32, Vec<u8>)>,
+}
+
+/// Selection capture may overwrite the clipboard only after every advertised format is backed up.
+/// Injected readers keep this policy testable without touching the user's clipboard.
+fn complete_snapshot(
+    mut next_format: impl FnMut() -> Result<Option<u32>, SelectionError>,
+    mut read: impl FnMut(u32) -> Option<Vec<u8>>,
+) -> Result<Snapshot, SelectionError> {
+    let mut formats = Vec::new();
+    while let Some(format) = next_format()? {
+        if !is_hglobal_format(format) {
+            return Err(SelectionError::Unavailable);
+        }
+        formats.push((format, read(format).ok_or(SelectionError::Unavailable)?));
+    }
+    Ok(Snapshot { formats })
+}
+
+fn read_selection_format(
+    available: bool,
+    read: impl FnOnce() -> Result<Option<String>, SelectionError>,
+) -> Result<Option<String>, SelectionError> {
+    if available { read() } else { Ok(None) }
 }
 
 /// An open clipboard; closed on drop. Not `Send`: the clipboard is opened per thread.
@@ -159,12 +184,40 @@ impl Clipboard {
         Snapshot { formats }
     }
 
+    /// Unlike the best-effort paste backup, refuses unsupported formats and any failed read.
+    /// Does not empty or write the clipboard, so failure leaves the original content intact.
+    pub fn selection_snapshot(&self) -> Result<Snapshot, SelectionError> {
+        let mut format = 0;
+        complete_snapshot(
+            || {
+                // SAFETY: clipboard is open on this thread. Zero is both end-of-enumeration
+                // and failure, distinguished by GetLastError after clearing its stale value.
+                unsafe {
+                    SetLastError(ERROR_SUCCESS);
+                    format = EnumClipboardFormats(format);
+                    if format != 0 {
+                        Ok(Some(format))
+                    } else if GetLastError() == ERROR_SUCCESS {
+                        Ok(None)
+                    } else {
+                        Err(SelectionError::Unavailable)
+                    }
+                }
+            },
+            |format| {
+                // SAFETY: clipboard owns the handle, and remains open throughout the copy.
+                unsafe { GetClipboardData(format).ok().and_then(|handle| copy_hglobal(HGLOBAL(handle.0))) }
+            },
+        )
+    }
+
     /// Reads only Unicode text, with a bounded allocation. Never formats contents into errors.
     pub fn selection_text(&self) -> Result<Option<String>, crate::platform::SelectionError> {
-        use crate::platform::SelectionError;
+        // SAFETY: a format query does not change the open clipboard.
+        let available = unsafe { IsClipboardFormatAvailable(CF_UNICODETEXT) }.is_ok();
         // SAFETY: clipboard is open; the clipboard owns the handle throughout the copy.
-        unsafe {
-            let Ok(handle) = GetClipboardData(CF_UNICODETEXT) else { return Ok(None) };
+        read_selection_format(available, || unsafe {
+            let handle = GetClipboardData(CF_UNICODETEXT).map_err(|_| SelectionError::Unavailable)?;
             let mem = HGLOBAL(handle.0);
             let size = GlobalSize(mem);
             if size > (opit_core::voice_modes::MAX_SELECTION_CHARS * 2 + 1) * 2 {
@@ -178,7 +231,7 @@ impl Clipboard {
                 return Err(SelectionError::TooLong);
             }
             Ok((!text.trim().is_empty()).then_some(text))
-        }
+        })
     }
 
     /// Empties the clipboard and takes ownership of it.
@@ -288,6 +341,60 @@ unsafe fn copy_hglobal(mem: HGLOBAL) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selection_snapshot_rejects_unsupported_or_unreadable_formats() {
+        use crate::platform::SelectionError;
+        for formats in [vec![CF_ENHMETAFILE], vec![CF_UNICODETEXT, CF_BITMAP]] {
+            let mut formats = formats.into_iter();
+            assert_eq!(
+                complete_snapshot(|| Ok(formats.next()), |_| Some(utf16_bytes("backup"))),
+                Err(SelectionError::Unavailable)
+            );
+        }
+        for failed_format in [CF_UNICODETEXT, 0xC000] {
+            let mut formats = [CF_UNICODETEXT, 0xC000].into_iter();
+            assert_eq!(
+                complete_snapshot(|| Ok(formats.next()), |format| (format != failed_format).then(|| vec![1, 2])),
+                Err(SelectionError::Unavailable)
+            );
+        }
+    }
+
+    #[test]
+    fn selection_snapshot_preserves_empty_and_complete_backups_and_rejects_enumeration_failure() {
+        use crate::platform::SelectionError;
+        assert_eq!(
+            complete_snapshot(|| Ok(None), |_| panic!("empty clipboard must not be read")),
+            Ok(Snapshot::default())
+        );
+        let mut formats = [CF_UNICODETEXT, 0xC000].into_iter();
+        let backup = complete_snapshot(|| Ok(formats.next()), |format| Some(format.to_le_bytes().to_vec())).unwrap();
+        assert_eq!(
+            backup.formats,
+            vec![(CF_UNICODETEXT, CF_UNICODETEXT.to_le_bytes().to_vec()), (0xC000, 0xC000u32.to_le_bytes().to_vec())]
+        );
+        let mut calls = 0;
+        assert_eq!(
+            complete_snapshot(
+                || {
+                    calls += 1;
+                    if calls == 1 { Ok(Some(CF_UNICODETEXT)) } else { Err(SelectionError::Unavailable) }
+                },
+                |_| Some(vec![1, 2])
+            ),
+            Err(SelectionError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn absent_selection_format_skips_retrieval_but_advertised_read_failure_is_an_error() {
+        use crate::platform::SelectionError;
+        assert_eq!(read_selection_format(false, || panic!("absent format must not be retrieved")), Ok(None));
+        assert_eq!(read_selection_format(true, || Err(SelectionError::Unavailable)), Err(SelectionError::Unavailable));
+        assert_eq!(read_selection_format(true, || Ok(Some("selection".into()))), Ok(Some("selection".into())));
+        assert_eq!(read_selection_format(true, || Ok(None)), Ok(None));
+    }
 
     #[test]
     fn format_filter_skips_gdi_and_private_handles() {

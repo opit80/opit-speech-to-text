@@ -103,8 +103,10 @@ On load/explicit normalization, an invalid main shortcut becomes the existing de
 invalid/conflicting optional shortcuts are cleared in priority order: dictation, pause,
 ask, style cycle, then direct style shortcuts in array order. The UI must mirror these rules.
 
-Existing `save_config` persists style edits and rebuilds shortcut registration when the
-styles change. Changing the active id through `save_config` also updates a live recording.
+Existing `save_config` persists style edits and rebuilds shortcut registration only when
+the action-to-key mappings change. Name, prompt, model, cycle membership and array-order
+edits keep active trackers intact; unchanged key combinations preserve their pending release
+even when another shortcut changes. Changing the active id through `save_config` also updates a live recording.
 `test_cleanup({config})` retains its `{before: string, after: string}` result and existing
 error contract; it tests the selected style/model. Raw returns the unchanged sample with
 no key lookup or HTTP call. `cleanup_presets` returns the additional style fields in every
@@ -143,9 +145,15 @@ It follows config array order, wraps, and ignores `in_cycle: false`. If the curr
 is excluded, the first included style is selected; an empty cycle does nothing. All five
 built-ins are included by default. Direct hotkeys select regardless of `in_cycle`.
 Style shortcuts use the existing global hotkey enabled/pause/capture state. Saving a style
-selection runs on a blocking worker; the actor serializes it before later input messages,
-including a recording stop, so rapid cycle/direct presses preserve order. Failed saves
-do not change the recording's style. The hook uses one list of registered auxiliary actions
+selection applies immediately to the recording and runs through a separate FIFO persistence
+worker. Stop, Escape, shutdown and the recording limit never await a style write or the config
+lock. Rapid cycle/direct presses retain their logical order even while a save is blocked;
+new recordings use the latest pending choice, before foreground-app overrides. Completion
+messages cannot replace a newer choice or another recording's snapshot. A failed latest save
+restores the last confirmed style only for the same recording; queued/transcribing jobs keep
+the choice they captured. If a tray/UI selection overtakes queued writes, its choice is
+appended to the writer so it remains the final persisted selection. The writer drains queued
+requests after controller shutdown while the runtime remains available. The hook uses one list of registered auxiliary actions
 for pause, Ask, cycle and direct style selection; autorepeat does not select twice and a
 style Ctrl release does not produce a lone-Ctrl dictation stop.
 

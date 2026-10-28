@@ -28,7 +28,7 @@ use crate::platform::{CLIPBOARD_RESTORE_DELAY, PasteOutcome, PasteRequest, Paste
 // Selection capture and insertion share the clipboard, including delayed restoration.
 static CLIPBOARD_OPERATION: Mutex<()> = Mutex::new(());
 
-/// Longest wait for the user to let go of modifiers before sending insertion input.
+/// Longest wait for modifier release before falling back to clipboard-only.
 const MODIFIER_WAIT: Duration = Duration::from_secs(1);
 const MODIFIER_POLL: Duration = Duration::from_millis(10);
 const MODIFIERS: [VIRTUAL_KEY; 5] = [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN];
@@ -60,7 +60,7 @@ impl Paster for WinPaster {
             GetWindowThreadProcessId(target, Some(&mut target_pid));
         }
         let clipboard = Clipboard::open().map_err(|_| SelectionError::Unavailable)?;
-        let snapshot = clipboard.snapshot();
+        let snapshot = clipboard.selection_snapshot()?;
         let sequence = sequence_number();
         drop(clipboard);
         // Fail closed if focus changed while delayed clipboard formats were rendered.
@@ -89,13 +89,16 @@ impl Paster for WinPaster {
                 if sequence_number() != changed || !clipboard.owned_by_process(target_pid) {
                     return Err(SelectionError::Unavailable);
                 }
-                let result = if sent && unsafe { GetForegroundWindow() } == target {
-                    clipboard.selection_text()
-                } else {
-                    Err(SelectionError::Unavailable)
-                };
-                clipboard.restore(&snapshot).map_err(|_| SelectionError::Unavailable)?;
-                return result;
+                return read_and_restore_selection(
+                    || {
+                        if sent && unsafe { GetForegroundWindow() } == target {
+                            clipboard.selection_text()
+                        } else {
+                            Err(SelectionError::Unavailable)
+                        }
+                    },
+                    || clipboard.restore(&snapshot).map_err(|_| SelectionError::Unavailable),
+                );
             }
             if Instant::now() >= deadline {
                 return if sent { Ok(None) } else { Err(SelectionError::Unavailable) };
@@ -110,57 +113,84 @@ impl Paster for WinPaster {
 
     fn paste(&self, text: &str, request: PasteRequest) -> PasteOutcome {
         let _operation = CLIPBOARD_OPERATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if request.method == PasteMethod::Type {
-            if !request.auto_paste {
-                return clipboard_only(text);
-            }
-            wait_for_modifiers_released(MODIFIER_WAIT);
-            if insertion_blocked() {
-                return clipboard_only(text);
-            }
-            let chunks = typing_inputs(text);
-            if chunks.is_empty() {
-                return PasteOutcome::Failed("no text to insert".into());
-            }
-            for (index, chunk) in chunks.iter().enumerate() {
-                if index > 0 {
-                    thread::sleep(TYPING_CHUNK_DELAY);
-                    // A long insertion must stop if focus moves to an unsafe target.
-                    if insertion_blocked() {
-                        return PasteOutcome::Failed("text input interrupted by a target change".into());
-                    }
-                }
-                if !send_inputs(chunk) {
-                    // Never copy or retry after partial typing: that could duplicate inserted text.
-                    return PasteOutcome::Failed("text input could not be delivered".into());
-                }
-            }
-            send_after(request.after);
-            return PasteOutcome::Pasted;
-        }
-        let (backup, seq) = match put_text(text, request.restore) {
-            Ok(v) => v,
-            Err(e) => return PasteOutcome::Failed(e),
-        };
-        if !request.auto_paste {
-            return PasteOutcome::ClipboardOnly;
-        }
-        wait_for_modifiers_released(MODIFIER_WAIT);
+        paste_with_modifier_guard(
+            text,
+            request,
+            || wait_for_modifiers_released(MODIFIER_WAIT),
+            paste_ready,
+            clipboard_only,
+        )
+    }
+}
+
+/// Restore even when an advertised selection format could not be retrieved.
+fn read_and_restore_selection(
+    read: impl FnOnce() -> Result<Option<String>, SelectionError>,
+    restore: impl FnOnce() -> Result<(), SelectionError>,
+) -> Result<Option<String>, SelectionError> {
+    let result = read();
+    restore()?;
+    result
+}
+
+/// Gate all insertion side effects together, including newline and after-key input.
+/// Callbacks keep timeout regression tests independent of the real keyboard and clipboard.
+fn paste_with_modifier_guard(
+    text: &str,
+    request: PasteRequest,
+    wait: impl FnOnce() -> bool,
+    insert: impl FnOnce(&str, PasteRequest) -> PasteOutcome,
+    copy: impl FnOnce(&str) -> PasteOutcome,
+) -> PasteOutcome {
+    if !request.auto_paste || !wait() {
+        return copy(text);
+    }
+    insert(text, request)
+}
+
+fn paste_ready(text: &str, request: PasteRequest) -> PasteOutcome {
+    if request.method == PasteMethod::Type {
         if insertion_blocked() {
-            // UIPI would drop the input silently; leave the text on the clipboard for the user.
-            return PasteOutcome::ClipboardOnly;
+            return clipboard_only(text);
         }
-        if !send_inputs(&paste_inputs(request.method)) {
-            return PasteOutcome::ClipboardOnly;
+        let chunks = typing_inputs(text);
+        if chunks.is_empty() {
+            return PasteOutcome::Failed("no text to insert".into());
+        }
+        for (index, chunk) in chunks.iter().enumerate() {
+            if index > 0 {
+                thread::sleep(TYPING_CHUNK_DELAY);
+                // A long insertion must stop if focus moves to an unsafe target.
+                if insertion_blocked() {
+                    return PasteOutcome::Failed("text input interrupted by a target change".into());
+                }
+            }
+            if !send_inputs(chunk) {
+                // Never copy or retry after partial typing: that could duplicate inserted text.
+                return PasteOutcome::Failed("text input could not be delivered".into());
+            }
         }
         send_after(request.after);
-        // Restore only after a real paste: on ClipboardOnly the user still needs our text.
-        if let Some(backup) = backup {
-            thread::sleep(CLIPBOARD_RESTORE_DELAY);
-            let _ = restore_if_unchanged(&backup, seq);
-        }
-        PasteOutcome::Pasted
+        return PasteOutcome::Pasted;
     }
+    let (backup, seq) = match put_text(text, request.restore) {
+        Ok(v) => v,
+        Err(e) => return PasteOutcome::Failed(e),
+    };
+    if insertion_blocked() {
+        // UIPI would drop the input silently; leave the text on the clipboard for the user.
+        return PasteOutcome::ClipboardOnly;
+    }
+    if !send_inputs(&paste_inputs(request.method)) {
+        return PasteOutcome::ClipboardOnly;
+    }
+    send_after(request.after);
+    // Restore only after a real paste: on ClipboardOnly the user still needs our text.
+    if let Some(backup) = backup {
+        thread::sleep(CLIPBOARD_RESTORE_DELAY);
+        let _ = restore_if_unchanged(&backup, seq);
+    }
+    PasteOutcome::Pasted
 }
 
 fn clipboard_only(text: &str) -> PasteOutcome {
@@ -441,6 +471,88 @@ fn token_integrity_rid(process: HANDLE) -> Option<u32> {
 mod tests {
     use super::super::clipboard::{CF_UNICODETEXT, register_format, utf16_bytes};
     use super::*;
+
+    #[test]
+    fn selection_read_error_still_restores_backup_and_restore_failure_is_reported() {
+        let restored = std::cell::Cell::new(false);
+        assert_eq!(
+            read_and_restore_selection(
+                || Err(SelectionError::Unavailable),
+                || {
+                    restored.set(true);
+                    Ok(())
+                }
+            ),
+            Err(SelectionError::Unavailable)
+        );
+        assert!(restored.get());
+        assert_eq!(
+            read_and_restore_selection(|| Ok(Some("selection".into())), || Err(SelectionError::Unavailable)),
+            Err(SelectionError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn modifier_timeout_copies_without_insertion_after_keys_or_restoration() {
+        let text = "queued text\r\n";
+        for method in [PasteMethod::Type, PasteMethod::CtrlV, PasteMethod::ShiftInsert, PasteMethod::CtrlShiftV] {
+            for after in [PasteAfter::None, PasteAfter::Enter, PasteAfter::CtrlEnter] {
+                for restore in [false, true] {
+                    let request = PasteRequest { method, after, restore, auto_paste: true };
+                    let mut copied = None;
+                    let outcome = paste_with_modifier_guard(
+                        text,
+                        request,
+                        || false,
+                        |_, _| panic!("modifier timeout must not run insertion, after-key or restore code"),
+                        |text| {
+                            copied = Some(text.to_owned());
+                            PasteOutcome::ClipboardOnly
+                        },
+                    );
+                    assert_eq!(outcome, PasteOutcome::ClipboardOnly);
+                    assert_eq!(copied.as_deref(), Some(text));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn released_modifiers_allow_insertion_and_preserve_its_request() {
+        let request =
+            PasteRequest { method: PasteMethod::Type, after: PasteAfter::None, restore: true, auto_paste: true };
+        let outcome = paste_with_modifier_guard(
+            "queued text\n",
+            request,
+            || true,
+            |text, received| {
+                assert_eq!(text, "queued text\n");
+                assert_eq!(received, request);
+                PasteOutcome::Pasted
+            },
+            |_| panic!("released modifiers must not force clipboard fallback"),
+        );
+        assert_eq!(outcome, PasteOutcome::Pasted);
+    }
+
+    #[test]
+    fn clipboard_only_skips_the_wait_and_copy_failures_stay_failures() {
+        for auto_paste in [false, true] {
+            let request =
+                PasteRequest { method: PasteMethod::CtrlV, after: PasteAfter::CtrlEnter, restore: true, auto_paste };
+            let outcome = paste_with_modifier_guard(
+                "queued text",
+                request,
+                || {
+                    assert!(auto_paste, "clipboard-only requests must not wait for modifiers");
+                    false
+                },
+                |_, _| panic!("clipboard-only requests must not insert"),
+                |_| PasteOutcome::Failed("clipboard unavailable".into()),
+            );
+            assert_eq!(outcome, PasteOutcome::Failed("clipboard unavailable".into()));
+        }
+    }
 
     #[test]
     fn copy_neutralizes_and_restores_held_shortcut_modifiers_in_one_batch() {

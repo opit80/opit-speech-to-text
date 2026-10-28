@@ -57,6 +57,9 @@ choices clearly. Changing settings affects subsequent recordings/requests.
   never opens, reads, writes, or restores the clipboard.
 - All methods keep the existing clipboard-only safeguards for disabled auto-paste,
   shell windows, the app's own windows, and elevated or unknown-integrity targets.
+  If modifiers remain held after the one-second release wait, every method copies
+  the text to the clipboard and returns clipboard-only without sending input or
+  restoring the previous clipboard. No after-key is sent in this case.
   A refused `type` insertion copies the complete text to the clipboard without
   restoring it. Stops from Home/tray keep their existing clipboard-only policy.
 - `after` is sent only after every insertion event was accepted, before clipboard

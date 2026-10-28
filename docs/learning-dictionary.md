@@ -56,9 +56,14 @@ Validation the UI must mirror:
 Errors: `invalid_input` (validation/status), `unavailable` (missing row/history or
 worker failure), `history` (SQLite failure), `learning` (preferences cannot be
 read or are invalid). Preference read failures leave the edit unsaved, allowing a
-safe retry. With learning disabled, preferences are not read.
+safe retry. With learning disabled or a row whose mode is not `"dictation"`,
+preferences are not read.
 
-Suggestions compare the last saved `text` with the new text, not `raw_text`.
+Suggestions are offered only for rows whose mode is exactly `"dictation"`.
+Other modes (including `"translate"`, `"edit"` and `"ask"`) remain editable but
+return an empty `suggestions` array: changes to generated text do not establish
+recognition errors. Suggestions compare the last saved `text` with the new text,
+not `raw_text`.
 Identical saves return no suggestions. There are at most eight unique pairs,
 each containing one to four Unicode words on both sides. Tokenization includes
 letters, numbers, underscores and combining marks. Turkish I/ı/İ/i folding matches
@@ -172,7 +177,8 @@ or terms. A crash in this narrow interval can leave an approved keyword pair
 unremembered; it may be offered again, but never silently applied.
 
 Automated coverage includes Unicode/Turkish diff cases, caps, enabled/disabled
-filtering, rule/term/replacement coverage, old config loading, persistent FTS
+filtering, non-dictation edits without suggestions, rule/term/replacement coverage,
+old config loading, persistent FTS
 edits, remembered choices after restart, header preservation, term deduplication,
 batch conflict rejection, concurrent applies and partial disk failure/retry.
 
