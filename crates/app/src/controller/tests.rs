@@ -647,6 +647,8 @@ impl Providers for TestProviders {
 
 #[derive(Debug, Clone, PartialEq)]
 struct Saved {
+    source_text: Option<String>,
+    instruction: Option<String>,
     mode: String,
     agent: Option<String>,
     profile_id: String,
@@ -680,6 +682,8 @@ impl HistorySink for FakeHistory {
     ) -> Result<i64, String> {
         let mut saved = self.saved.lock().unwrap();
         saved.push(Saved {
+            source_text: entry.source_text.map(str::to_owned),
+            instruction: entry.instruction.map(str::to_owned),
             mode: entry.mode.into(),
             agent: entry.agent.map(str::to_owned),
             profile_id: entry.profile_id.into(),
@@ -2041,4 +2045,289 @@ async fn ask_request_cleanup_is_separate_from_dictation_cleanup_and_keeps_origin
         .unwrap();
     assert_eq!(request.body_json::<serde_json::Value>().unwrap()["messages"][1]["content"], "cleaned request");
     h.send(Msg::Shutdown);
+}
+
+async fn voice_harness(status: u16, answer: &str) -> (wiremock::MockServer, Harness) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(status).set_body_json(serde_json::json!({
+            "choices":[{"message":{"content": answer}, "finish_reason":"stop"}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut config = AppConfig::default();
+    config.cleanup.enabled = false;
+    config.cleanup.base_url = server.uri();
+    config.cleanup.api_key_ref = None;
+    config.cleanup.model = "connection-model".into();
+    config.cleanup.reasoning_effort = Some("none".into());
+    config.cleanup.active_style_id = "formal".into();
+    let style = config.cleanup.styles.iter_mut().find(|s| s.id == "formal").unwrap();
+    style.model = Some("ignored-style-model".into());
+    style.prompt = "STYLE MUST NOT APPLY".into();
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    (server, h)
+}
+
+#[tokio::test]
+async fn voice_edit_with_or_without_selection_uses_connection_and_saves_originals() {
+    for selection in [Some("Original selected text"), None] {
+        let (server, mut h) = voice_harness(200, "Requested result").await;
+        *h.paster.selection.lock().unwrap() = selection.map(str::to_string);
+        h.script("groq", vec![Ok("make this polite please")]);
+        h.hotkey(HotkeyEvent::Edit);
+        h.expect(&[Transcribing, Recording]).await;
+        assert_eq!(h.overlay.last().text, "Edit");
+        // Changes while speaking cannot replace the connection, paste policy or selection.
+        let mut changed = h.settings.current().config.clone();
+        changed.cleanup.model = "later-model".into();
+        changed.paste.method = opit_core::config::PasteMethod::Type;
+        h.settings.replace(settings(changed));
+        *h.paster.selection.lock().unwrap() = Some("later selection".into());
+        h.hotkey(HotkeyEvent::Edit);
+        h.expect(&[Transcribing, DictationState::Cleaning, Pasting, Idle]).await;
+        assert_eq!(h.paster.texts(), ["Requested result "]);
+        assert_eq!(h.paster.requests.lock().unwrap()[0].method, opit_core::config::PasteMethod::CtrlV);
+        let rows = h.history.entries();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mode, "edit");
+        assert_eq!(rows[0].source_text.as_deref(), selection);
+        assert_eq!(rows[0].instruction.as_deref(), Some("make this polite please"));
+        assert_eq!(rows[0].text, "Requested result");
+        assert_eq!(rows[0].cleanup_model.as_deref(), Some("connection-model"));
+        assert_eq!(rows[0].cleanup_style_id, None);
+        assert!(!rows[0].has_audio);
+        let requests = server.received_requests().await.unwrap();
+        let body: serde_json::Value = requests[0].body_json().unwrap();
+        assert_eq!(body["model"], "connection-model");
+        assert_eq!(body["reasoning_effort"], "none");
+        assert!(!body["messages"][0]["content"].as_str().unwrap().contains("STYLE MUST NOT APPLY"));
+        let user: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(user["selection"], serde_json::json!(selection));
+        assert_eq!(user["instruction"], "make this polite please");
+        assert_eq!(*h.media.calls.lock().unwrap(), [Some((opit_core::config::MediaMode::Pause, 20)), None]);
+    }
+}
+
+#[tokio::test]
+async fn voice_llm_failure_never_pastes_and_retains_failed_edit_or_translation() {
+    for (event, mode) in [(HotkeyEvent::Edit, "edit"), (HotkeyEvent::Translate, "translate")] {
+        let (_server, mut h) = voice_harness(500, "private provider error").await;
+        *h.paster.selection.lock().unwrap() = Some("private selected text".into());
+        h.script("groq", vec![Ok("private spoken instruction")]);
+        h.hotkey(event.clone());
+        h.expect(&[Transcribing, Recording]).await;
+        h.hotkey(event);
+        h.expect(&[Transcribing, DictationState::Cleaning]).await;
+        h.expect_error(ErrorKind::Rejected).await;
+        assert!(h.paster.texts().is_empty());
+        assert!(!h.handle.status().can_retry);
+        assert_eq!(h.overlay.last().tone, Tone::Error);
+        assert!(!h.overlay.last().text.contains("private"));
+        let rows = h.history.entries();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].mode, mode);
+        assert_eq!(rows[0].status, TranscriptStatus::Failed);
+        assert!(rows[0].text.is_empty());
+        if mode == "edit" {
+            assert_eq!(rows[0].source_text.as_deref(), Some("private selected text"));
+            assert_eq!(rows[0].instruction.as_deref(), Some("private spoken instruction"));
+        } else {
+            assert_eq!(rows[0].source_text.as_deref(), Some("private spoken instruction"));
+            assert_eq!(rows[0].instruction, None);
+        }
+    }
+}
+
+#[tokio::test]
+async fn voice_translation_uses_rules_target_and_model_without_style_or_selection() {
+    let (server, mut h) = voice_harness(200, "Hallo Opit").await;
+    let mut config = h.settings.current().config.clone();
+    config.cleanup.enabled = true;
+    config.translate.target_language = "de".into();
+    config.translate.model = Some("translation-model".into());
+    config.paste.method = opit_core::config::PasteMethod::ShiftInsert;
+    config.history.save_audio = true;
+    let pack = opit_core::rules::RulePack::from_yaml("schema: 1\nid: user\nname: Personal\nterms: [Opit]\n").unwrap();
+    h.settings.replace(Settings::build(config, Some(pack), Some("en-US")).0);
+    *h.paster.selection_error.lock().unwrap() = Some(crate::platform::SelectionError::Unavailable);
+    h.script("groq", vec![Ok("hello opit today")]);
+    h.hotkey(HotkeyEvent::Translate);
+    h.expect(&[Transcribing, Recording]).await;
+    assert_eq!(h.overlay.last().text, "Translate");
+    h.hotkey(HotkeyEvent::Translate);
+    h.expect(&[Transcribing, DictationState::Cleaning, Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["Hallo Opit "]);
+    let rows = h.history.entries();
+    assert_eq!(rows[0].mode, "translate");
+    assert_eq!(rows[0].source_text.as_deref(), Some("hello Opit today"));
+    assert_eq!(rows[0].instruction, None);
+    assert!(rows[0].has_audio);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = requests[0].body_json().unwrap();
+    assert_eq!(body["model"], "translation-model");
+    assert!(body["messages"][0]["content"].as_str().unwrap().contains("German"));
+    assert!(body["messages"][1]["content"].as_str().unwrap().contains("hello Opit today"));
+    assert_eq!(h.paster.requests.lock().unwrap()[0].method, opit_core::config::PasteMethod::ShiftInsert);
+}
+
+#[tokio::test]
+async fn voice_shortcuts_require_connection_and_safe_selection_before_opening_microphone() {
+    for selection_error in
+        [None, Some(crate::platform::SelectionError::Unavailable), Some(crate::platform::SelectionError::TooLong)]
+    {
+        let mut config = AppConfig::default();
+        config.cleanup.api_key_ref = None;
+        let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+        let mut h = harness(config);
+        if selection_error.is_some() {
+            *h.providers.cleanup.lock().unwrap() = Some(client);
+        }
+        *h.paster.selection_error.lock().unwrap() = selection_error;
+        h.hotkey(HotkeyEvent::Edit);
+        h.expect(&[Transcribing]).await;
+        h.expect_error(if selection_error.is_none() { ErrorKind::MissingKey } else { ErrorKind::Rejected }).await;
+        assert_eq!(h.mic.starts(), 0);
+        assert!(h.paster.texts().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn voice_push_to_talk_releases_only_its_own_mode_and_can_pause() {
+    let (_server, mut h) = voice_harness(200, "result").await;
+    let mut config = h.settings.current().config.clone();
+    config.hotkey.mode = opit_core::config::HotkeyMode::PushToTalk;
+    h.settings.replace(settings(config));
+    h.script("groq", vec![Ok("write something please")]);
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing, Recording]).await;
+    h.hotkey(HotkeyEvent::Pause);
+    h.wait_for(|s| s.paused).await;
+    h.hotkey(HotkeyEvent::TranslateUp);
+    h.hotkey(HotkeyEvent::ComboUp);
+    h.hotkey(HotkeyEvent::Pause);
+    h.wait_for(|s| !s.paused).await;
+    h.hotkey(HotkeyEvent::EditUp);
+    h.expect(&[Transcribing, DictationState::Cleaning, Pasting, Idle]).await;
+    assert_eq!(h.paster.texts(), ["result "]);
+}
+
+#[tokio::test]
+async fn voice_modes_keep_per_app_profile_fallback_and_paste_but_ignore_style() {
+    for event in [HotkeyEvent::Edit, HotkeyEvent::Translate] {
+        let (_server, mut h) = voice_harness(200, "Output").await;
+        let mut config = h.settings.current().config.clone();
+        config.profiles[1].fallback_profile_id = Some("groq".into());
+        config.app_rules.rules.push(opit_core::app_rules::AppRule {
+            exe: "editor.exe".into(),
+            profile_id: Some("openai".into()),
+            style_id: Some("raw".into()),
+            paste_method: Some(PasteMethod::Type),
+            paste_after: Some(PasteAfter::CtrlEnter),
+            ..Default::default()
+        });
+        h.settings.replace(settings(config));
+        *h.foreground.info.lock().unwrap() =
+            Some(crate::platform::ForegroundInfo { exe: "editor.exe".into(), title: String::new() });
+        h.script("openai", vec![Err(ProviderError::Server(503)), Err(ProviderError::Server(503))]);
+        h.script("groq", vec![Ok("write output please")]);
+        h.hotkey(event.clone());
+        h.expect(&[Transcribing, Recording]).await;
+        assert!(!h.overlay.last().text.contains("Raw"));
+        // A style shortcut changes the global preference, without changing this mode.
+        h.hotkey(HotkeyEvent::Style("formal".into()));
+        h.hotkey(event);
+        h.expect(&[Transcribing, DictationState::Cleaning, Pasting, Idle]).await;
+        let rows = h.history.entries();
+        assert_eq!(rows[0].profile_id, "groq");
+        assert_eq!(rows[0].cleanup_style_id, None);
+        assert_eq!(rows[0].cleanup_model.as_deref(), Some("connection-model"));
+        let request = h.paster.requests.lock().unwrap()[0];
+        assert_eq!(request.method, PasteMethod::Type);
+        assert_eq!(request.after, PasteAfter::CtrlEnter);
+    }
+}
+
+#[tokio::test]
+async fn voice_transcription_failure_never_becomes_a_plain_dictation_retry() {
+    let mut config = AppConfig::default();
+    config.cleanup.api_key_ref = None;
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    *h.paster.selection.lock().unwrap() = Some("Keep original".into());
+    h.script("groq", vec![Err(ProviderError::Unauthorized(401))]);
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing, Recording]).await;
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing]).await;
+    h.expect_error(ErrorKind::InvalidKey).await;
+    assert!(!h.handle.status().can_retry);
+    assert!(h.paster.texts().is_empty());
+    let rows = h.history.entries();
+    assert_eq!(rows[0].mode, "edit");
+    assert_eq!(rows[0].source_text.as_deref(), Some("Keep original"));
+    assert_eq!(rows[0].status, TranscriptStatus::Failed);
+}
+
+#[tokio::test]
+async fn voice_microphone_failure_during_preparation_is_not_lost() {
+    let mut config = AppConfig::default();
+    config.cleanup.api_key_ref = None;
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    let mic = h.mic.clone();
+    *h.mic.before_start_returns.lock().unwrap() =
+        Some(Box::new(move || mic.emit(CaptureEvent::Failed("device lost".into()))));
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing]).await;
+    h.expect_error(ErrorKind::Microphone).await;
+    assert_eq!(h.mic.dropped.load(SeqCst), 1);
+    assert!(h.paster.texts().is_empty());
+}
+
+#[tokio::test]
+async fn voice_preparation_cancel_drops_capture_and_does_not_paste() {
+    let mut config = AppConfig::default();
+    config.cleanup.api_key_ref = None;
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    let handle = h.handle.clone();
+    *h.mic.before_start_returns.lock().unwrap() = Some(Box::new(move || handle.send(Msg::Cancel)));
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing, Cancelled, Idle]).await;
+    assert_eq!(h.mic.dropped.load(SeqCst), 1);
+    assert!(h.paster.texts().is_empty());
+    assert!(h.history.entries().is_empty());
+}
+
+#[tokio::test]
+async fn voice_preparation_shutdown_drops_capture_without_activating_recording() {
+    let mut config = AppConfig::default();
+    config.cleanup.api_key_ref = None;
+    let client = Arc::new(CleanupClient::new(config.cleanup.clone(), None).unwrap());
+    let mut h = harness(config);
+    *h.providers.cleanup.lock().unwrap() = Some(client);
+    let handle = h.handle.clone();
+    *h.mic.before_start_returns.lock().unwrap() = Some(Box::new(move || handle.send(Msg::Shutdown)));
+    h.hotkey(HotkeyEvent::Edit);
+    h.expect(&[Transcribing, Idle]).await;
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while h.mic.dropped.load(SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(h.paster.texts().is_empty());
+    assert!(h.history.entries().is_empty());
 }

@@ -109,6 +109,10 @@ pub trait Capture: Send {
 // ---------- Hotkey ----------
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyEvent {
+    Edit,
+    EditUp,
+    Translate,
+    TranslateUp,
     StyleCycle,
     Style(String),
     Ask,
@@ -129,7 +133,7 @@ pub type HotkeySink = Arc<dyn Fn(HotkeyEvent) + Send + Sync>;
 pub use opit_core::hotkey::HotkeyError;
 
 pub trait Hotkey: Send + Sync {
-    /// Replace all auxiliary shortcuts atomically; each action fires once on key-down.
+    /// Replace auxiliary shortcuts atomically. Voice modes also emit their matching release event.
     fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError>;
     /// Installs (or re-targets) the global hook for `keys` (names like "RightCtrl").
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError>;
@@ -140,6 +144,12 @@ pub trait Hotkey: Send + Sync {
 }
 
 // ---------- Paster ----------
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectionError {
+    Unavailable,
+    TooLong,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasteOutcome {
     /// All insertion input was delivered to the target.
@@ -163,6 +173,12 @@ pub struct PasteRequest {
 }
 
 pub trait Paster: Send + Sync {
+    /// Capture and restore the clipboard before recording. No content-bearing errors.
+    /// Blocking; serialized with paste operations by the platform implementation.
+    fn read_selection(&self) -> Result<Option<String>, SelectionError> {
+        Ok(None)
+    }
+
     /// Snapshot at recording stop; later focus changes must not enable auto-paste.
     fn can_auto_paste(&self) -> bool {
         true

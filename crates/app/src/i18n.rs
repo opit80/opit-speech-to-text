@@ -22,6 +22,36 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn edit_label(self) -> &'static str {
+        self.pick("Edit", "Düzenle")
+    }
+    pub fn translate_label(self) -> &'static str {
+        self.pick("Translate", "Çevir")
+    }
+    pub fn voice_preparing(self) -> &'static str {
+        self.pick("Preparing voice mode…", "Sesli mod hazırlanıyor…")
+    }
+    pub fn voice_connection_required(self) -> &'static str {
+        self.pick(
+            "Configure the cleanup connection and API key before using Edit or Translate.",
+            "Düzenle veya Çevir için önce metin düzenleme bağlantısını ve API anahtarını ayarlayın.",
+        )
+    }
+    pub fn voice_failed(self) -> &'static str {
+        self.pick(
+            "Edit or translation failed. No text was pasted.",
+            "Düzenleme veya çeviri başarısız. Metin yapıştırılmadı.",
+        )
+    }
+    pub fn selection_failed(self) -> &'static str {
+        self.pick(
+            "The selection could not be read safely. Try again.",
+            "Seçili metin güvenli biçimde okunamadı. Yeniden deneyin.",
+        )
+    }
+    pub fn selection_too_long(self) -> &'static str {
+        self.pick("Select at most 32,000 characters.", "En fazla 32.000 karakter seçin.")
+    }
     pub fn application_list_failed(self) -> &'static str {
         match self {
             Self::En => "The application list could not be read.",
@@ -324,6 +354,13 @@ mod tests {
             ("ask_invalid", lang.ask_invalid().into()),
             ("ask_detection_failed", lang.ask_detection_failed().into()),
             ("tray_ask", lang.tray_ask().into()),
+            ("edit_label", lang.edit_label().into()),
+            ("translate_label", lang.translate_label().into()),
+            ("voice_preparing", lang.voice_preparing().into()),
+            ("voice_connection_required", lang.voice_connection_required().into()),
+            ("voice_failed", lang.voice_failed().into()),
+            ("selection_failed", lang.selection_failed().into()),
+            ("selection_too_long", lang.selection_too_long().into()),
             ("new_conversation", lang.new_conversation().into()),
             ("asking", lang.asking("Claude", 12)),
             ("file_media_filter", lang.file_media_filter().into()),

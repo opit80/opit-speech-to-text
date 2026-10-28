@@ -62,6 +62,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         local_download,
         local_cancel,
         local_delete,
+        translate_languages,
         cleanup_presets,
         cleanup_prompts,
         test_cleanup,
@@ -527,4 +528,9 @@ async fn check_for_updates(app: AppHandle) -> UpdateState {
 #[tauri::command]
 async fn install_update(app: AppHandle, core: Core<'_>) -> Result<()> {
     updates::install(&app, &core.controller).await
+}
+
+#[tauri::command]
+async fn translate_languages() -> Vec<opit_core::voice_modes::TranslateLanguage> {
+    opit_core::voice_modes::translate_languages()
 }

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard,
-    RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, GetClipboardOwner,
+    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -90,6 +90,16 @@ pub struct Clipboard {
 }
 
 impl Clipboard {
+    /// Caller holds the clipboard open, so ownership cannot change during this check.
+    pub fn owned_by_process(&self, expected: u32) -> bool {
+        // SAFETY: live out-pointer; clipboard owner handles are queried, never owned here.
+        unsafe {
+            let Ok(owner) = GetClipboardOwner() else { return false };
+            let mut pid = 0;
+            windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(owner, Some(&mut pid));
+            pid != 0 && pid == expected
+        }
+    }
     /// Opens the clipboard, retrying (10 × 20 ms) while another app holds it.
     pub fn open() -> Result<Self, String> {
         // SAFETY: creates a message-only STATIC window on this thread; destroyed on every path.
@@ -147,6 +157,28 @@ impl Clipboard {
             }
         }
         Snapshot { formats }
+    }
+
+    /// Reads only Unicode text, with a bounded allocation. Never formats contents into errors.
+    pub fn selection_text(&self) -> Result<Option<String>, crate::platform::SelectionError> {
+        use crate::platform::SelectionError;
+        // SAFETY: clipboard is open; the clipboard owns the handle throughout the copy.
+        unsafe {
+            let Ok(handle) = GetClipboardData(CF_UNICODETEXT) else { return Ok(None) };
+            let mem = HGLOBAL(handle.0);
+            let size = GlobalSize(mem);
+            if size > (opit_core::voice_modes::MAX_SELECTION_CHARS * 2 + 1) * 2 {
+                return Err(SelectionError::TooLong);
+            }
+            let bytes = copy_hglobal(mem).ok_or(SelectionError::Unavailable)?;
+            let units: Vec<_> =
+                bytes.as_chunks::<2>().0.iter().map(|b| u16::from_le_bytes(*b)).take_while(|u| *u != 0).collect();
+            let text = String::from_utf16(&units).map_err(|_| SelectionError::Unavailable)?;
+            if text.chars().count() > opit_core::voice_modes::MAX_SELECTION_CHARS {
+                return Err(SelectionError::TooLong);
+            }
+            Ok((!text.trim().is_empty()).then_some(text))
+        }
     }
 
     /// Empties the clipboard and takes ownership of it.

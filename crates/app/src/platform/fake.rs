@@ -214,6 +214,8 @@ impl Hotkey for FakeHotkey {
 pub type PasteGate = (Mutex<bool>, Condvar);
 
 pub struct FakePaster {
+    pub selection: Mutex<Option<String>>,
+    pub selection_error: Mutex<Option<SelectionError>>,
     pub outcome: Mutex<PasteOutcome>,
     pub pasted: Mutex<Vec<(String, bool)>>,
     pub policies: Mutex<Vec<bool>>,
@@ -228,6 +230,8 @@ pub struct FakePaster {
 impl Default for FakePaster {
     fn default() -> Self {
         Self {
+            selection: Mutex::default(),
+            selection_error: Mutex::default(),
             outcome: Mutex::new(PasteOutcome::Pasted),
             pasted: Mutex::default(),
             policies: Mutex::default(),
@@ -248,6 +252,13 @@ impl FakePaster {
 }
 
 impl Paster for FakePaster {
+    fn read_selection(&self) -> Result<Option<String>, SelectionError> {
+        if let Some(error) = *self.selection_error.lock().unwrap() {
+            return Err(error);
+        }
+        Ok(self.selection.lock().unwrap().clone())
+    }
+
     fn can_auto_paste(&self) -> bool {
         self.allow_auto.lock().unwrap().unwrap_or(true)
     }

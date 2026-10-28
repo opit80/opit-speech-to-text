@@ -155,6 +155,8 @@ mod tests {
 
     fn entry(created_at_ms: i64) -> NewDictation<'static> {
         NewDictation {
+            source_text: None,
+            instruction: None,
             mode: "dictation",
             agent: None,
             created_at_ms,

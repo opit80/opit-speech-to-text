@@ -48,6 +48,7 @@ pub struct AppConfig {
     pub rules: RulesConfig,
     pub ask: crate::ask::AskConfig,
     pub cleanup: crate::cleanup::CleanupConfig,
+    pub translate: crate::voice_modes::TranslateConfig,
     pub app_rules: crate::app_rules::AppRulesConfig,
     pub local: LocalConfig,
     pub ui: UiConfig,
@@ -68,6 +69,7 @@ impl Default for AppConfig {
             rules: RulesConfig::default(),
             ask: crate::ask::AskConfig::default(),
             cleanup: crate::cleanup::CleanupConfig::default(),
+            translate: crate::voice_modes::TranslateConfig::default(),
             app_rules: crate::app_rules::AppRulesConfig::default(),
             local: LocalConfig::default(),
             ui: UiConfig::default(),
@@ -112,6 +114,8 @@ pub struct HotkeyConfig {
     /// Empty disables the optional recording pause shortcut.
     pub pause_keys: Vec<String>,
     pub ask_keys: Vec<String>,
+    pub edit_keys: Vec<String>,
+    pub translate_keys: Vec<String>,
     pub style_cycle_keys: Vec<String>,
     pub mode: HotkeyMode,
     pub enabled: bool,
@@ -123,6 +127,8 @@ impl Default for HotkeyConfig {
             keys: vec!["RightCtrl".into(), "RightShift".into()],
             pause_keys: Vec::new(),
             ask_keys: Vec::new(),
+            edit_keys: Vec::new(),
+            translate_keys: Vec::new(),
             style_cycle_keys: Vec::new(),
             mode: HotkeyMode::Toggle,
             enabled: true,
@@ -323,6 +329,7 @@ impl AppConfig {
 
     /// Repairs values a hand edit or an old version could leave inconsistent.
     pub fn normalize(&mut self) {
+        self.translate.normalize();
         self.cleanup.normalize_styles();
         self.normalize_shortcuts();
         self.media.duck_volume_percent = self.media.duck_volume_percent.min(100);
@@ -378,6 +385,8 @@ impl AppConfig {
         for keys in std::iter::once(&mut self.hotkey.pause_keys)
             .chain(std::iter::once(&mut self.hotkey.ask_keys))
             .chain(std::iter::once(&mut self.hotkey.style_cycle_keys))
+            .chain(std::iter::once(&mut self.hotkey.edit_keys))
+            .chain(std::iter::once(&mut self.hotkey.translate_keys))
             .chain(self.cleanup.styles.iter_mut().map(|style| &mut style.hotkey))
         {
             if keys.is_empty() {
@@ -396,6 +405,8 @@ impl AppConfig {
             .chain(std::iter::once(self.hotkey.pause_keys.as_slice()))
             .chain(std::iter::once(self.hotkey.ask_keys.as_slice()))
             .chain(std::iter::once(self.hotkey.style_cycle_keys.as_slice()))
+            .chain(std::iter::once(self.hotkey.edit_keys.as_slice()))
+            .chain(std::iter::once(self.hotkey.translate_keys.as_slice()))
             .chain(self.cleanup.styles.iter().map(|style| style.hotkey.as_slice()))
             .collect()
     }
@@ -423,6 +434,36 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_modes_default_off_normalize_languages_and_validate_all_shortcuts() {
+        let old = AppConfig::from_json("{}").unwrap();
+        assert!(old.hotkey.edit_keys.is_empty() && old.hotkey.translate_keys.is_empty());
+        assert_eq!(old.translate, crate::voice_modes::TranslateConfig::default());
+        let mut config = old;
+        config.hotkey.edit_keys = vec!["F18".into()];
+        config.hotkey.translate_keys = vec!["F19".into()];
+        config.translate.target_language = " TR ".into();
+        config.translate.model = Some("  custom-model  ".into());
+        config.normalize();
+        assert_eq!(config.translate.target_language, "tr");
+        assert_eq!(config.translate.model.as_deref(), Some("custom-model"));
+        assert_eq!(AppConfig::from_json(&config.to_json()).unwrap(), config);
+        let mut other = config.shortcuts().iter().map(|keys| keys.to_vec()).collect::<Vec<_>>();
+        other.retain(|keys| !keys.is_empty() && *keys != config.hotkey.translate_keys);
+        for conflict in
+            other.into_iter().chain([vec!["F18".into(), "LeftCtrl".into()], vec!["Escape".into()], vec!["bad".into()]])
+        {
+            config.hotkey.translate_keys = conflict;
+            assert!(crate::hotkey::validate_list(&config.shortcuts()).is_err());
+            config.normalize();
+            assert!(config.hotkey.translate_keys.is_empty());
+        }
+        config.translate.target_language = "unknown".into();
+        config.translate.model = Some("  ".into());
+        config.normalize();
+        assert_eq!(config.translate, crate::voice_modes::TranslateConfig::default());
+    }
 
     #[test]
     fn cleanup_styles_load_old_configs_and_normalize_shortcut_conflicts() {

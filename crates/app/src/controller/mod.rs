@@ -7,6 +7,7 @@ mod tests;
 
 use std::collections::VecDeque;
 use std::mem;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -28,7 +29,7 @@ use crate::i18n::Lang;
 use crate::platform::{
     Capture, CaptureEvent, CaptureSink, ForegroundApp, Hotkey, HotkeyEvent, HotkeySink, MediaControl, MediaGuard,
     Microphone, Overlay, OverlayAction, OverlayButton, OverlaySink, OverlayView, PasteOutcome, PasteRequest, Paster,
-    RecordingTiming, SecretError, Sound, Sounds, Tone,
+    RecordingTiming, SecretError, SelectionError, Sound, Sounds, Started, Tone,
 };
 use crate::settings::{Settings, SettingsHandle};
 
@@ -113,6 +114,7 @@ pub struct Env<P: Providers> {
 /// Controller input. Deliberately not `Debug`: `Transcribed` carries transcript text,
 /// which must never reach a log line.
 pub enum Msg {
+    VoiceReady(u64),
     StyleChanged(CleanupStyle),
     Ask {
         text: Option<String>,
@@ -296,6 +298,7 @@ pub fn run<P: Providers>(
         status: handle.status.clone(),
         phase: Phase::Idle,
         recording: None,
+        preparing: None,
         waiting: VecDeque::new(),
         session: 0,
         retry: None,
@@ -395,7 +398,55 @@ struct Clients<C> {
     fallback: Option<C>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoiceMode {
+    Edit,
+    Translate,
+}
+
+impl VoiceMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Edit => "edit",
+            Self::Translate => "translate",
+        }
+    }
+}
+
+// Never Debug: the selection, source and instruction are private user content.
+#[derive(Clone)]
+struct VoiceContext {
+    mode: VoiceMode,
+    selection: Option<String>,
+    source_text: Option<String>,
+    instruction: Option<String>,
+    client: Arc<CleanupClient>,
+}
+
+struct VoicePrepared<C> {
+    voice: VoiceContext,
+    clients: Clients<C>,
+    started: Started,
+}
+
+struct Preparing<C> {
+    session: u64,
+    mode: VoiceMode,
+    settings: Arc<Settings>,
+    cancelled: Arc<AtomicBool>,
+    microphone_failed: bool,
+    task: tokio::task::JoinHandle<Result<VoicePrepared<C>, VoiceStartError>>,
+}
+
+enum VoiceStartError {
+    Connection,
+    Selection(SelectionError),
+    Setup(SetupError),
+    Microphone,
+}
+
 struct Job {
+    voice: Option<VoiceContext>,
     ask: bool,
     ask_test: bool,
     text_reply: Option<TextReply>,
@@ -416,6 +467,7 @@ enum Input {
 }
 
 struct ActiveRecording<C> {
+    voice: Option<VoiceContext>,
     ask: bool,
     text_reply: Option<TextReply>,
     session: u64,
@@ -483,6 +535,7 @@ struct Controller<P: Providers> {
     status: Arc<Mutex<DictationStatus>>,
     phase: Phase,
     recording: Option<ActiveRecording<P::Client>>,
+    preparing: Option<Preparing<P::Client>>,
     waiting: VecDeque<Pending<P::Client>>,
     session: u64,
     /// Prepared audio of the last failed dictation, for "Try again".
@@ -495,6 +548,9 @@ impl<P: Providers> Controller<P> {
     async fn serve(mut self, mut inbox: Inbox) {
         while let Some(msg) = inbox.0.recv().await {
             if let Msg::Shutdown = msg {
+                if let Some(preparing) = self.preparing.take() {
+                    preparing.cancelled.store(true, Ordering::Relaxed);
+                }
                 if let Some(r) = self.recording.take() {
                     r.limit.abort();
                 }
@@ -506,6 +562,7 @@ impl<P: Providers> Controller<P> {
                 break;
             }
             match msg {
+                Msg::VoiceReady(session) => self.voice_ready(session).await,
                 Msg::Hotkey(HotkeyEvent::StyleCycle) => self.select_style(None).await,
                 Msg::Hotkey(HotkeyEvent::Style(id)) => self.select_style(Some(id)).await,
                 msg => self.handle(msg),
@@ -516,6 +573,7 @@ impl<P: Providers> Controller<P> {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
+            Msg::VoiceReady(_) => {} // handled by the async actor loop
             Msg::StyleChanged(style) => self.style_changed(style),
             Msg::TestAsk { config, reply } => {
                 let before = self.session;
@@ -656,7 +714,10 @@ impl<P: Providers> Controller<P> {
     }
 
     fn is_idle(&self) -> bool {
-        self.recording.is_none() && self.waiting.is_empty() && matches!(self.phase, Phase::Idle)
+        self.preparing.is_none()
+            && self.recording.is_none()
+            && self.waiting.is_empty()
+            && matches!(self.phase, Phase::Idle)
     }
 
     fn control(&mut self, action: ControlAction) -> Result<(), ErrorKind> {
@@ -702,7 +763,9 @@ impl<P: Providers> Controller<P> {
 
     fn ask(&mut self, text: Option<String>, reply: Option<oneshot::Sender<Result<String, ErrorKind>>>) {
         let reply = reply.map(|reply| TextReply(Some(reply)));
-        if self.update_holds != 0 || self.waiting.len() + usize::from(self.recording.is_some()) >= MAX_WAITING {
+        if self.update_holds != 0
+            || self.waiting.len() + usize::from(self.recording.is_some() || self.preparing.is_some()) >= MAX_WAITING
+        {
             if let Some(reply) = reply {
                 reply.finish(Err(ErrorKind::Rejected));
             }
@@ -720,6 +783,7 @@ impl<P: Providers> Controller<P> {
             self.waiting.push_back(Pending {
                 session: self.session,
                 job: Job {
+                    voice: None,
                     ask: true,
                     ask_test: false,
                     text_reply: reply,
@@ -756,7 +820,138 @@ impl<P: Providers> Controller<P> {
         }
     }
 
+    fn voice_shortcut(&mut self, mode: VoiceMode, up: bool) {
+        let hotkey_mode = self.recording.as_ref().map_or_else(
+            || {
+                self.preparing
+                    .as_ref()
+                    .map_or_else(|| self.env.settings.current().config.hotkey.mode, |p| p.settings.config.hotkey.mode)
+            },
+            |r| r.settings.config.hotkey.mode,
+        );
+        if let Some(preparing) = &mut self.preparing {
+            if preparing.mode == mode && (!up || hotkey_mode == HotkeyMode::PushToTalk) {
+                preparing.cancelled.store(true, Ordering::Relaxed);
+            }
+            return;
+        }
+        if let Some(recording) = &self.recording {
+            if recording.voice.as_ref().is_some_and(|v| v.mode == mode)
+                && ((!up && hotkey_mode == HotkeyMode::Toggle) || (up && hotkey_mode == HotkeyMode::PushToTalk))
+            {
+                self.stop(true);
+            }
+            return;
+        }
+        if !up {
+            self.start_voice(mode);
+        }
+    }
+
+    fn start_voice(&mut self, mode: VoiceMode) {
+        if self.preparing.is_some() || self.recording.is_some() || self.held_for_update() {
+            return;
+        }
+        if self.waiting.len() >= MAX_WAITING {
+            self.show(view(Tone::Warning, self.env.settings.current().lang.queue_full(), Some(INFO_HIDE)));
+            return;
+        }
+        let settings = self.dictation_settings();
+        self.session += 1;
+        self.retry = None;
+        let session = self.session;
+        let providers = self.env.providers.clone();
+        let mic = self.env.mic.clone();
+        let paster = self.env.paster.clone();
+        let config = settings.config.clone();
+        let tx = self.tx.clone();
+        let sink: CaptureSink = Arc::new(move |event| {
+            let _ = tx.send(Msg::Capture { session, event });
+        });
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            let connection = opit_core::voice_modes::connection_config(
+                &config.cleanup,
+                (mode == VoiceMode::Translate).then_some(&config.translate),
+            );
+            let client = providers.cleanup_client(&connection).map_err(|_| VoiceStartError::Connection)?;
+            let profile = config.active_profile().ok_or(VoiceStartError::Connection)?;
+            let primary = providers.client(profile).map_err(VoiceStartError::Setup)?;
+            let fallback = config.fallback_for(profile).and_then(|p| providers.client(p).ok());
+            let selection = if mode == VoiceMode::Edit {
+                paster.read_selection().map_err(VoiceStartError::Selection)?
+            } else {
+                None
+            };
+            if worker_cancelled.load(Ordering::Relaxed) {
+                return Err(VoiceStartError::Connection);
+            }
+            let started =
+                mic.start(config.recording.microphone.as_deref(), sink).map_err(|_| VoiceStartError::Microphone)?;
+            Ok(VoicePrepared {
+                voice: VoiceContext { mode, selection, source_text: None, instruction: None, client },
+                clients: Clients { primary, fallback },
+                started,
+            })
+        });
+        let tx = self.tx.clone();
+        let task = tokio::spawn(async move {
+            let result = worker.await.unwrap_or(Err(VoiceStartError::Connection));
+            let _ = tx.send(Msg::VoiceReady(session));
+            result
+        });
+        self.preparing =
+            Some(Preparing { session, mode, settings: settings.clone(), cancelled, microphone_failed: false, task });
+        self.env.hotkey.set_capture_escape(true);
+        self.show(view(Tone::Busy, settings.lang.voice_preparing(), None));
+        self.set_state(DictationState::Transcribing);
+    }
+
+    async fn voice_ready(&mut self, session: u64) {
+        if !self.preparing.as_ref().is_some_and(|p| p.session == session) {
+            return;
+        }
+        let pending = self.preparing.take().unwrap();
+        let lang = pending.settings.lang;
+        let result = pending.task.await.unwrap_or(Err(VoiceStartError::Connection));
+        if pending.cancelled.load(Ordering::Relaxed) {
+            drop(result);
+            self.show(view(Tone::Neutral, lang.cancelled(), Some(CANCEL_HIDE)));
+            self.set_state(DictationState::Cancelled);
+            self.set_state(DictationState::Idle);
+            return;
+        }
+        if pending.microphone_failed {
+            drop(result);
+            return self.fail(ErrorKind::Microphone, lang);
+        }
+        match result {
+            Ok(ready) => {
+                self.activate_recording(session, pending.settings, ready.clients, ready.started, Some(ready.voice))
+            }
+            Err(VoiceStartError::Connection) => {
+                self.fail_with_message(ErrorKind::MissingKey, lang, lang.voice_connection_required().into())
+            }
+            Err(VoiceStartError::Selection(error)) => self.fail_with_message(
+                ErrorKind::Rejected,
+                lang,
+                if error == SelectionError::TooLong { lang.selection_too_long() } else { lang.selection_failed() }
+                    .into(),
+            ),
+            Err(VoiceStartError::Setup(error)) => self.fail(error.kind(), lang),
+            Err(VoiceStartError::Microphone) => self.fail(ErrorKind::Microphone, lang),
+        }
+    }
+
     fn on_hotkey(&mut self, event: HotkeyEvent) {
+        match event {
+            HotkeyEvent::Edit => return self.voice_shortcut(VoiceMode::Edit, false),
+            HotkeyEvent::EditUp => return self.voice_shortcut(VoiceMode::Edit, true),
+            HotkeyEvent::Translate => return self.voice_shortcut(VoiceMode::Translate, false),
+            HotkeyEvent::TranslateUp => return self.voice_shortcut(VoiceMode::Translate, true),
+            _ => {}
+        }
         let mode = self
             .recording
             .as_ref()
@@ -775,7 +970,11 @@ impl<P: Providers> Controller<P> {
             (HotkeyEvent::ComboDown, HotkeyMode::Toggle) => self.toggle(true),
             (HotkeyEvent::LoneCtrl, HotkeyMode::Toggle) if recording => self.stop(true),
             (HotkeyEvent::ComboDown, HotkeyMode::PushToTalk) if !recording => self.start(),
-            (HotkeyEvent::ComboUp, HotkeyMode::PushToTalk) if recording => self.stop(true),
+            (HotkeyEvent::ComboUp, HotkeyMode::PushToTalk)
+                if self.recording.as_ref().is_some_and(|r| r.voice.is_none()) =>
+            {
+                self.stop(true)
+            }
             _ => {}
         }
     }
@@ -798,7 +997,9 @@ impl<P: Providers> Controller<P> {
 
     fn style_changed(&mut self, style: CleanupStyle) {
         if let Some(recording) = self.recording.as_mut() {
-            recording.cleanup_style = style;
+            if recording.voice.is_none() {
+                recording.cleanup_style = style;
+            }
             self.show_recording();
         } else {
             let lang = self.env.settings.current().lang;
@@ -832,6 +1033,9 @@ impl<P: Providers> Controller<P> {
     }
 
     fn start(&mut self) {
+        if self.preparing.is_some() {
+            return;
+        }
         if self.held_for_update() {
             return;
         }
@@ -862,6 +1066,17 @@ impl<P: Providers> Controller<P> {
                 return self.fail(ErrorKind::Microphone, settings.lang);
             }
         };
+        self.activate_recording(session, settings, clients, started, None);
+    }
+
+    fn activate_recording(
+        &mut self,
+        session: u64,
+        settings: Arc<Settings>,
+        clients: Clients<P::Client>,
+        started: Started,
+        voice: Option<VoiceContext>,
+    ) {
         let media = MediaGuard::engage(self.env.media.clone(), &settings.config.media);
         if started.fell_back {
             warn!(device = %started.device, "configured microphone unavailable; using the default device");
@@ -874,7 +1089,7 @@ impl<P: Providers> Controller<P> {
                 .active_profile()
                 .and_then(|p| settings.config.fallback_for(p))
                 .is_some_and(|p| p.apply_cleanup);
-        if cleanup_config.enabled && uses_cleanup && cleanup_config.active_style_id != "raw" {
+        if voice.is_none() && cleanup_config.enabled && uses_cleanup && cleanup_config.active_style_id != "raw" {
             let config = cleanup_config.for_style(&effective_style(&settings));
             let providers = self.env.providers.clone();
             tokio::spawn(async move {
@@ -887,11 +1102,21 @@ impl<P: Providers> Controller<P> {
         let max = Duration::from_secs(u64::from(settings.config.recording.max_seconds));
         let limit = self.arm_limit(session, max);
 
-        let label = if started.fell_back { settings.lang.listening_default_mic() } else { settings.lang.listening() };
+        let label = if let Some(voice) = &voice {
+            match voice.mode {
+                VoiceMode::Edit => settings.lang.edit_label(),
+                VoiceMode::Translate => settings.lang.translate_label(),
+            }
+        } else if started.fell_back {
+            settings.lang.listening_default_mic()
+        } else {
+            settings.lang.listening()
+        };
         self.env.hotkey.set_capture_escape(true);
         self.play(Sound::Start);
         info!(session, device = %started.device, profile = %settings.config.active_profile_id, "recording started");
         self.recording = Some(ActiveRecording {
+            voice,
             media,
             ask: false,
             text_reply: None,
@@ -935,6 +1160,7 @@ impl<P: Providers> Controller<P> {
         self.waiting.push_back(Pending {
             session: r.session,
             job: Job {
+                voice: r.voice,
                 text_reply: r.text_reply,
                 ask: r.ask,
                 ask_test: false,
@@ -974,6 +1200,7 @@ impl<P: Providers> Controller<P> {
         info!(session = self.session, "retrying the last dictation");
         self.env.hotkey.set_capture_escape(true);
         let job = Job {
+            voice: None,
             ask: false,
             ask_test: false,
             text_reply: None,
@@ -990,8 +1217,10 @@ impl<P: Providers> Controller<P> {
 
     fn begin_transcription(&mut self, session: u64, job: Job, clients: Option<Clients<P::Client>>, input: Input) {
         let settings = job.settings.clone();
+        let mut voice = job.voice.clone();
+        let is_voice = voice.is_some();
         let is_ask = job.ask;
-        if is_ask {
+        if is_ask || is_voice {
             self.retry = None;
         }
         let is_ask_test = job.ask_test;
@@ -1055,7 +1284,7 @@ impl<P: Providers> Controller<P> {
                         wait_for_retry(tx.clone(), session, cancel_rx.clone(), progress, delay)
                     })
                     .await;
-                    let use_cleanup = !is_ask || task_settings.config.ask.cleanup_request;
+                    let use_cleanup = !is_voice && (!is_ask || task_settings.config.ask.cleanup_request);
                     if use_cleanup && let Ok(transcript) = &mut result {
                         let profile = task_settings
                             .config
@@ -1103,6 +1332,62 @@ impl<P: Providers> Controller<P> {
                     (Some(audio), result)
                 }
             };
+            if let Some(voice) = &mut voice
+                && let Ok(transcript) = &mut result
+                && transcript.status == TranscriptStatus::Ok
+                && !transcript.text.is_empty()
+            {
+                match voice.mode {
+                    VoiceMode::Edit => voice.instruction = Some(transcript.text.clone()),
+                    VoiceMode::Translate => voice.source_text = Some(transcript.text.clone()),
+                }
+                let _ = tx.send(Msg::Cleaning { session });
+                let language = cleanup::prompt_language(
+                    transcript.detected_language.as_deref(),
+                    transcript.language.as_deref().unwrap_or("auto"),
+                    if task_settings.lang == Lang::Tr { "tr" } else { "en" },
+                );
+                let timer = Instant::now();
+                let answer = match voice.mode {
+                    VoiceMode::Edit => {
+                        opit_core::voice_modes::edit(
+                            &voice.client,
+                            voice.selection.as_deref(),
+                            &transcript.text,
+                            language,
+                        )
+                        .await
+                    }
+                    VoiceMode::Translate => {
+                        opit_core::voice_modes::translate(
+                            &voice.client,
+                            &transcript.text,
+                            &task_settings.config.translate.target_language,
+                        )
+                        .await
+                    }
+                };
+                transcript.request_ms += timer.elapsed().as_millis() as u64;
+                transcript.cleanup_model = Some(
+                    opit_core::voice_modes::connection_config(
+                        &task_settings.config.cleanup,
+                        (voice.mode == VoiceMode::Translate).then_some(&task_settings.config.translate),
+                    )
+                    .model,
+                );
+                match answer {
+                    Ok(text) => {
+                        transcript.text = text;
+                        transcript.cleanup_status = Some(cleanup::CleanupStatus::Ok);
+                    }
+                    Err(error) => {
+                        transcript.text.clear();
+                        transcript.status = TranscriptStatus::Failed;
+                        transcript.cleanup_status = Some(cleanup::CleanupStatus::Failed);
+                        transcript.cleanup_error = Some(error);
+                    }
+                }
+            }
             if is_ask
                 && let Ok(transcript) = &mut result
                 && transcript.status == TranscriptStatus::Ok
@@ -1136,7 +1421,8 @@ impl<P: Providers> Controller<P> {
                     }
                 }
             }
-            if !is_ask && task_settings.config.history.enabled && (result.is_err() || history_id.is_some()) {
+            if !is_ask && task_settings.config.history.enabled && (is_voice || result.is_err() || history_id.is_some())
+            {
                 let audio = audio.clone().expect("speech retry has prepared audio");
                 let saved = save_transcription(
                     history,
@@ -1145,7 +1431,7 @@ impl<P: Providers> Controller<P> {
                     audio.clone(),
                     result.clone(),
                     started.elapsed(),
-                    style.id.clone(),
+                    HistoryContext { style_id: style.id.clone(), voice: voice.clone() },
                 )
                 .await;
                 match saved {
@@ -1178,7 +1464,7 @@ impl<P: Providers> Controller<P> {
             || self.waiting.iter().any(|p| p.job.history_id == Some(id));
         let settings = self.env.settings.current();
         // A live recording already owns one future queue slot.
-        let occupied = self.waiting.len() + usize::from(self.recording.is_some());
+        let occupied = self.waiting.len() + usize::from(self.recording.is_some() || self.preparing.is_some());
         if duplicate || occupied >= MAX_WAITING || self.update_holds != 0 || !settings.config.history.enabled {
             let _ = reply.send(Err(ErrorKind::Rejected));
             return;
@@ -1194,6 +1480,7 @@ impl<P: Providers> Controller<P> {
         self.waiting.push_back(Pending {
             session: self.session,
             job: Job {
+                voice: None,
                 ask: false,
                 ask_test: false,
                 text_reply: None,
@@ -1225,6 +1512,12 @@ impl<P: Providers> Controller<P> {
     }
 
     fn on_capture(&mut self, session: u64, event: CaptureEvent) {
+        if let Some(preparing) = &mut self.preparing
+            && preparing.session == session
+        {
+            preparing.microphone_failed |= matches!(event, CaptureEvent::Failed(_));
+            return;
+        }
         let Some(r) = self.recording.as_mut().filter(|r| r.session == session) else { return };
         match event {
             CaptureEvent::Level(level) => {
@@ -1237,7 +1530,7 @@ impl<P: Providers> Controller<P> {
                 warn!(session, %reason, "microphone stopped during recording");
                 let r = self.recording.take().unwrap();
                 r.limit.abort();
-                if r.ask {
+                if r.ask || r.voice.is_some() {
                     if let Some(reply) = r.text_reply {
                         reply.finish(Err(ErrorKind::Microphone));
                     }
@@ -1254,6 +1547,7 @@ impl<P: Providers> Controller<P> {
                 self.waiting.push_back(Pending {
                     session,
                     job: Job {
+                        voice: None,
                         ask: false,
                         ask_test: false,
                         text_reply: None,
@@ -1357,7 +1651,7 @@ impl<P: Providers> Controller<P> {
                 if let Some(reply) = job.reply.take() {
                     let _ = reply.send(Err(ErrorKind::from(&err)));
                 }
-                self.retry = if job.ask { None } else { audio };
+                self.retry = if job.ask || job.voice.is_some() { None } else { audio };
                 return self.fail(ErrorKind::from(&err), lang);
             }
         };
@@ -1372,6 +1666,10 @@ impl<P: Providers> Controller<P> {
             rule_hits = transcript.hits.len(),
             "transcribed"
         );
+        if job.voice.is_some() && transcript.cleanup_error.is_some() {
+            self.record(&job, &transcript, audio.as_deref());
+            return self.fail_with_message(ErrorKind::Rejected, lang, lang.voice_failed().into());
+        }
         if transcript.status != TranscriptStatus::Ok || transcript.text.is_empty() {
             self.record(&job, &transcript, audio.as_deref());
             if let Some(reply) = job.reply.take() {
@@ -1452,10 +1750,12 @@ impl<P: Providers> Controller<P> {
 
     fn record(&self, job: &Job, transcript: &Transcript, audio: Option<&PreparedAudio>) {
         let history = &job.settings.config.history;
-        if !history.enabled || job.history_id.is_some() {
+        if !history.enabled || job.history_id.is_some() || job.voice.is_some() {
             return;
         }
         let entry = NewDictation {
+            source_text: None,
+            instruction: None,
             mode: if job.ask { "ask" } else { "dictation" },
             agent: job.ask.then_some(job.settings.config.ask.agent.name()),
             created_at_ms: now_ms(),
@@ -1480,6 +1780,10 @@ impl<P: Providers> Controller<P> {
 
     /// `announce: false` is the quiet variant used on shutdown.
     fn cancel(&mut self, announce: bool) {
+        if let Some(pending) = &mut self.preparing {
+            pending.cancelled.store(true, Ordering::Relaxed);
+            return;
+        }
         if let Some(r) = self.recording.take() {
             r.limit.abort();
             drop(r.capture);
@@ -1615,7 +1919,9 @@ impl<P: Providers> Controller<P> {
                 self.begin_transcription(p.session, p.job, p.clients, p.input);
             }
         }
-        let state = if self.recording.is_some() {
+        let state = if self.preparing.is_some() {
+            DictationState::Transcribing
+        } else if self.recording.is_some() {
             DictationState::Recording
         } else {
             match self.phase {
@@ -1640,7 +1946,9 @@ impl<P: Providers> Controller<P> {
             self.set_state(state);
         }
         self.env.hotkey.set_capture_escape(
-            self.recording.is_some() || matches!(self.phase, Phase::Salvaging { .. } | Phase::Transcribing { .. }),
+            self.preparing.is_some()
+                || self.recording.is_some()
+                || matches!(self.phase, Phase::Salvaging { .. } | Phase::Transcribing { .. }),
         );
     }
 
@@ -1649,7 +1957,11 @@ impl<P: Providers> Controller<P> {
             let label = if r.paused { r.settings.lang.recording_paused() } else { r.label };
             let max = Duration::from_secs(u64::from(r.settings.config.recording.max_seconds));
             let remaining = if r.paused { r.remaining } else { r.remaining.saturating_sub(r.resumed_at.elapsed()) };
-            let label = format!("{} - {}", label, r.settings.lang.style_name(&r.cleanup_style));
+            let label = if r.voice.is_some() {
+                if r.paused { format!("{} · {}", r.label, label) } else { label.to_string() }
+            } else {
+                format!("{} - {}", label, r.settings.lang.style_name(&r.cleanup_style))
+            };
             let mut view = listening(&r.settings.lang.with_waiting(&label, self.waiting.len()), r.level);
             view.recording = Some(RecordingTiming {
                 session: r.session,
@@ -1726,7 +2038,12 @@ async fn wait_for_retry(
     true
 }
 
-/// Failure audio ignores save_audio, but obeys history.enabled at the worker call site.
+struct HistoryContext {
+    style_id: String,
+    voice: Option<VoiceContext>,
+}
+
+/// Dictation failure audio ignores save_audio, but obeys history.enabled at the worker call site.
 /// A History retry replaces its existing row before any clipboard operation.
 async fn save_transcription(
     history: Arc<dyn HistorySink>,
@@ -1735,18 +2052,23 @@ async fn save_transcription(
     audio: Arc<PreparedAudio>,
     result: Result<Transcript, PipelineError>,
     elapsed: Duration,
-    style_id: String,
+    context: HistoryContext,
 ) -> Result<i64, String> {
     tokio::task::spawn_blocking(move || {
+        let HistoryContext { style_id, voice } = context;
         let failure_code = match &result {
             Err(PipelineError::Provider(error)) => Some(error.code()),
             Err(PipelineError::RetryCancelled) => Some("cancelled"),
             Err(_) => Some("audio"),
-            Ok(_) => None,
+            Ok(t) => t.cleanup_error.map(|_| "rejected"),
         };
         let transcript = result.ok();
         let entry = NewDictation {
-            mode: "dictation",
+            source_text: voice.as_ref().and_then(|v| {
+                if v.mode == VoiceMode::Edit { v.selection.as_deref() } else { v.source_text.as_deref() }
+            }),
+            instruction: voice.as_ref().and_then(|v| v.instruction.as_deref()),
+            mode: voice.as_ref().map_or("dictation", |v| v.mode.name()),
             agent: None,
             created_at_ms: now_ms(),
             profile_id: transcript.as_ref().map_or(settings.config.active_profile_id.as_str(), |t| &t.profile_id),
@@ -1759,13 +2081,17 @@ async fn save_transcription(
             language: transcript.as_ref().and_then(|t| t.language.as_deref()),
             cleanup_status: transcript.as_ref().and_then(|t| t.cleanup_status),
             cleanup_model: transcript.as_ref().and_then(|t| t.cleanup_model.as_deref()),
-            cleanup_style_id: Some(&style_id),
+            cleanup_style_id: voice.is_none().then_some(&style_id),
         };
         match history_id {
             Some(id) => {
                 history.replace(id, &entry, failure_code.is_some() || settings.config.history.save_audio).map(|()| id)
             }
-            None => history.record(&entry, Some(&audio), settings.config.history.max_entries),
+            None => history.record(
+                &entry,
+                (voice.is_none() || settings.config.history.save_audio).then_some(audio.as_ref()),
+                settings.config.history.max_entries,
+            ),
         }
     })
     .await

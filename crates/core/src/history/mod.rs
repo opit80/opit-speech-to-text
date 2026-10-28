@@ -12,7 +12,7 @@ pub use audio_store::AudioStore;
 use crate::pipeline::TranscriptStatus;
 use crate::text::{fold, is_word_char};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS dictations (
@@ -51,7 +51,7 @@ CREATE TRIGGER IF NOT EXISTS dictations_au AFTER UPDATE OF search_text, search_r
 END;
 ";
 
-const COLUMNS: &str = "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code, language, cleanup_status, cleanup_model, mode, agent, cleanup_style_id";
+const COLUMNS: &str = "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code, language, cleanup_status, cleanup_model, mode, agent, cleanup_style_id, source_text, instruction";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
@@ -77,6 +77,8 @@ pub struct Dictation {
     pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
     pub cleanup_model: Option<String>,
     pub cleanup_style_id: Option<String>,
+    pub source_text: Option<String>,
+    pub instruction: Option<String>,
     pub mode: String,
     pub agent: Option<String>,
 }
@@ -95,6 +97,8 @@ pub struct NewDictation<'a> {
     pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
     pub cleanup_model: Option<&'a str>,
     pub cleanup_style_id: Option<&'a str>,
+    pub source_text: Option<&'a str>,
+    pub instruction: Option<&'a str>,
     pub mode: &'a str,
     pub agent: Option<&'a str>,
 }
@@ -164,7 +168,10 @@ impl HistoryStore {
             if version < 5 {
                 tx.execute_batch("ALTER TABLE dictations ADD COLUMN mode TEXT NOT NULL DEFAULT 'dictation'; ALTER TABLE dictations ADD COLUMN agent TEXT;")?;
             }
-            tx.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_style_id TEXT;")?;
+            if version < 6 {
+                tx.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_style_id TEXT;")?;
+            }
+            tx.execute_batch("ALTER TABLE dictations ADD COLUMN source_text TEXT; ALTER TABLE dictations ADD COLUMN instruction TEXT;")?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
@@ -175,8 +182,8 @@ impl HistoryStore {
         let (raw_text, text) = if d.status == TranscriptStatus::Failed { ("", "") } else { (d.raw_text, d.text) };
         self.conn.execute(
             "INSERT INTO dictations
-               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code, language, cleanup_status, cleanup_model, mode, agent, cleanup_style_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code, language, cleanup_status, cleanup_model, mode, agent, cleanup_style_id, source_text, instruction)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 d.created_at_ms,
                 d.profile_id,
@@ -193,7 +200,9 @@ impl HistoryStore {
                 d.cleanup_model,
                 d.mode,
                 d.agent,
-                d.cleanup_style_id
+                d.cleanup_style_id,
+                d.source_text,
+                d.instruction
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -211,7 +220,7 @@ impl HistoryStore {
         Ok(self.conn.execute(
             "UPDATE dictations SET profile_id=?2, raw_text=?3, text=?4, status=?5, audio_ms=?6,
              latency_ms=?7, search_text=?8, search_raw=?9, error_code=?10,
-             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END, language=?12, cleanup_status=?13, cleanup_model=?14, mode=?15, agent=?16, cleanup_style_id=?17 WHERE id=?1",
+             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END, language=?12, cleanup_status=?13, cleanup_model=?14, mode=?15, agent=?16, cleanup_style_id=?17, source_text=?18, instruction=?19 WHERE id=?1",
             params![
                 id,
                 d.profile_id,
@@ -229,7 +238,9 @@ impl HistoryStore {
                 d.cleanup_model,
                 d.mode,
                 d.agent,
-                d.cleanup_style_id
+                d.cleanup_style_id,
+                d.source_text,
+                d.instruction
             ],
         )? != 0)
     }
@@ -365,6 +376,8 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Dictation> {
         mode: row.get(13)?,
         agent: row.get(14)?,
         cleanup_style_id: row.get(15)?,
+        source_text: row.get(16)?,
+        instruction: row.get(17)?,
     })
 }
 
@@ -387,6 +400,54 @@ pub fn fts_query(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_six_migrates_modes_and_preserves_originals_on_failed_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v6.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT;
+            ALTER TABLE dictations ADD COLUMN cleanup_model TEXT;
+            ALTER TABLE dictations ADD COLUMN mode TEXT NOT NULL DEFAULT 'dictation';
+            ALTER TABLE dictations ADD COLUMN agent TEXT;
+            ALTER TABLE dictations ADD COLUMN cleanup_style_id TEXT;
+            PRAGMA user_version=6;
+            INSERT INTO dictations (id,created_at_ms,profile_id,raw_text,text,status,audio_ms,latency_ms,audio_path,search_text,search_raw,cleanup_style_id)
+            VALUES (9,1,'old','Original','Retained','ok',100,10,'old.wav','retained','original','formal');").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let old = store.get(9).unwrap().unwrap();
+        assert_eq!(old.source_text, None);
+        assert_eq!(old.instruction, None);
+        assert_eq!(old.mode, "dictation");
+        assert_eq!(old.cleanup_style_id.as_deref(), Some("formal"));
+        assert_eq!(store.search("retained", 10).unwrap()[0].id, 9);
+        let mut next = entry("Result", "Instruction", 10);
+        next.mode = "edit";
+        next.source_text = Some("Selected original");
+        next.instruction = Some("Make this polite");
+        let id = store.insert(&next).unwrap();
+        assert!(id > 9);
+        next.status = TranscriptStatus::Failed;
+        next.error_code = Some("rejected");
+        store.replace(id, &next, false).unwrap();
+        let failed = store.get(id).unwrap().unwrap();
+        assert!(failed.text.is_empty());
+        assert_eq!(failed.mode, "edit");
+        assert_eq!(failed.source_text.as_deref(), next.source_text);
+        assert_eq!(failed.instruction.as_deref(), next.instruction);
+        next.status = TranscriptStatus::Ok;
+        next.mode = "translate";
+        next.instruction = None;
+        store.replace(id, &next, false).unwrap();
+        let translated = store.get(id).unwrap().unwrap();
+        assert_eq!(translated.mode, "translate");
+        assert_eq!(translated.text, "Result");
+        assert_eq!(translated.source_text.as_deref(), Some("Selected original"));
+        drop(store);
+        assert_eq!(HistoryStore::open(&path).unwrap().get(id).unwrap().unwrap(), translated);
+    }
 
     #[test]
     fn version_five_adds_nullable_style_and_preserves_search_audio_and_replacements() {
@@ -614,6 +675,8 @@ mod tests {
 
     fn entry<'a>(text: &'a str, raw_text: &'a str, created_at_ms: i64) -> NewDictation<'a> {
         NewDictation {
+            source_text: None,
+            instruction: None,
             mode: "dictation",
             agent: None,
             created_at_ms,

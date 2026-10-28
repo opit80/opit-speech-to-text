@@ -16,13 +16,15 @@
     /** Tooltip text on the label; the main shortcut's note by default. */
     info?: string;
     optional?: boolean;
+    /** Label of the clear button of an optional shortcut; "Use tray only" by default. */
+    clearLabel?: string;
     /** Also checks conflicts with the other shortcuts (against `config`, else the saved settings). */
     target?: HotkeyTarget;
     /** An unsaved config draft to check conflicts against. */
     config?: AppConfig;
     onchange: (keys: string[]) => void | Promise<void>;
   }
-  let { keys, onchange, label, info, optional = false, target, config }: Props = $props();
+  let { keys, onchange, label, info, optional = false, clearLabel, target, config }: Props = $props();
 
   const validate = (combo: string[]) => api.validateHotkey(combo, target, config ? $state.snapshot(config) as AppConfig : undefined);
 
@@ -173,7 +175,7 @@
       <Button busy={starting || checking || saving} onclick={() => void startCapture()}>
         {t("settings.change")}
       </Button>
-      <Button variant="ghost" disabled={saving} onclick={reset}>{t(optional ? "settings.pause_clear" : "settings.reset_default")}</Button>
+      <Button variant="ghost" disabled={saving} onclick={reset}>{optional ? clearLabel ?? t("settings.pause_clear") : t("settings.reset_default")}</Button>
       {#if capturing}<Button variant="ghost" onclick={stopCapture}>{t("settings.capture_cancel")}</Button>{/if}
     </div>
   {/snippet}

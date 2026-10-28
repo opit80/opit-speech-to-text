@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
-  FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, RunningApp, StyleDefaults,
+  FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, RunningApp, StyleDefaults, TranslateLanguage,
 } from "./types";
 
 export const api = {
@@ -51,6 +51,8 @@ export const api = {
   /** Use `setActiveStyle` in app.svelte.ts, which serializes it with config saves. */
   setActiveStyle: (id: string) => invoke<AppConfig>("set_active_style", { id }),
   testCleanup: (config: CleanupConfig) => invoke<CleanupTestResult>("test_cleanup", { config }),
+  /** Supported translation target languages with English and Turkish names; no I/O. */
+  translateLanguages: () => invoke<TranslateLanguage[]>("translate_languages"),
   profilePresets: () => invoke<Profile[]>("profile_presets"),
 
   getUserRules: () => invoke<string>("get_user_rules"),

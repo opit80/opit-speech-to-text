@@ -1,5 +1,7 @@
 <script lang="ts">
   import CleanupMarker from "../lib/components/CleanupMarker.svelte";
+  import ModeBadge from "../lib/components/ModeBadge.svelte";
+  import { canRetryRow, isVoiceMode, originalOf } from "../lib/voice-modes";
   import { api } from "../lib/api";
   import { app, errorText, loadStyleDefaults, t } from "../lib/app.svelte";
   import { onHistoryAdded } from "../lib/events";
@@ -25,7 +27,8 @@
   let moreBusy = $state(false);
   let moreError = $state<string | null>(null);
   let hasMore = $state(false);
-  let copyingId = $state<number | null>(null);
+  // Which copy button is busy: "<id>" for the row text, "<id>:original" for the original text.
+  let copying = $state<string | null>(null);
   let retryingIds = $state<number[]>([]);
   let retryError = $state<string | null>(null);
   let copyError = $state<string | null>(null);
@@ -134,17 +137,21 @@
     }
   }
 
-  async function copy(row: Dictation) {
-    if (disposed || copyingId !== null) return;
-    copyingId = row.id;
+  function copy(row: Dictation) {
+    return copyText(String(row.id), rawIds.includes(row.id) ? row.raw_text : row.text);
+  }
+
+  async function copyText(key: string, text: string) {
+    if (disposed || copying !== null) return;
+    copying = key;
     copyError = null;
     try {
-      await navigator.clipboard.writeText(rawIds.includes(row.id) ? row.raw_text : row.text);
+      await navigator.clipboard.writeText(text);
       if (!disposed) toast(t("common.copied"));
     } catch (error) {
       if (!disposed) copyError = errorText(error);
     } finally {
-      if (!disposed) copyingId = null;
+      if (!disposed) copying = null;
     }
   }
 
@@ -286,11 +293,13 @@
       {:else if !rows.length && !listError}<p class="muted">{query ? t("history.no_results", { query }) : t("history.empty")}</p>{/if}
       <ul>
         {#each rows as row (row.id)}
+          {@const original = originalOf(row)}
           <li class:failed={row.status === "failed"}>
             <div class="metadata muted">
               <time datetime={new Date(row.created_at_ms).toISOString()}>{formatDateTime(row.created_at_ms, app.lang)}</time>
               <span>{row.mode === "ask" ? t("ask.history_agent", { agent: row.agent ?? "" }) : row.profile_id}</span>
-              <CleanupMarker status={row.cleanup_status} model={row.cleanup_model} styleId={row.cleanup_style_id} />
+              {#if isVoiceMode(row.mode)}<ModeBadge mode={row.mode} model={row.cleanup_model} />
+              {:else}<CleanupMarker status={row.cleanup_status} model={row.cleanup_model} styleId={row.cleanup_style_id} />{/if}
               {#if row.language}<span>{t("history.language", { language: row.language.toUpperCase() })}</span>{/if}
               <span>{t("history.latency", { seconds: formatSeconds(row.latency_ms, app.lang) })}</span>
               <span>{t("history.audio_length", { duration: formatClock(row.audio_ms) })}</span>
@@ -302,23 +311,44 @@
             <div class="transcript" data-transcript contenteditable="plaintext-only" role="textbox" aria-readonly="true"
               aria-label={t("history.transcript")} onbeforeinput={(event) => event.preventDefault()}>{rawIds.includes(row.id) ? row.raw_text : row.text}</div>
             {#if row.status !== "ok"}<p class="muted">{t(row.status === "empty" ? "dictation.empty" : "dictation.hallucination")}</p>{/if}
-            {#if row.raw_text !== row.text}
+            {#if row.raw_text !== row.text && !isVoiceMode(row.mode)}
               <Button variant="ghost" aria-pressed={rawIds.includes(row.id)} onclick={() => { rawIds = rawIds.includes(row.id) ? rawIds.filter((id) => id !== row.id) : [...rawIds, row.id]; }}>{t(row.mode === "ask" ? (rawIds.includes(row.id) ? "ask.answer" : "ask.request") : (rawIds.includes(row.id) ? "cleanup.final" : "cleanup.raw"))}</Button>
             {/if}
             {/if}
+            {#if original}
+              <details class="original">
+                <summary>{t("history.show_original")}</summary>
+                <dl>
+                  {#if original.source}
+                    <div>
+                      <dt>{t("history.original_text")}</dt>
+                      <dd>
+                        <span class="selectable">{original.source}</span>
+                        <Button variant="ghost" title={t("history.copy_original")} aria-label={t("history.copy_original")}
+                          busy={copying === `${row.id}:original`} disabled={copying !== null}
+                          onclick={() => void copyText(`${row.id}:original`, original.source ?? "")}><Icon name="copy" /></Button>
+                      </dd>
+                    </div>
+                  {/if}
+                  {#if original.instruction}
+                    <div><dt>{t("history.instruction")}</dt><dd><span class="selectable">{original.instruction}</span></dd></div>
+                  {/if}
+                </dl>
+              </details>
+            {/if}
             <div class="row actions">
               {#if row.status === "failed"}
-                <Button busy={retryingIds.includes(row.id)} disabled={mutationBusy || !row.audio_path || app.config?.history.enabled === false}
-                  onclick={() => void retry(row)}>{t("common.retry")}</Button>
+                {#if canRetryRow(row)}<Button busy={retryingIds.includes(row.id)} disabled={mutationBusy || !row.audio_path || app.config?.history.enabled === false}
+                  onclick={() => void retry(row)}>{t("common.retry")}</Button>{/if}
               {:else}
               <Button variant="ghost" title={t("common.copy")} aria-label={t("common.copy")}
-                busy={copyingId === row.id} disabled={copyingId !== null} onclick={() => void copy(row)}><Icon name="copy" /></Button>
+                busy={copying === String(row.id)} disabled={copying !== null} onclick={() => void copy(row)}><Icon name="copy" /></Button>
               {/if}
               {#if row.audio_path}
                 <Button variant="ghost" title={t("history.play")} aria-label={t("history.play")}
                   disabled={mutationBusy} onclick={() => void play(row)}><Icon name="play" /></Button>
               {/if}
-              {#if row.status !== "failed" && row.mode !== "ask"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
+              {#if row.status !== "failed" && row.mode === "dictation"}<Button variant="ghost" title={t("history.add_correction")} aria-label={t("history.add_correction")}
                 disabled={mutationBusy || rawIds.includes(row.id)} onpointerdown={(event) => event.preventDefault()}
                 onclick={(event) => addCorrection(row, event.currentTarget)}><Icon name="wand" /></Button>{/if}
               <Button variant="ghost" title={t("common.delete")} aria-label={t("common.delete")} disabled={mutationBusy}
@@ -370,4 +400,10 @@
   .failed-badge { display: inline-block; font-size: var(--text-sm); font-weight: 600; border: 1px solid currentColor; border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); margin-right: var(--space-2); }
   .actions { justify-content: flex-end; margin-top: var(--space-2); }
   audio { width: 100%; }
+  .original { margin-top: var(--space-2); }
+  .original summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); width: fit-content; }
+  .original dl { display: flex; flex-direction: column; gap: var(--space-2); margin: var(--space-2) 0 0; padding: var(--space-3); background: var(--surface-2); border-radius: var(--radius-sm); }
+  .original dt { font-size: var(--text-sm); font-weight: 600; }
+  .original dd { display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; }
+  .selectable { flex: 1; min-width: 0; user-select: text; white-space: pre-wrap; overflow-wrap: anywhere; }
 </style>

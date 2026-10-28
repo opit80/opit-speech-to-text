@@ -1,5 +1,7 @@
 <script lang="ts">
   import CleanupMarker from "../lib/components/CleanupMarker.svelte";
+  import ModeBadge from "../lib/components/ModeBadge.svelte";
+  import { isVoiceMode } from "../lib/voice-modes";
   import { api } from "../lib/api";
   import { app, errorText, loadStyleDefaults, setActiveStyle, t } from "../lib/app.svelte";
   import { onHistoryAdded } from "../lib/events";
@@ -245,7 +247,8 @@
                     <div class="metadata muted">
                       <time datetime={new Date(item.created_at_ms).toISOString()}>{formatDateTime(item.created_at_ms, app.lang)}</time>
                       <span>{formatSeconds(item.latency_ms, app.lang)}</span>
-              <CleanupMarker status={item.cleanup_status} model={item.cleanup_model} styleId={item.cleanup_style_id} />
+              {#if isVoiceMode(item.mode)}<ModeBadge mode={item.mode} model={item.cleanup_model} />
+              {:else}<CleanupMarker status={item.cleanup_status} model={item.cleanup_model} styleId={item.cleanup_style_id} />{/if}
                     </div>
                     <p class="transcript" class:muted={item.status !== "ok"}>
                       {#if item.status === "failed"}{t("history.failed")} — {t(`error.kind.${item.error_code ?? "rejected"}`)}{:else}

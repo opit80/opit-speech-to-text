@@ -180,6 +180,10 @@ pub fn system_prompt(config: &CleanupConfig, language: &str, rules: &RuleSet, co
 }
 
 pub fn strip_answer(answer: &str, input: &str) -> Result<String, CleanupError> {
+    strip_answer_with_limit(answer, input.chars().count().saturating_mul(3).saturating_add(120))
+}
+
+pub fn strip_answer_with_limit(answer: &str, limit: usize) -> Result<String, CleanupError> {
     let mut answer = answer.trim();
     if answer.starts_with("```") && answer.ends_with("```") && answer.len() >= 6 {
         let inner = &answer[3..answer.len() - 3];
@@ -198,7 +202,7 @@ pub fn strip_answer(answer: &str, input: &str) -> Result<String, CleanupError> {
             break;
         }
     }
-    if answer.is_empty() || answer.chars().count() > input.chars().count().saturating_mul(3) + 120 {
+    if answer.is_empty() || answer.chars().count() > limit {
         return Err(CleanupError::BadResponse);
     }
     Ok(answer.into())
@@ -282,6 +286,17 @@ impl CleanupClient {
             "model": self.config.model, "temperature": 0, "max_tokens": 4096, "messages": messages,
         }))
         .await
+    }
+
+    /// Voice modes share connection, timeout and reasoning settings, without cleanup's length ratio.
+    pub async fn complete_mode(&self, messages: &[ChatMessage]) -> Result<String, CleanupError> {
+        let mut body = serde_json::json!({
+            "model": self.config.model, "temperature": 0, "max_tokens": 16384, "messages": messages,
+        });
+        if let Some(effort) = self.config.reasoning_effort.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            body["reasoning_effort"] = effort.into();
+        }
+        self.send_chat(body).await
     }
 
     async fn send_chat(&self, body: serde_json::Value) -> Result<String, CleanupError> {

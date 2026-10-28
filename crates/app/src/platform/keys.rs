@@ -143,6 +143,13 @@ pub fn track_shortcuts(
         if events.contains(&Some(HotkeyEvent::ComboDown)) {
             actions.push(action.clone());
         }
+        if events.contains(&Some(HotkeyEvent::ComboUp)) {
+            match action {
+                HotkeyEvent::Edit => actions.push(HotkeyEvent::EditUp),
+                HotkeyEvent::Translate => actions.push(HotkeyEvent::TranslateUp),
+                _ => {}
+            }
+        }
         handled |= events.iter().flatten().any(|e| matches!(e, HotkeyEvent::ComboDown | HotkeyEvent::ComboUp));
     }
     let mut events: Vec<_> = track_transition(main, vk, down, key_is_down).into_iter().flatten().collect();
@@ -157,6 +164,19 @@ pub fn track_shortcuts(
 mod tests {
     use super::*;
     use HotkeyEvent::*;
+
+    #[test]
+    fn voice_shortcuts_deliver_down_and_up_without_lone_ctrl() {
+        for (action, release) in [(Edit, EditUp), (Translate, TranslateUp)] {
+            let mut main = KeyTracker::new(vec![0x7C]);
+            let mut shortcuts = vec![(action.clone(), KeyTracker::new(vec![0xA2]))];
+            let mut events = Vec::new();
+            for down in [true, true, false] {
+                events.extend(track_shortcuts(&mut main, &mut shortcuts, 0xA2, down, |_| true));
+            }
+            assert_eq!(events, [action, release]);
+        }
+    }
 
     #[test]
     fn every_auxiliary_action_fires_once_without_a_lone_ctrl_stop() {

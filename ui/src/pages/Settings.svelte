@@ -4,12 +4,12 @@
   import AskSettings from "../lib/components/AskSettings.svelte";
   import CleanupSettings from "../lib/components/CleanupSettings.svelte";
   import CleanupStyles from "../lib/components/CleanupStyles.svelte";
-  import { untrack } from "svelte";
+  import { tick, untrack } from "svelte";
   import { api } from "../lib/api";
   import { app, checkForUpdates, errorText, saveConfig, t } from "../lib/app.svelte";
   import type { MessageKey } from "../lib/i18n";
   import { toast } from "../lib/toast.svelte";
-  import type { AppConfig, HotkeyMode, MediaMode, OverlayPosition, PasteAfter, PasteMethod, Theme } from "../lib/types";
+  import type { AppConfig, HotkeyMode, MediaMode, OverlayPosition, PasteAfter, PasteMethod, Theme, TranslateLanguage } from "../lib/types";
   import { duckPercentRange, parseNumberInput } from "../lib/number-input";
   import Banner from "../lib/components/Banner.svelte";
   import Button from "../lib/components/Button.svelte";
@@ -25,6 +25,7 @@
   import UpdateProgress from "../lib/components/UpdateProgress.svelte";
   import { statusMessage } from "../lib/update";
   import { speechDetectionDefaults } from "../lib/speech-detection";
+  import { cleanupConnectionReady, languageOptions as translateLanguageOptions, voiceModesInUse } from "../lib/voice-modes";
 
   let errors = $state<Record<string, string | null>>({});
   // Bumped after a failed change: the controls re-read the live value and drop what the user picked.
@@ -113,6 +114,8 @@
       historyEnabled: c.history.enabled,
       saveAudio: c.history.save_audio,
       checkUpdates: c.ui.check_updates,
+      translateLanguage: c.translate.target_language,
+      translateModel: c.translate.model ?? "",
     };
   });
 
@@ -132,6 +135,59 @@
     }
   }
 
+  // ---- Voice edit and translation
+  let languages = $state<TranslateLanguage[]>([]);
+  // Whether the cleanup connection's key is stored; null until checked (no hint before that).
+  let cleanupKey = $state<{ ref: string; stored: boolean } | null>(null);
+  let cleanupGroup = $state<HTMLDetailsElement>();
+  let keyRequest = 0;
+  const translateOptions = $derived(translateLanguageOptions(languages, app.lang, config?.translate.target_language ?? "en"));
+
+  async function loadLanguages() {
+    errors.translate_languages = null;
+    try {
+      const list = await api.translateLanguages();
+      if (!disposed) languages = list;
+    } catch (e) {
+      if (!disposed) errors.translate_languages = errorText(e);
+    }
+  }
+
+  // Re-checked after every config change, so saving a key in AI cleanup clears the hint.
+  $effect(() => {
+    const ref = app.config?.cleanup.api_key_ref ?? null;
+    const request = ++keyRequest;
+    if (!ref) return;
+    untrack(() => {
+      api.hasApiKey(ref)
+        .then((stored) => { if (!disposed && request === keyRequest) cleanupKey = { ref, stored }; })
+        .catch(() => {});
+    });
+  });
+
+  const cleanupMissing = $derived.by(() => {
+    if (!config || !voiceModesInUse(config)) return false;
+    const ref = config.cleanup.api_key_ref;
+    if (ref !== null && cleanupKey?.ref !== ref) return false;
+    return !cleanupConnectionReady(config.cleanup, cleanupKey?.stored ?? false);
+  });
+
+  /** Blank uses the cleanup model; afterwards the input shows what Rust stored. */
+  async function saveTranslateModel(input: HTMLInputElement) {
+    const model = input.value.trim() || null;
+    await save("translate_model", (c) => { c.translate.model = model; });
+    if (!disposed && app.config) input.value = app.config.translate.model ?? "";
+  }
+
+  async function openCleanup() {
+    if (!cleanupGroup) return;
+    cleanupGroup.open = true;
+    await tick();
+    const summary = cleanupGroup.querySelector("summary");
+    summary?.scrollIntoView({ block: "start" });
+    summary?.focus();
+  }
+
   // ---- Microphone
   async function loadMics() {
     if (disposed) return;
@@ -149,7 +205,7 @@
   }
 
   $effect(() => {
-    untrack(() => void loadMics());
+    untrack(() => { void loadMics(); void loadLanguages(); });
     return () => {
       disposed = true;
     };
@@ -300,6 +356,25 @@
           info={t("settings.style_cycle_shortcut_note")}
           onchange={(keys) => save("style_cycle_keys", (c) => { c.hotkey.style_cycle_keys = keys; })} />
         {@render fieldError("style_cycle_keys")}
+        <HotkeyInput keys={config.hotkey.edit_keys} optional target="edit" label={t("settings.edit_shortcut")}
+          info={t("settings.edit_shortcut_note")} clearLabel={t("settings.shortcut_off")}
+          onchange={(keys) => save("edit_keys", (c) => { c.hotkey.edit_keys = keys; })} />
+        {@render fieldError("edit_keys")}
+        <HotkeyInput keys={config.hotkey.translate_keys} optional target="translate" label={t("settings.translate_shortcut")}
+          info={t("settings.translate_shortcut_note")} clearLabel={t("settings.shortcut_off")}
+          onchange={(keys) => save("translate_keys", (c) => { c.hotkey.translate_keys = keys; })} />
+        {@render fieldError("translate_keys")}
+        {#if config.hotkey.translate_keys.length}
+          <Select label={t("settings.translate_language")} options={translateOptions} value={view.translateLanguage}
+            onchange={(v) => void save("translate_language", (c) => { c.translate.target_language = v; })} />
+          {@render fieldError("translate_language")}
+          {@render fieldError("translate_languages")}
+        {/if}
+        {#if cleanupMissing}
+          <Banner tone="warning">{t("settings.voice_modes_setup")}
+            {#snippet action()}<Button onclick={() => void openCleanup()}>{t("settings.voice_modes_open_cleanup")}</Button>{/snippet}
+          </Banner>
+        {/if}
         <Select label={t("settings.mode")} options={modeOptions} value={view.mode}
           info={config.hotkey.keys.includes("Escape") ? t("guide.cancel_from_home") : config.hotkey.mode === "toggle" ? t("settings.mode_toggle_hint") : undefined}
           onchange={(v) => void save("mode", (c) => { c.hotkey.mode = v as HotkeyMode; })} />
@@ -414,9 +489,22 @@
         <div class="stack group-body"><AskSettings /></div>
       </details>
 
-      <details class="card settings-group">
+      <details class="card settings-group" bind:this={cleanupGroup}>
         <summary>{t("cleanup.title")}</summary>
-        <div class="stack group-body"><CleanupSettings /><CleanupStyles /></div>
+        <div class="stack group-body">
+          <CleanupSettings /><CleanupStyles />
+          {#if config.hotkey.translate_keys.length}
+            <div class="stack translate-model">
+              <Field label={t("translate.model")} info={t("translate.model_hint")} error={errors.translate_model}>
+                {#snippet children(id, describedBy)}
+                  <input {id} value={view.translateModel} aria-describedby={describedBy} placeholder={config.cleanup.model}
+                    autocomplete="off" spellcheck="false"
+                    onchange={(e) => void saveTranslateModel(e.currentTarget)} />
+                {/snippet}
+              </Field>
+            </div>
+          {/if}
+        </div>
       </details>
 
       <details class="card settings-group">
@@ -482,6 +570,8 @@
   .mic-row { display: flex; align-items: flex-end; gap: var(--space-2); }
   .grow { flex: 1; min-width: 0; }
   .number { width: 120px; }
+  .translate-model { border-top: 1px solid var(--border); padding-top: var(--space-4); }
+  .translate-model input { width: 100%; }
   .paths { display: flex; flex-direction: column; gap: var(--space-3); margin: 0; }
   dt { font-weight: 600; }
   dd { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: 0; }

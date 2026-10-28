@@ -362,6 +362,8 @@ impl AppCore {
             "dictation" => &mut config.hotkey.keys,
             "pause" => &mut config.hotkey.pause_keys,
             "ask" => &mut config.hotkey.ask_keys,
+            "edit" => &mut config.hotkey.edit_keys,
+            "translate" => &mut config.hotkey.translate_keys,
             "style_cycle" => &mut config.hotkey.style_cycle_keys,
             _ => {
                 let id = target
@@ -388,6 +390,8 @@ impl AppCore {
     pub fn apply_hotkey(&self, config: &AppConfig) {
         let shortcuts = std::iter::once((HotkeyEvent::Pause, config.hotkey.pause_keys.clone()))
             .chain(std::iter::once((HotkeyEvent::Ask, config.hotkey.ask_keys.clone())))
+            .chain(std::iter::once((HotkeyEvent::Edit, config.hotkey.edit_keys.clone())))
+            .chain(std::iter::once((HotkeyEvent::Translate, config.hotkey.translate_keys.clone())))
             .chain(std::iter::once((HotkeyEvent::StyleCycle, config.hotkey.style_cycle_keys.clone())))
             .chain(config.cleanup.styles.iter().map(|s| (HotkeyEvent::Style(s.id.clone()), s.hotkey.clone())))
             .collect::<Vec<_>>();
@@ -721,6 +725,9 @@ impl AppCore {
             .store()
             .get(id)?
             .ok_or_else(|| CommandError::new("unavailable", "history row is missing"))?;
+        if matches!(row.mode.as_str(), "edit" | "translate") {
+            return Err(CommandError::new("invalid_input", "voice edits and translations must be recorded again"));
+        }
         if row.status != opit_core::pipeline::TranscriptStatus::Failed {
             return Err(CommandError::new("invalid_input", "only failed dictations can be retried"));
         }
@@ -1232,13 +1239,17 @@ mod tests {
     fn style_shortcut_edits_register_and_reject_conflicts_before_writing() {
         let f = fixture();
         let mut config = f.core.config();
+        config.hotkey.edit_keys = vec!["F18".into()];
+        config.hotkey.translate_keys = vec!["F19".into()];
         config.hotkey.style_cycle_keys = vec!["F16".into()];
         config.cleanup.styles.iter_mut().find(|s| s.id == "formal").unwrap().hotkey = vec!["F17".into()];
         let saved = f.core.save_config(config).unwrap();
         let shortcuts = f.hotkey.shortcuts.lock().unwrap().clone();
+        assert!(shortcuts.contains(&(HotkeyEvent::Edit, vec!["F18".into()])));
+        assert!(shortcuts.contains(&(HotkeyEvent::Translate, vec!["F19".into()])));
         assert!(shortcuts.contains(&(HotkeyEvent::StyleCycle, vec!["F16".into()])));
         assert!(shortcuts.contains(&(HotkeyEvent::Style("formal".into()), vec!["F17".into()])));
-        for target in ["dictation", "pause", "ask", "style_cycle", "style:clean"] {
+        for target in ["dictation", "pause", "ask", "style_cycle", "edit", "translate", "style:clean"] {
             assert_eq!(f.core.validate_shortcut(vec!["F17".into()], target, None).unwrap_err().code, "invalid_input");
         }
         assert!(f.core.validate_shortcut(vec!["F17".into()], "style:formal", None).is_ok());
@@ -1356,6 +1367,8 @@ mod tests {
         let f = fixture();
         let history = f.core.history.as_ref().unwrap();
         let entry = |text: &'static str| NewDictation {
+            source_text: None,
+            instruction: None,
             mode: "dictation",
             agent: None,
             created_at_ms: 1,
@@ -1406,6 +1419,8 @@ mod tests {
         let db = f.core.paths.root.join("retry.db");
         let history = Arc::new(HistoryService::open(&db, f.core.paths.audio.clone()).unwrap());
         let entry = NewDictation {
+            source_text: None,
+            instruction: None,
             mode: "dictation",
             agent: None,
             created_at_ms: 123,
@@ -1428,6 +1443,11 @@ mod tests {
         let loaded = f.core.history_retry_audio(id).unwrap();
         assert_eq!((loaded.samples.len(), loaded.audio_ms), (16_000, 1000));
         let history = f.core.history.as_ref().unwrap();
+        for mode in ["edit", "translate"] {
+            let mode_entry = NewDictation { mode, ..entry };
+            let mode_id = history.record(&mode_entry, Some(&audio), 1000).unwrap();
+            assert_eq!(f.core.history_retry_audio(mode_id).unwrap_err().code, "invalid_input");
+        }
         let claim = history.claim_retry(id).unwrap();
         assert!(history.claim_retry(id).is_none());
         drop(claim);
@@ -1485,6 +1505,8 @@ mod tests {
         let history = f.core.history.clone().unwrap();
         for i in 0..3 {
             let entry = NewDictation {
+                source_text: None,
+                instruction: None,
                 mode: "dictation",
                 agent: None,
                 created_at_ms: i,

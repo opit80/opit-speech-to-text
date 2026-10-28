@@ -14,6 +14,7 @@ pub mod pipeline;
 pub mod provider;
 pub mod rules;
 pub mod text;
+pub mod voice_modes;
 
 pub mod ask;
 pub mod cleanup;

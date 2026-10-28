@@ -1,5 +1,6 @@
 //! Configurable clipboard shortcuts or Unicode typing, with shared foreground/UIPI guards.
 
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,14 +16,17 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
-    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_INSERT, VK_LWIN, VK_MENU, VK_RETURN, VK_RWIN, VK_SHIFT,
-    VK_V,
+    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_INSERT, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId};
 use windows::core::Owned;
 
 use super::clipboard::{Clipboard, Snapshot, sequence_number};
-use crate::platform::{CLIPBOARD_RESTORE_DELAY, PasteOutcome, PasteRequest, Paster};
+use crate::platform::{CLIPBOARD_RESTORE_DELAY, PasteOutcome, PasteRequest, Paster, SelectionError};
+
+// Selection capture and insertion share the clipboard, including delayed restoration.
+static CLIPBOARD_OPERATION: Mutex<()> = Mutex::new(());
 
 /// Longest wait for the user to let go of modifiers before sending insertion input.
 const MODIFIER_WAIT: Duration = Duration::from_secs(1);
@@ -43,11 +47,69 @@ impl WinPaster {
 }
 
 impl Paster for WinPaster {
+    fn read_selection(&self) -> Result<Option<String>, SelectionError> {
+        let _operation = CLIPBOARD_OPERATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: plain foreground query; the handle is used only on this blocking thread.
+        let target = unsafe { GetForegroundWindow() };
+        if target.is_invalid() || selection_blocked() {
+            return Ok(None);
+        }
+        let mut target_pid = 0;
+        // SAFETY: the out-pointer is valid; target is only queried.
+        unsafe {
+            GetWindowThreadProcessId(target, Some(&mut target_pid));
+        }
+        let clipboard = Clipboard::open().map_err(|_| SelectionError::Unavailable)?;
+        let snapshot = clipboard.snapshot();
+        let sequence = sequence_number();
+        drop(clipboard);
+        // Fail closed if focus changed while delayed clipboard formats were rendered.
+        if unsafe { GetForegroundWindow() } != target || selection_blocked() {
+            return Ok(None);
+        }
+        let modifiers: Vec<_> = [VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN]
+            .into_iter()
+            .filter(|vk| unsafe { GetAsyncKeyState(i32::from(vk.0)) } as u16 & 0x8000 != 0)
+            .collect();
+        // One atomic input batch neutralizes held shortcut modifiers and restores them. This
+        // also supports modifier-based push-to-talk without waiting for the release to copy.
+        let inputs = copy_inputs(&modifiers);
+        let sent = send_inputs(&inputs);
+        if !sent {
+            // A partial batch may have released a physically held shortcut modifier.
+            let restore: Vec<_> = modifiers.iter().map(|&vk| key_input(vk, false)).collect();
+            let _ = send_inputs(&restore);
+        }
+        let deadline = Instant::now() + Duration::from_millis(400);
+        loop {
+            let changed = sequence_number();
+            if changed != sequence {
+                let clipboard = Clipboard::open().map_err(|_| SelectionError::Unavailable)?;
+                // Preserve an unrelated user copy and never mistake it for the selection.
+                if sequence_number() != changed || !clipboard.owned_by_process(target_pid) {
+                    return Err(SelectionError::Unavailable);
+                }
+                let result = if sent && unsafe { GetForegroundWindow() } == target {
+                    clipboard.selection_text()
+                } else {
+                    Err(SelectionError::Unavailable)
+                };
+                clipboard.restore(&snapshot).map_err(|_| SelectionError::Unavailable)?;
+                return result;
+            }
+            if Instant::now() >= deadline {
+                return if sent { Ok(None) } else { Err(SelectionError::Unavailable) };
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn can_auto_paste(&self) -> bool {
         !foreground_is_not_a_paste_target()
     }
 
     fn paste(&self, text: &str, request: PasteRequest) -> PasteOutcome {
+        let _operation = CLIPBOARD_OPERATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if request.method == PasteMethod::Type {
             if !request.auto_paste {
                 return clipboard_only(text);
@@ -110,6 +172,10 @@ fn clipboard_only(text: &str) -> PasteOutcome {
 
 fn insertion_blocked() -> bool {
     foreground_is_not_a_paste_target() || input_blocked(foreground_is_higher_integrity(), has_foreground_window())
+}
+
+fn selection_blocked() -> bool {
+    insertion_blocked() || foreground_integrity_rid().is_some_and(|rid| rid >= 0x3000)
 }
 
 /// Whether insertion input must be skipped. Fail closed: a foreground window whose integrity we cannot
@@ -212,6 +278,15 @@ fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
 
 fn chord_inputs(keys: &[VIRTUAL_KEY]) -> Vec<INPUT> {
     keys.iter().map(|&vk| key_input(vk, false)).chain(keys.iter().rev().map(|&vk| key_input(vk, true))).collect()
+}
+
+fn copy_inputs(held_modifiers: &[VIRTUAL_KEY]) -> Vec<INPUT> {
+    held_modifiers
+        .iter()
+        .map(|&vk| key_input(vk, true))
+        .chain(chord_inputs(&[VK_CONTROL, VK_C]))
+        .chain(held_modifiers.iter().map(|&vk| key_input(vk, false)))
+        .collect()
 }
 
 fn paste_inputs(method: PasteMethod) -> Vec<INPUT> {
@@ -366,6 +441,25 @@ fn token_integrity_rid(process: HANDLE) -> Option<u32> {
 mod tests {
     use super::super::clipboard::{CF_UNICODETEXT, register_format, utf16_bytes};
     use super::*;
+
+    #[test]
+    fn copy_neutralizes_and_restores_held_shortcut_modifiers_in_one_batch() {
+        let held = [VK_RCONTROL, VK_RSHIFT];
+        let copy = copy_inputs(&held);
+        assert_eq!(
+            copy.iter().map(input_signature).collect::<Vec<_>>(),
+            vec![
+                (VK_RCONTROL.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_RSHIFT.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_CONTROL.0, 0, 0),
+                (VK_C.0, 0, 0),
+                (VK_C.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_CONTROL.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_RCONTROL.0, 0, 0),
+                (VK_RSHIFT.0, 0, 0),
+            ]
+        );
+    }
 
     fn input_signature(input: &INPUT) -> (u16, u16, u32) {
         assert_eq!(input.r#type, INPUT_KEYBOARD);

@@ -118,6 +118,21 @@ export interface RunningApp {
   title: string;
 }
 
+/** Dictate-and-translate; uses the AI cleanup connection. */
+export interface TranslateConfig {
+  /** One of the `translate_languages()` codes; Rust stores anything else as "en". */
+  target_language: string;
+  /** null uses `cleanup.model`; Rust stores a blank string as null. */
+  model: string | null;
+}
+
+/** `translate_languages()`: the supported target languages in their fixed order. */
+export interface TranslateLanguage {
+  code: string;
+  name_en: string;
+  name_tr: string;
+}
+
 export interface AppConfig {
   local: LocalConfig;
   ask: AskConfig;
@@ -132,6 +147,10 @@ export interface AppConfig {
     ask_keys: string[];
     /** Cycles through the cleanup styles with `in_cycle`; empty disables it. */
     style_cycle_keys: string[];
+    /** Voice edit of the selected text (or new text at the cursor); empty disables it. */
+    edit_keys: string[];
+    /** Dictate, then paste the text translated into `translate.target_language`; empty disables it. */
+    translate_keys: string[];
     mode: HotkeyMode;
     enabled: boolean;
   };
@@ -143,6 +162,7 @@ export interface AppConfig {
     min_speech_seconds: number;
   };
   paste: PasteConfig;
+  translate: TranslateConfig;
   media: MediaConfig;
   app_rules: AppRulesConfig;
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
@@ -169,8 +189,11 @@ export interface AppInfo {
 
 export type TranscriptStatus = "ok" | "empty" | "hallucination" | "failed";
 
+/** "edit" = voice edit of the selected text, "translate" = dictate and translate. */
+export type DictationMode = "dictation" | "ask" | "edit" | "translate";
+
 export interface Dictation {
-  mode: "dictation" | "ask";
+  mode: DictationMode;
   agent: string | null;
   id: number;
   created_at_ms: number;
@@ -187,6 +210,10 @@ export interface Dictation {
   audio_path: string | null;
   error_code: ErrorKind | null;
   language: string | null;
+  /** Edit: the original selection (null when new text was written). Translate: the source transcript. Else null. */
+  source_text: string | null;
+  /** Edit: the spoken instruction. Else null. */
+  instruction: string | null;
 }
 
 export type RuleKind = "correction" | "replacement" | "casing" | "numbers";
@@ -318,7 +345,7 @@ export interface StyleDefaults {
 }
 
 /** `validate_hotkey` targets. */
-export type HotkeyTarget = "dictation" | "pause" | "ask" | "style_cycle" | `style:${string}`;
+export type HotkeyTarget = "dictation" | "pause" | "ask" | "style_cycle" | "edit" | "translate" | `style:${string}`;
 
 export interface CleanupConfig {
   enabled: boolean;
