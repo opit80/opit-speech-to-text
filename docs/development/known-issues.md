@@ -415,3 +415,8 @@ The ignored named-pipe roundtrip does not run in CI. On Windows, expect exactly 
 ```sh
 cargo test -p opit-ipc transport::windows::tests::private_pipe_roundtrip -- --exact --ignored
 ```
+
+## Layout Task 11 — retained finding and pending Windows acceptance
+
+- Retained, not introduced by the move: `LocalService::initialize` checks `closed` while holding the session lock, but `shutdown` sets `closed` without taking that lock. A shutdown landing between the check and `launch` lets one local server start. `shutdown` then waits for the lock in `stop`, so the process is removed rather than orphaned. The cost is one needless launch during exit. `shutdown_finishes_while_initialization_is_blocked_and_prevents_late_launch` blocks earlier and does not cover this interleaving.
+- On Windows, run `cargo test -p opit-speech-to-text --lib local::` and confirm the local model still downloads, loads, idles out and stops on exit.

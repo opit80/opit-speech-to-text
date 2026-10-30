@@ -1,4 +1,4 @@
-use super::{LocalError, Result};
+use crate::local::{LocalError, Result};
 use std::net::TcpListener;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};

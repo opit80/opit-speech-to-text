@@ -8,36 +8,7 @@ pub struct Artifact {
     pub size: u64,
     pub sha256: &'static str,
 }
-pub const BUILDS: &[Artifact] = &[
-    Artifact {
-        id: "blas",
-        file: "whisper-blas-bin-x64.zip",
-        url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-blas-bin-x64.zip",
-        size: 21715607,
-        sha256: "b1158bd10edf92c9799149a6fc5d3e58da3f495241d6fb3423088130e88ffbf3",
-    },
-    Artifact {
-        id: "cpu",
-        file: "whisper-bin-x64.zip",
-        url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-x64.zip",
-        size: 8928640,
-        sha256: "6ba69e3482d7826214f90a6a9c84ca07782aec1e1d0c6a7c30c994fd5d816ccb",
-    },
-    Artifact {
-        id: "cuda12",
-        file: "whisper-bin-win-cuda-12.4.0-x64.zip",
-        url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cuda-12.4.0-x64.zip",
-        size: 684913404,
-        sha256: "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a",
-    },
-    Artifact {
-        id: "cuda11",
-        file: "whisper-bin-win-cuda-11.8.0-x64.zip",
-        url: "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cuda-11.8.0-x64.zip",
-        size: 284761231,
-        sha256: "e81c86c542be6e3d7b7245392d4e1c52ab6e5c61dbe38721754bc0ab59d4d027",
-    },
-];
+pub use super::runtime::BUILDS;
 pub const MODELS: &[Artifact] = &[
     Artifact {
         id: "ggml-tiny-q5_1.bin",

@@ -1,5 +1,5 @@
 //! Windows hardware detection through supervised, time-bounded probes.
-use crate::local::hardware::{Hardware, auto_threads};
+use crate::local::runtime::hardware::{Hardware, auto_threads};
 use std::time::Duration;
 
 /// PowerShell/CIM start-up can take many seconds on a busy, low-memory machine. The probe always

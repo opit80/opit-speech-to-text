@@ -1,13 +1,13 @@
 //! Opit Speech to Text's offline model installation and shared server supervisor.
 pub mod catalogue;
 mod download;
-pub(crate) mod hardware;
-mod server;
+pub(crate) mod runtime;
 
 use crate::settings::SettingsHandle;
 use catalogue::{Artifact, BUILDS, MODELS};
 use opit_core::config::LocalConfig;
 use opit_core::provider::{Profile, ProviderError, RawTranscript, TranscribeRequest, Transcriber};
+use runtime::{hardware, server};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -204,7 +204,7 @@ impl LocalService {
             }
         }
         for build in BUILDS {
-            if download::find_server(&root.join("bin").join(build.id))?.is_some() {
+            if runtime::find_server(&root.join("bin").join(build.id))?.is_some() {
                 installed.push(build.id.to_owned());
             }
         }
@@ -264,7 +264,7 @@ impl LocalService {
                     if pending.exists() {
                         std::fs::remove_dir_all(&pending).map_err(|_| LocalError::Io)?;
                     }
-                    let result = download::extract(&destination, &pending, &rx);
+                    let result = runtime::extract(&destination, &pending, &rx);
                     let _ = std::fs::remove_file(&destination);
                     result?;
                     if *rx.borrow() {
@@ -364,7 +364,7 @@ impl LocalService {
             drop(previous);
             service.initialize(
                 || {
-                    let exe = download::find_server(&root.join("bin").join(&config2.build))?
+                    let exe = runtime::find_server(&root.join("bin").join(&config2.build))?
                         .ok_or(LocalError::NotInstalled)?;
                     let model_path = root.join("models").join(model.file);
                     if !model_path.is_file() {
