@@ -359,5 +359,7 @@ async fn subtitle_cleanup_http_preserves_markers_and_falls_back_on_shortening() 
         let requests = server.received_requests().await.unwrap();
         let request: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
         assert!(request["messages"][0]["content"].as_str().unwrap().contains("Never merge, split, drop, shorten"));
+        assert_eq!(request["messages"][1]["content"], "[100:800] hello there");
+        assert_eq!(request["max_tokens"], 2048);
     }
 }

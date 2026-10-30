@@ -714,6 +714,7 @@ export const tr: Record<MessageKey, string> = {
   "error.kind.invalid_key": "API anahtarı geçersiz",
   "error.kind.too_large": "Kayıt sağlayıcı sınırını aşıyor",
   "error.kind.rate_limited": "Sağlayıcı istek sınırına takıldı",
+  "error.kind.payment_required": "Sağlayıcı hesabında bakiye veya ödeme sorunu var",
   "error.kind.server": "Sağlayıcı sunucu hatası",
   "error.kind.network": "Ağ hatası",
   "error.kind.timeout": "İstek zaman aşımına uğradı",

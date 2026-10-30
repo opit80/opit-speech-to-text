@@ -356,7 +356,7 @@ mod tests {
             panic!("synthetic recording worker panic");
         }));
         assert!(result.is_err());
-        assert_eq!(*media.calls.lock().unwrap(), [Some((MediaMode::Pause, 20)), None]);
+        assert_eq!(*media.calls.lock().unwrap(), [Some((MediaMode::Duck, 50)), None]);
         let config = MediaConfig { enabled: false, ..Default::default() };
         drop(MediaGuard::engage(media.clone(), &config));
         assert_eq!(media.calls.lock().unwrap().len(), 2);

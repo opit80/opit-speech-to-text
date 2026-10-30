@@ -175,15 +175,10 @@ impl Lang {
     }
 
     pub fn cleanup_failed(self, error: opit_core::cleanup::CleanupError, clipboard_only: bool) -> String {
-        use opit_core::cleanup::CleanupError::*;
-        let reason = match error {
-            MissingKey => self.error(ErrorKind::MissingKey),
-            InvalidKey => self.error(ErrorKind::InvalidKey),
-            Network => self.error(ErrorKind::Network),
-            Timeout => self.error(ErrorKind::Timeout),
-            Rejected => self.error(ErrorKind::Rejected),
-            BadResponse => self.error(ErrorKind::BadResponse),
-            Truncated => self.answer_truncated(),
+        let reason = if error == opit_core::cleanup::CleanupError::Truncated {
+            self.answer_truncated()
+        } else {
+            self.error(error.into())
         };
         let destination = if clipboard_only {
             self.pick("Original text on clipboard", "Özgün metin panoda")
@@ -278,6 +273,10 @@ impl Lang {
         match kind {
             MissingKey => self.pick("No API key for this profile", "Bu profil için API anahtarı yok"),
             InvalidKey => self.pick("API key is invalid", "API anahtarı geçersiz"),
+            PaymentRequired => self.pick(
+                "The provider account has a billing or credit problem",
+                "Sağlayıcı hesabında bakiye veya ödeme sorunu var",
+            ),
             TooLarge => self.pick("Recording exceeds the provider limit", "Kayıt sağlayıcı sınırını aşıyor"),
             RateLimited => self.pick("Provider is rate limiting", "Sağlayıcı istek sınırına takıldı"),
             Server => self.pick("Provider server error", "Sağlayıcı sunucu hatası"),
@@ -431,6 +430,9 @@ mod tests {
         for error in [
             CleanupError::MissingKey,
             CleanupError::InvalidKey,
+            CleanupError::PaymentRequired,
+            CleanupError::RateLimited,
+            CleanupError::Server,
             CleanupError::Network,
             CleanupError::Timeout,
             CleanupError::Rejected,

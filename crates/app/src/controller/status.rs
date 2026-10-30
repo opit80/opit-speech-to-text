@@ -9,6 +9,7 @@ use serde::Serialize;
 pub enum ErrorKind {
     MissingKey,
     InvalidKey,
+    PaymentRequired,
     TooLarge,
     RateLimited,
     Server,
@@ -24,9 +25,10 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub const ALL: [ErrorKind; 14] = [
+    pub const ALL: [ErrorKind; 15] = [
         ErrorKind::MissingKey,
         ErrorKind::InvalidKey,
+        ErrorKind::PaymentRequired,
         ErrorKind::TooLarge,
         ErrorKind::RateLimited,
         ErrorKind::Server,
@@ -44,6 +46,23 @@ impl ErrorKind {
     /// Errors the user fixes in Settings rather than by trying again.
     pub fn needs_settings(self) -> bool {
         matches!(self, ErrorKind::MissingKey | ErrorKind::InvalidKey | ErrorKind::Credentials)
+    }
+}
+
+impl From<opit_core::cleanup::CleanupError> for ErrorKind {
+    fn from(error: opit_core::cleanup::CleanupError) -> Self {
+        use opit_core::cleanup::CleanupError::*;
+        match error {
+            MissingKey => Self::MissingKey,
+            InvalidKey => Self::InvalidKey,
+            PaymentRequired => Self::PaymentRequired,
+            RateLimited => Self::RateLimited,
+            Server => Self::Server,
+            Network => Self::Network,
+            Timeout => Self::Timeout,
+            Rejected => Self::Rejected,
+            BadResponse | Truncated => Self::BadResponse,
+        }
     }
 }
 

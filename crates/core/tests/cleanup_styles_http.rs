@@ -31,5 +31,5 @@ async fn named_style_resolves_model_and_language_prompt_with_shared_glossary() {
     assert!(prompt.contains("Opit"));
     assert!(prompt.contains("Shared context"));
     let client = CleanupClient::new(config, None).unwrap();
-    assert!(client.clean("Some dictated material.", &prompt).await.is_ok());
+    assert!(client.clean("Some dictated result.", &prompt).await.is_ok());
 }

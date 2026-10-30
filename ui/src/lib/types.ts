@@ -5,7 +5,7 @@ export type Lang = "en" | "tr";
 export type Theme = "system" | "light" | "dark";
 
 export type ErrorKind =
-  | "missing_key" | "invalid_key" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
+  | "missing_key" | "invalid_key" | "payment_required" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
   | "bad_response" | "rejected" | "audio" | "microphone" | "credentials" | "paste" | "cancelled";
 
 export type DictationState = "idle" | "recording" | "transcribing" | "cleaning" | "asking" | "pasting" | "cancelled" | "error";

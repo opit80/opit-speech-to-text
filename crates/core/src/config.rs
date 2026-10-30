@@ -90,8 +90,8 @@ pub enum HotkeyMode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaMode {
-    #[default]
     Pause,
+    #[default]
     Duck,
 }
 
@@ -105,7 +105,7 @@ pub struct MediaConfig {
 
 impl Default for MediaConfig {
     fn default() -> Self {
-        Self { enabled: true, mode: MediaMode::Pause, duck_volume_percent: 20 }
+        Self { enabled: true, mode: MediaMode::Duck, duck_volume_percent: 50 }
     }
 }
 
@@ -527,8 +527,19 @@ mod tests {
     fn media_defaults_are_backward_compatible_and_partial_objects_keep_defaults() {
         for json in [r#"{}"#, r#"{"media":{}}"#] {
             let config = AppConfig::from_json(json).unwrap();
-            assert_eq!(config.media, MediaConfig { enabled: true, mode: MediaMode::Pause, duck_volume_percent: 20 });
+            assert_eq!(config.media, MediaConfig { enabled: true, mode: MediaMode::Duck, duck_volume_percent: 50 });
         }
+        assert_eq!(MediaMode::default(), MediaMode::Duck);
+        for mode in ["pause", "duck"] {
+            let json = serde_json::json!({"media": {"mode": mode, "duck_volume_percent": 20}}).to_string();
+            let config = AppConfig::from_json(&json).unwrap();
+            assert_eq!(serde_json::to_value(config.media.mode).unwrap(), mode);
+            assert_eq!(config.media.duck_volume_percent, 20);
+            assert_eq!(AppConfig::from_json(&config.to_json()).unwrap(), config);
+        }
+        let partial = AppConfig::from_json(r#"{"media":{"mode":"pause"}}"#).unwrap();
+        assert_eq!(partial.media.mode, MediaMode::Pause);
+        assert_eq!(partial.media.duck_volume_percent, 50);
         let config =
             AppConfig::from_json(r#"{"media":{"enabled":false,"mode":"duck","duck_volume_percent":255}}"#).unwrap();
         assert!(!config.media.enabled);
@@ -683,6 +694,7 @@ mod tests {
     #[test]
     fn defaults_match_the_brief() {
         let c = AppConfig::default();
+        assert_eq!(c.media, MediaConfig { enabled: true, mode: MediaMode::Duck, duck_volume_percent: 50 });
         assert_eq!(c.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(c.active_profile_id, "groq");
         assert_eq!(c.profiles, vec![presets::groq(), presets::openai()]);

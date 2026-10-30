@@ -138,14 +138,7 @@ impl AskService {
 }
 
 fn chat_error(error: CleanupError) -> ErrorKind {
-    match error {
-        CleanupError::MissingKey => ErrorKind::MissingKey,
-        CleanupError::InvalidKey => ErrorKind::InvalidKey,
-        CleanupError::Timeout => ErrorKind::Timeout,
-        CleanupError::Network => ErrorKind::Network,
-        CleanupError::Rejected => ErrorKind::Rejected,
-        CleanupError::BadResponse | CleanupError::Truncated => ErrorKind::BadResponse,
-    }
+    error.into()
 }
 
 pub fn resolve_directory(value: &str) -> Result<std::path::PathBuf, ErrorKind> {
@@ -172,6 +165,29 @@ mod tests {
     use crate::platform::fake::FakeSecrets;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn chat_http_failures_keep_their_kind_without_saving_private_turns() {
+        for (status, body, kind) in [
+            (402, "private provider response", ErrorKind::PaymentRequired),
+            (400, r#"{"error":{"details":[{"reason":"API_KEY_INVALID"}]}}"#, ErrorKind::InvalidKey),
+            (400, "private provider response", ErrorKind::Rejected),
+            (429, "private provider response", ErrorKind::RateLimited),
+            (503, "private provider response", ErrorKind::Server),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let config = AskConfig { base_url: server.uri(), api_key_ref: None, ..Default::default() };
+            let service = AskService::new(Arc::new(FakeSecrets::default()));
+            let (_cancel, rx) = watch::channel(false);
+            assert_eq!(service.answer(config, "private request".into(), rx).await, Err(kind));
+            assert!(service.conversation.lock().await.turns.is_empty());
+        }
+    }
 
     #[tokio::test]
     async fn chat_request_shape_continuation_and_reset_use_only_the_ask_key() {

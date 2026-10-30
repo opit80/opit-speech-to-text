@@ -102,16 +102,7 @@ impl From<ProviderError> for CommandError {
 
 impl From<opit_core::cleanup::CleanupError> for CommandError {
     fn from(error: opit_core::cleanup::CleanupError) -> Self {
-        use opit_core::cleanup::CleanupError::*;
-        let kind = match error {
-            MissingKey => ErrorKind::MissingKey,
-            InvalidKey => ErrorKind::InvalidKey,
-            Network => ErrorKind::Network,
-            Timeout => ErrorKind::Timeout,
-            Rejected => ErrorKind::Rejected,
-            BadResponse | Truncated => ErrorKind::BadResponse,
-        };
-        Self { code: "cleanup", message: error.to_string(), kind: Some(kind) }
+        Self { code: "cleanup", message: error.to_string(), kind: Some(error.into()) }
     }
 }
 
@@ -1981,6 +1972,28 @@ mod tests {
         f.core.notices.lock().unwrap().push(StartupNotice::UserRulesBroken { reason: "x".into() });
         assert_eq!(f.core.take_notices().len(), 1);
         assert!(f.core.take_notices().is_empty());
+    }
+
+    #[test]
+    fn cleanup_errors_keep_safe_kinds_for_all_consumers() {
+        use opit_core::cleanup::CleanupError;
+        for (error, kind, wire) in [
+            (CleanupError::MissingKey, ErrorKind::MissingKey, "missing_key"),
+            (CleanupError::InvalidKey, ErrorKind::InvalidKey, "invalid_key"),
+            (CleanupError::PaymentRequired, ErrorKind::PaymentRequired, "payment_required"),
+            (CleanupError::RateLimited, ErrorKind::RateLimited, "rate_limited"),
+            (CleanupError::Server, ErrorKind::Server, "server"),
+            (CleanupError::Network, ErrorKind::Network, "network"),
+            (CleanupError::Timeout, ErrorKind::Timeout, "timeout"),
+            (CleanupError::Rejected, ErrorKind::Rejected, "rejected"),
+            (CleanupError::BadResponse, ErrorKind::BadResponse, "bad_response"),
+            (CleanupError::Truncated, ErrorKind::BadResponse, "bad_response"),
+        ] {
+            assert_eq!(ErrorKind::from(error), kind);
+            let command = CommandError::from(error);
+            assert_eq!((command.code, command.kind), ("cleanup", Some(kind)));
+            assert_eq!(serde_json::to_value(command).unwrap()["kind"], wire);
+        }
     }
 
     #[test]

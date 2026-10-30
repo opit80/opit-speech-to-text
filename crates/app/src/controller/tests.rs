@@ -33,6 +33,9 @@ fn cleanup_log_records_one_safe_metadata_line_for_every_outcome() {
         ("ok", None, "None"),
         ("skipped", None, "Cancelled"),
         ("failed", Some(CleanupError::Timeout), "Timeout"),
+        ("failed", Some(CleanupError::PaymentRequired), "PaymentRequired"),
+        ("failed", Some(CleanupError::RateLimited), "RateLimited"),
+        ("failed", Some(CleanupError::Server), "Server"),
         ("failed", Some(CleanupError::Truncated), "Truncated"),
     ] {
         let bytes = Arc::new(Mutex::new(Vec::new()));
@@ -288,7 +291,7 @@ async fn blocked_style_save_does_not_delay_lifecycle_or_media_release() {
             _ => unreachable!(),
         }
         let calls = h.media.calls.lock().unwrap().clone();
-        assert_eq!(calls, [Some((opit_core::config::MediaMode::Pause, 20)), None], "{end}");
+        assert_eq!(calls, [Some((opit_core::config::MediaMode::Duck, 50)), None], "{end}");
         assert!(h.events.style_saves.lock().unwrap().is_empty());
         drop(blocked);
         h.wait_for_style_saves(if end == "shutdown" { 3 } else { 1 }).await;
@@ -557,9 +560,9 @@ async fn media_stays_engaged_during_user_pause_and_uses_start_settings() {
     h.handle.control(ControlAction::Pause).await.unwrap();
     h.handle.control(ControlAction::Pause).await.unwrap();
     h.handle.control(ControlAction::Resume).await.unwrap();
-    assert_eq!(*h.media.calls.lock().unwrap(), [Some((MediaMode::Pause, 20))]);
+    assert_eq!(*h.media.calls.lock().unwrap(), [Some((MediaMode::Duck, 50))]);
     h.handle.control(ControlAction::Cancel).await.unwrap();
-    assert_eq!(*h.media.calls.lock().unwrap(), [Some((MediaMode::Pause, 20)), None]);
+    assert_eq!(*h.media.calls.lock().unwrap(), [Some((MediaMode::Duck, 50)), None]);
 }
 
 #[tokio::test]
@@ -906,6 +909,7 @@ struct Saved {
     cleanup_status: Option<cleanup::CleanupStatus>,
     cleanup_model: Option<String>,
     cleanup_style_id: Option<String>,
+    error_code: Option<String>,
     raw_text: String,
     text: String,
     status: TranscriptStatus,
@@ -941,6 +945,7 @@ impl HistorySink for FakeHistory {
             cleanup_status: entry.cleanup_status,
             cleanup_model: entry.cleanup_model.map(str::to_string),
             cleanup_style_id: entry.cleanup_style_id.map(str::to_string),
+            error_code: entry.error_code.map(str::to_string),
             raw_text: entry.raw_text.into(),
             text: entry.text.into(),
             status: entry.status,
@@ -957,6 +962,7 @@ impl HistorySink for FakeHistory {
         row.cleanup_status = entry.cleanup_status;
         row.cleanup_model = entry.cleanup_model.map(str::to_string);
         row.cleanup_style_id = entry.cleanup_style_id.map(str::to_string);
+        row.error_code = entry.error_code.map(str::to_string);
         row.raw_text = entry.raw_text.into();
         row.text = entry.text.into();
         row.status = entry.status;
@@ -2600,21 +2606,28 @@ async fn voice_edit_with_or_without_selection_uses_connection_and_saves_original
         let user: serde_json::Value = serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
         assert_eq!(user["selection"], serde_json::json!(selection));
         assert_eq!(user["instruction"], "make this polite please");
-        assert_eq!(*h.media.calls.lock().unwrap(), [Some((opit_core::config::MediaMode::Pause, 20)), None]);
+        assert_eq!(*h.media.calls.lock().unwrap(), [Some((opit_core::config::MediaMode::Duck, 50)), None]);
     }
 }
 
 #[tokio::test]
 async fn voice_llm_failure_never_pastes_and_retains_failed_edit_or_translation() {
-    for (event, mode) in [(HotkeyEvent::Edit, "edit"), (HotkeyEvent::Translate, "translate")] {
-        let (_server, mut h) = voice_harness(500, "private provider error").await;
+    for (event, mode, status, kind) in [
+        (HotkeyEvent::Edit, "edit", 402, ErrorKind::PaymentRequired),
+        (HotkeyEvent::Translate, "translate", 402, ErrorKind::PaymentRequired),
+        (HotkeyEvent::Edit, "edit", 429, ErrorKind::RateLimited),
+        (HotkeyEvent::Translate, "translate", 429, ErrorKind::RateLimited),
+        (HotkeyEvent::Edit, "edit", 500, ErrorKind::Server),
+        (HotkeyEvent::Translate, "translate", 503, ErrorKind::Server),
+    ] {
+        let (_server, mut h) = voice_harness(status, "private provider error").await;
         *h.paster.selection.lock().unwrap() = Some("private selected text".into());
         h.script("groq", vec![Ok("private spoken instruction")]);
         h.hotkey(event.clone());
         h.expect(&[Transcribing, Recording]).await;
         h.hotkey(event);
         h.expect(&[Transcribing, DictationState::Cleaning]).await;
-        h.expect_error(ErrorKind::Rejected).await;
+        h.expect_error(kind).await;
         assert!(h.paster.texts().is_empty());
         assert!(!h.handle.status().can_retry);
         assert_eq!(h.overlay.last().tone, Tone::Error);
@@ -2623,6 +2636,7 @@ async fn voice_llm_failure_never_pastes_and_retains_failed_edit_or_translation()
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].mode, mode);
         assert_eq!(rows[0].status, TranscriptStatus::Failed);
+        assert_eq!(rows[0].error_code.as_deref(), serde_json::to_value(kind).unwrap().as_str());
         assert!(rows[0].text.is_empty());
         if mode == "edit" {
             assert_eq!(rows[0].source_text.as_deref(), Some("private selected text"));

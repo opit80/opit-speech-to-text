@@ -191,7 +191,7 @@ pub async fn transcribe<T: Transcriber + Sync>(
             if timed && !segments.is_empty() {
                 let input = subtitle_lines(&segments);
                 let system = subtitle_prompt(language, ctx.rules, ctx.prompt_context);
-                let cleaned = cancellable(cleanup.client.clean(&input, &system), cancel).await?;
+                let cleaned = cancellable(cleanup.client.clean_subtitles(&input, &system), cancel).await?;
                 match cleaned.and_then(|answer| validate_subtitle_cleanup(&segments, &answer)) {
                     Ok(lines) => {
                         for (segment, line) in segments.iter_mut().zip(lines) {
@@ -211,7 +211,7 @@ pub async fn transcribe<T: Transcriber + Sync>(
                     speaker: None,
                 };
                 let input = subtitle_lines(std::slice::from_ref(&plain));
-                match cancellable(cleanup.client.clean(&input, &system), cancel).await? {
+                match cancellable(cleanup.client.clean_subtitles(&input, &system), cancel).await? {
                     Ok(answer) => match validate_subtitle_cleanup(std::slice::from_ref(&plain), &answer) {
                         Ok(lines) => text = after_cleanup(&lines[0]),
                         Err(_) => result.cleanup_failed = true,

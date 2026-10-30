@@ -712,6 +712,7 @@ export const en = {
   "error.kind.invalid_key": "API key is invalid",
   "error.kind.too_large": "Recording exceeds the provider limit",
   "error.kind.rate_limited": "Provider is rate limiting",
+  "error.kind.payment_required": "The provider account has a billing or credit problem",
   "error.kind.server": "Provider server error",
   "error.kind.network": "Network error",
   "error.kind.timeout": "Request timed out",

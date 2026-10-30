@@ -47,7 +47,7 @@ const config: AppConfig = {
   recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults, live_text: params.get("live") === "true" },
   paste: { method: "ctrl_v", after: "none", restore_clipboard: false, trailing_space: true },
   translate: { target_language: "en", model: null },
-  media: { enabled: true, mode: "pause", duck_volume_percent: 20 },
+  media: { enabled: true, mode: "duck", duck_volume_percent: 50 },
   app_rules: { enabled: true, rules: params.get("appRules") === "true" ? [
     { id: "rule-preview1", enabled: true, exe: "windowsterminal.exe", title_contains: "", style_id: "raw", profile_id: null, paste_method: "ctrl_shift_v", paste_after: null },
     { id: "rule-preview2", enabled: false, exe: "outlook.exe", title_contains: "Yanıt", style_id: "formal", profile_id: null, paste_method: null, paste_after: "none" },

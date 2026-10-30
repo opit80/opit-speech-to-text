@@ -1986,8 +1986,14 @@ impl<P: Providers> Controller<P> {
             && let Some(error) = transcript.cleanup_error
         {
             self.record(&job, &transcript, audio.as_deref());
-            let message = if error == CleanupError::Truncated { lang.answer_truncated() } else { lang.voice_failed() };
-            return self.fail_with_message(ErrorKind::Rejected, lang, message.into());
+            let message = if error == CleanupError::Truncated {
+                lang.answer_truncated()
+            } else if matches!(error, CleanupError::Rejected | CleanupError::BadResponse) {
+                lang.voice_failed()
+            } else {
+                lang.error(error.into())
+            };
+            return self.fail_with_message(error.into(), lang, message.into());
         }
         if transcript.status != TranscriptStatus::Ok || transcript.text.is_empty() {
             self.record(&job, &transcript, audio.as_deref());
@@ -2391,7 +2397,13 @@ async fn save_transcription(
             Err(PipelineError::Provider(error)) => Some(error.code()),
             Err(PipelineError::RetryCancelled) => Some("cancelled"),
             Err(_) => Some("audio"),
-            Ok(t) => t.cleanup_error.map(|_| "rejected"),
+            Ok(t) => t.cleanup_error.map(|error| match error {
+                CleanupError::InvalidKey => "invalid_key",
+                CleanupError::PaymentRequired => "payment_required",
+                CleanupError::RateLimited => "rate_limited",
+                CleanupError::Server => "server",
+                _ => "rejected",
+            }),
         };
         let transcript = result.ok();
         let entry = NewDictation {
