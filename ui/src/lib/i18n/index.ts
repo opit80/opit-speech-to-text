@@ -1,4 +1,4 @@
-import type { Lang } from "../types";
+import type { Lang } from "../bridge/types";
 import { en, type MessageKey } from "./en";
 import { tr } from "./tr";
 

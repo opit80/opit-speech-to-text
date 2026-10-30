@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
-  import { t } from "../app.svelte";
+  import { t } from "../state/app.svelte";
   import Icon from "./Icon.svelte";
   interface Props {
     tone: "info" | "warning" | "error" | "success";

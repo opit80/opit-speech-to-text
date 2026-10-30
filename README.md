@@ -6,7 +6,7 @@ server); nothing goes through a third-party server of ours.
 
 > Download stable installers from the
 > [Releases page](https://github.com/opit80/opit-speech-to-text/releases). The design lives in
-> [`docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md`](docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md).
+> [`docs/design/2026-09-30-opit-speech-to-text-design.md`](docs/design/2026-09-30-opit-speech-to-text-design.md).
 
 ## Install
 

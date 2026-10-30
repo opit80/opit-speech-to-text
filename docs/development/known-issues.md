@@ -4,8 +4,8 @@ Documentation extraction: 2026-10-30, source commit `3b920bba7761eedfe505df354c5
 This is an inventory, not evidence that old findings reproduce on current code or that desktop acceptance passed.
 Retained candidates require the stated check; superseded rows identify replacement code/tests, not a new test run.
 All paths in code spans are repository-root paths. See the [documentation index](../README.md),
-[release checklist](../release/RELEASE-CHECKLIST.md), [active layout plan](../superpowers/plans/2026-10-30-layout-cleanup.md)
-and [layout/Linux design](../superpowers/specs/2026-10-30-layout-and-linux-design.md).
+[release checklist](../release/RELEASE-CHECKLIST.md), [archived layout plan](../archive/2026-10-30-layout-cleanup.md)
+and [layout/Linux design](../design/2026-10-30-layout-and-linux-design.md).
 
 ## Source and disposition ledger
 
@@ -50,27 +50,27 @@ items. Each row is its retained destination. “Partly superseded” explicitly 
 | P3-06 | The capture expiry check-then-act gap and the `sync_pause` ordering race (nanosecond window). | Retained candidate | `crates/app/src/app_core.rs: set_hotkey_capture_for and sync_pause` | Stress expiry concurrent with restart/user pause; generation tests cover ordinary stale timers, not atomicity of check-then-store or pause ordering. |
 | P3-07 | No tests for stale-generation timers (capture restart, mic test replace). | Superseded | `crates/app/src/app_core.rs: an_ended_hotkey_captures_timer_keeps_the_restarted_capture_paused; a_replaced_mic_tests_timer_keeps_the_new_capture_running` | Keep both named tests in Windows discovery; do not carry the old missing-tests claim. |
 | P3-08 | The dictation idle check in `mic_test_start` runs before the slot lock, so a dictation starting while the device opens is not refused. | Retained candidate | `crates/app/src/app_core.rs: mic_test_start_for idle check before mic_test lock/device open` | Block fake device opening, start dictation, then release opening; check simultaneous capture refusal and cleanup. |
-| P3-09 | The load-error screen doubles the prefix ("could not load: Something went wrong: …") and has no retry. | Retained candidate | `ui/src/App.svelte: app.loadError screen; ui/src/lib/app.svelte.ts: initApp catch; ui/src/lib/errors.ts` | Reject initial IPC load in both languages; inspect duplicate prefixes and recovery/retry access. |
+| P3-09 | The load-error screen doubles the prefix ("could not load: Something went wrong: …") and has no retry. | Retained candidate | `ui/src/App.svelte: app.loadError screen; ui/src/lib/state/app.svelte.ts: initApp catch; ui/src/lib/bridge/errors.ts` | Reject initial IPC load in both languages; inspect duplicate prefixes and recovery/retry access. |
 | P3-10 | The `resumeError` banner does not clear when the hotkey is resumed from the tray. | Retained candidate | `ui/src/App.svelte: resumeError and resumeShortcut` | Fail UI Resume, then resume successfully from tray; require the stale error to disappear. |
 | P3-11 | The Button reserves a 12 px spinner slot on both sides, which makes ghost and icon buttons wide. | Retained candidate | `ui/src/lib/components/Button.svelte: spinner/slot layout` | Inspect ghost and icon button width, focus target and alignment in both themes at minimum width. |
 | P3-12 | Turkish wording: "tray" and "Çevriliyor" are kept for consistency with the spec and the overlay. | Historical-only | `ui/src/lib/i18n/tr.ts; crates/app/src/shell/i18n.rs; original design brief` | This records a terminology decision, not a confirmed defect. Any future wording change requires bilingual/native consistency review. |
-| P3-13 | Home: the missing-key effect depends on the whole profile object, which causes flicker and an extra keyring lookup on unrelated config changes. The module-level `disposed` flag never resets (an HMR re-run stops loading). "Show all" is shown when history is off. | Retained candidate | `ui/src/pages/Home.svelte: active/api_key_ref effect, component-local disposed and history Show all link` | The old module-level description is stale: disposed is component-local. Instrument unrelated config saves for key lookup/flicker, rerun HMR effects, and open Home with history off before deciding which candidates remain. |
-| P3-14 | A delete or clear during an in-flight live refresh can drop the new row until the next event. | Retained candidate | `ui/src/pages/History.svelte: generation/listRequest, remove, refreshPending; ui/src/lib/history.test.ts` | Current mutation guards invalidate old loads and defer new events. Delay refresh, delete/clear, and complete a dictation concurrently; verify the new row remains. Pure helper tests do not establish mounted behavior. |
-| P3-15 | The contenteditable transcript shows spellcheck underlines (needs `spellcheck="false"`), and IME composition can still edit it. | Retained candidate | `ui/src/pages/History.svelte: data-transcript contenteditable=plaintext-only versus edit textarea spellcheck=false` | Use spelling and IME composition on the read-only transcript; verify displayed/persisted text cannot be changed accidentally. |
-| P3-16 | Playback errors show "Audio could not be encoded" and can toast twice. | Retained candidate | `ui/src/pages/History.svelte: play/stopAudio and audio error handlers; ui/src/lib/i18n/en.ts` | Play missing/corrupt audio and switch files; require an accurate single error and no duplicate toast. |
-| P3-17 | A whitespace-only query still searches, and the first load waits for the 250 ms debounce. | Retained candidate | `ui/src/pages/History.svelte: query effect and setTimeout(..., 250)` | Open History and enter whitespace-only search; measure initial load and whether blank queries invoke FTS. |
-| P3-18 | Settings: the microphone test stops whenever any setting is saved (the device-changed effect in `MicLevelTest` re-runs on every config object), and a hotkey error shows twice (page + app banner). | Retained candidate | `ui/src/lib/components/MicLevelTest.svelte: device-only effect with untrack; ui/src/pages/Settings.svelte and ui/src/App.svelte: error banners` | Current effect tracks device, so the old whole-config description needs reproduction. Save unrelated settings during a mic test and trigger a hotkey error; verify continuity and one clear error. |
-| P3-19 | Wizard: the microphone and mode pickers save twice per change (function bindings into `Select`); the shortcut step shows the raw English hook error instead of `notice.hotkey_failed`. | Retained candidate | `ui/src/pages/setup/StepMicrophone.svelte: setMic value guard; ui/src/pages/setup/StepShortcut.svelte: mode binding/error rendering` | Count save_config calls for microphone/mode changes and force hook failure in Turkish; guard against duplicate saves and raw English errors. |
-| P3-20 | `HotkeyInput`'s capture UI outlives Rust's 30 s capture auto-expiry. | Retained candidate | `ui/src/lib/components/HotkeyInput.svelte: expiry timer/session; crates/app/src/app_core.rs: HOTKEY_CAPTURE_LIMIT` | Current UI has an expiry timer. Leave capture idle beyond 30 seconds and delay validation; compare UI/hook state before classifying the old mismatch as current. |
-| P3-21 | Rules: a Save click right after editing a table cell is swallowed; adding a blank row re-serializes the whole YAML. | Retained candidate | `ui/src/pages/Rules.svelte and ui/src/pages/RulesTable.svelte: draft rendering and save` | Edit a cell then click Save immediately; add a blank row in YAML containing comments, verify save and preservation of draft/comments. |
-| P3-22 | Profiles: turning off "Needs an API key" leaves the old key in Credential Manager. | Retained candidate | `ui/src/pages/ProfileForm.svelte: setNeedsKey; ui/src/pages/Profiles.svelte: save/delete key lifecycle` | Use disposable unique and shared credential refs; disable Needs an API key and save, inspect cleanup without deleting another profile key. |
-| P3-23 | Wizard provider step: Back during the save can orphan a stored key; Custom → Groq → Custom across Back creates a second custom profile. | Retained candidate | `ui/src/pages/setup/StepProvider.svelte: key save then config save, editingCustom; ui/src/pages/Setup.svelte` | Delay save and press Back; repeat Custom → Groq → Custom across Back; inspect orphan keys and duplicate profiles in scratch state. |
-| P3-24 | A tray "Settings" click during the wizard restarts it at step 1. | Retained candidate | `ui/src/App.svelte: setup route selection; ui/src/pages/Setup.svelte: step state; ui/src/lib/app.svelte.ts: onNavigate` | Open tray Settings midway through setup; verify step progress remains or an intentional navigation is explained. |
+| P3-13 | Home: the missing-key effect depends on the whole profile object, which causes flicker and an extra keyring lookup on unrelated config changes. The module-level `disposed` flag never resets (an HMR re-run stops loading). "Show all" is shown when history is off. | Retained candidate | `ui/src/features/home/Home.svelte: active/api_key_ref effect, component-local disposed and history Show all link` | The old module-level description is stale: disposed is component-local. Instrument unrelated config saves for key lookup/flicker, rerun HMR effects, and open Home with history off before deciding which candidates remain. |
+| P3-14 | A delete or clear during an in-flight live refresh can drop the new row until the next event. | Retained candidate | `ui/src/features/history/History.svelte: generation/listRequest, remove, refreshPending; ui/src/features/history/history.test.ts` | Current mutation guards invalidate old loads and defer new events. Delay refresh, delete/clear, and complete a dictation concurrently; verify the new row remains. Pure helper tests do not establish mounted behavior. |
+| P3-15 | The contenteditable transcript shows spellcheck underlines (needs `spellcheck="false"`), and IME composition can still edit it. | Retained candidate | `ui/src/features/history/History.svelte: data-transcript contenteditable=plaintext-only versus edit textarea spellcheck=false` | Use spelling and IME composition on the read-only transcript; verify displayed/persisted text cannot be changed accidentally. |
+| P3-16 | Playback errors show "Audio could not be encoded" and can toast twice. | Retained candidate | `ui/src/features/history/History.svelte: play/stopAudio and audio error handlers; ui/src/lib/i18n/en.ts` | Play missing/corrupt audio and switch files; require an accurate single error and no duplicate toast. |
+| P3-17 | A whitespace-only query still searches, and the first load waits for the 250 ms debounce. | Retained candidate | `ui/src/features/history/History.svelte: query effect and setTimeout(..., 250)` | Open History and enter whitespace-only search; measure initial load and whether blank queries invoke FTS. |
+| P3-18 | Settings: the microphone test stops whenever any setting is saved (the device-changed effect in `MicLevelTest` re-runs on every config object), and a hotkey error shows twice (page + app banner). | Retained candidate | `ui/src/features/dictation/MicLevelTest.svelte: device-only effect with untrack; ui/src/features/settings/Settings.svelte and ui/src/App.svelte: error banners` | Current effect tracks device, so the old whole-config description needs reproduction. Save unrelated settings during a mic test and trigger a hotkey error; verify continuity and one clear error. |
+| P3-19 | Wizard: the microphone and mode pickers save twice per change (function bindings into `Select`); the shortcut step shows the raw English hook error instead of `notice.hotkey_failed`. | Retained candidate | `ui/src/features/setup/steps/StepMicrophone.svelte: setMic value guard; ui/src/features/setup/steps/StepShortcut.svelte: mode binding/error rendering` | Count save_config calls for microphone/mode changes and force hook failure in Turkish; guard against duplicate saves and raw English errors. |
+| P3-20 | `HotkeyInput`'s capture UI outlives Rust's 30 s capture auto-expiry. | Retained candidate | `ui/src/features/dictation/HotkeyInput.svelte: expiry timer/session; crates/app/src/app_core.rs: HOTKEY_CAPTURE_LIMIT` | Current UI has an expiry timer. Leave capture idle beyond 30 seconds and delay validation; compare UI/hook state before classifying the old mismatch as current. |
+| P3-21 | Rules: a Save click right after editing a table cell is swallowed; adding a blank row re-serializes the whole YAML. | Retained candidate | `ui/src/features/rules/Rules.svelte and ui/src/features/rules/RulesTable.svelte: draft rendering and save` | Edit a cell then click Save immediately; add a blank row in YAML containing comments, verify save and preservation of draft/comments. |
+| P3-22 | Profiles: turning off "Needs an API key" leaves the old key in Credential Manager. | Retained candidate | `ui/src/features/profiles/ProfileForm.svelte: setNeedsKey; ui/src/features/profiles/Profiles.svelte: save/delete key lifecycle` | Use disposable unique and shared credential refs; disable Needs an API key and save, inspect cleanup without deleting another profile key. |
+| P3-23 | Wizard provider step: Back during the save can orphan a stored key; Custom → Groq → Custom across Back creates a second custom profile. | Retained candidate | `ui/src/features/setup/steps/StepProvider.svelte: key save then config save, editingCustom; ui/src/features/setup/Setup.svelte` | Delay save and press Back; repeat Custom → Groq → Custom across Back; inspect orphan keys and duplicate profiles in scratch state. |
+| P3-24 | A tray "Settings" click during the wizard restarts it at step 1. | Retained candidate | `ui/src/App.svelte: setup route selection; ui/src/features/setup/Setup.svelte: step state; ui/src/lib/state/app.svelte.ts: onNavigate` | Open tray Settings midway through setup; verify step progress remains or an intentional navigation is explained. |
 | P3-25 | Copy: `setup.mic.body` says "Press Test" but the button reads "Test microphone" (en + tr). | Retained candidate | `ui/src/lib/i18n/en.ts and tr.ts: setup.mic.body, mic.test` | Compare actual microphone instruction and button labels in both languages; change neither during layout work. |
-| P3-26 | Leftovers: `ProfileForm`'s key-lookup error is never cleared; `profiles.delete_body` promises key deletion even for keyless or shared keys; `formatNumber` and the `common.saved_at`/`close`/ `add`/`skip`/`done`/`yes`/`no` keys are unused. | Retained candidate | `ui/src/pages/ProfileForm.svelte: keyError/key effect; ui/src/pages/Profiles.svelte; ui/src/lib/format.ts and i18n dictionaries` | Fail then retry key lookup, inspect keyless/shared-key deletion wording, and search each listed symbol/key for consumers before removing unused candidates. Some explicit keyError resets already exist. |
+| P3-26 | Leftovers: `ProfileForm`'s key-lookup error is never cleared; `profiles.delete_body` promises key deletion even for keyless or shared keys; `formatNumber` and the `common.saved_at`/`close`/ `add`/`skip`/`done`/`yes`/`no` keys are unused. | Retained candidate | `ui/src/features/profiles/ProfileForm.svelte: keyError/key effect; ui/src/features/profiles/Profiles.svelte; ui/src/lib/utils/format.ts and i18n dictionaries` | Fail then retry key lookup, inspect keyless/shared-key deletion wording, and search each listed symbol/key for consumers before removing unused candidates. Some explicit keyError resets already exist. |
 | P4-01 | Uninstaller: `hooks.nsh` PREUNINSTALL deletes the credentials before Tauri's `CheckIfAppIsRunning`, so cancelling that prompt keeps the app and config but the keys are gone. | Superseded | `crates/app/tests/tauri_conf.rs: cancelling_uninstall_cannot_delete_credentials_and_silent_runs_keep_data; crates/app/windows/hooks.nsh` | Static order/guards are covered; actual Windows cancellation and update/silent data preservation remain manual checks below. |
 | P4-02 | `uninstall.rs` finds credentials only via preset refs and refs in the current `config.json`, so keys orphaned by a config reset or a failed `deleteApiKey` stay. The docs promise "every `*.opit-speech-to-text` entry": filter with `CredEnumerateW` or soften the docs. | Retained / partly superseded | `crates/app/src/uninstall.rs: credential_refs; docs/release/RELEASE-CHECKLIST.md; docs/archive/PRE-RELEASE-REPORT.md` | Overbroad documentation promise is superseded; preset/current refs remain the boundary. Test config reset/orphaned credentials on a disposable account and manually remove only known orphaned entries. |
-| P4-03 | Settings → Updates: `checkNow` writes the command's return value into `app.update`, so a late `checking` reply after the final `update-state` event leaves the page on "Checking…". | Superseded | `ui/src/lib/update.test.ts: does not overwrite an event that arrives before a stale command reply; ui/src/lib/app.svelte.ts: checkForUpdates` | Keep event revision guard and its test; do not preserve the old stuck-Checking claim. |
+| P4-03 | Settings → Updates: `checkNow` writes the command's return value into `app.update`, so a late `checking` reply after the final `update-state` event leaves the page on "Checking…". | Superseded | `ui/src/features/updates/update.test.ts: does not overwrite an event that arrives before a stale command reply; ui/src/lib/state/app.svelte.ts: checkForUpdates` | Keep event revision guard and its test; do not preserve the old stuck-Checking claim. |
 | P4-04 | `release.yml`: a key that does not match the pubkey is only a tauri-cli warning, so CI could publish a draft with useless signatures (add a log-grep step); re-running for the same tag fails at `gh release create` (note it in the checklist). | Superseded | `scripts/release/latest-json.test.mjs; scripts/release/draft-release.test.mjs; docs/archive/PRE-RELEASE-REPORT.md` | Keep mismatched-key/tamper/signed-version verification and rerunnable draft tests; published assets remain immutable. |
 
 ### Additional source dispositions
@@ -78,12 +78,12 @@ items. Each row is its retained destination. “Partly superseded” explicitly 
 | ID | Source item | Disposition and destination / current evidence | Check |
 | --- | --- | --- | --- |
 | P2-F1 | Index Plan 2 outcome, fixed by Plan 3 Task 2: blocking commands | Superseded: `crates/app/src/commands.rs` uses async blocking wrappers for file/keyring/history work. P3-04 separately retains the direct test_connection keyring call. | Preserve off-main-thread work. |
-| P2-F2 | Same source: tray pause notification | Superseded: `crates/app/src/shell/tray.rs`, `ui/src/lib/app.svelte.ts` hotkey-state subscription. | Native tray/banner acceptance remains M3-08. |
+| P2-F2 | Same source: tray pause notification | Superseded: `crates/app/src/shell/tray.rs`, `ui/src/lib/state/app.svelte.ts` hotkey-state subscription. | Native tray/banner acceptance remains M3-08. |
 | P2-F3 | Same source: paste text with history disabled | Superseded: `a_failed_paste_does_not_mention_history_when_it_is_disabled` in `crates/app/src/controller/tests/mod.rs`. | P3-03 separately retains failed history-write wording. |
 | P2-F4 | Same source: set_active_profile read-modify-write | Superseded: `crates/app/src/app_core.rs` uses update_config under config_lock; `update_config_applies_the_change_under_the_lock`. | P3-02 retains notification/learning ordering, not the fixed locked read. |
 | P2-F5 | Same source: microphone worker panic message | Superseded: `crates/app/src/commands.rs` list_microphones maps JoinError to a safe unavailable error. | Do not expose worker panic contents. |
 | P4-D1 | Index Plan 4 outcome / Task 6: SignPath workflow integration | Retained: [signing application notes](../release/signpath-application.md), `.github/workflows/release.yml`. Updater signatures do not establish Authenticode signing. | Complete application/integration separately after maintainer authorization; verify downloaded installer signing. |
-| P4-D2 | Same source: release notes in app | Retained candidate: `ui/src/lib/types.ts` UpdateInfo.notes, `ui/src/pages/Settings.svelte`. | Offer a fixture release with notes; determine whether/how they should be displayed. |
+| P4-D2 | Same source: release notes in app | Retained candidate: `ui/src/lib/bridge/types.ts` UpdateInfo.notes, `ui/src/features/settings/Settings.svelte`. | Offer a fixture release with notes; determine whether/how they should be displayed. |
 | P4-D3 | Same source: tray Updates entry | Retained candidate: `crates/app/src/shell/tray_menu.rs`. | Inspect native tray for update discovery/action; decide whether to add an entry in feature work. |
 | P4-D4 | Same source: stalled update download waits for ten-minute total timeout | Retained candidate: `crates/app/src/shell/updates.rs`. | Stall a fixture download after headers; measure timeout and recovery; evaluate an idle timeout separately. |
 | H1 | Plan index implementation outcomes, historical counts and public-contract descriptions | Historical-only: source commit above; current contracts live in code and reference docs. Old task code blocks are not execution instructions. | Use current CI/discovery, never copy historical counts as current results. |
@@ -197,7 +197,7 @@ identity. Source comparisons on Linux do not establish Windows compilation or de
   `cargo test -p opit-speech-to-text --test tauri_conf` (seven tests) and
   `cargo test -p opit-speech-to-text --lib shell::i18n::tests::native_strings_preserve_utf8_and_ask_wording -- --exact`
   (one test). A zero-test result does not pass these targeted gates. Run socket-binding
-  portable suites outside the worker sandbox; Linux cannot compile the app here.
+  portable suites outside a socket-restricted sandbox; Linux cannot compile the app here.
 - [ ] Owner: use a disposable clean Windows VM and synthetic backed-up data/credentials
   for M4-01 through M4-03: install, update from an existing lower version, restart,
   keep-data/delete-data uninstall, cancellation while running and silent reinstall.
@@ -362,7 +362,7 @@ separate manual pass on the target PC.
 
 ## Layout Task 7 — pending native insertion acceptance
 
-Status: **pending**. Owner: Windows owner/orchestrator. This Linux layout move cannot
+Status: **pending**. Owner: Windows owner. This Linux layout move cannot
 compile the app or establish native focus, UIPI, clipboard-format or restoration
 acceptance. Fake `Paster` tests do not prove native behavior. Use a real microphone,
 a configured provider, disposable `OPIT_DATA_DIR` and synthetic non-private text.
@@ -385,13 +385,13 @@ including any pre-existing defects; neither desktop pass has been run here.
 - [ ] Repeat all of the above with History off. Confirm no new transcript files,
   audio files or history rows. Record before/after observations without private text.
 
-Windows CI/orchestrator must compare full library test discovery and ignored sets
+Windows CI must compare full library test discovery and ignored sets
 before and after, retaining exact `controller::tests::*` and
 `controller::tests::live_tests::*` names. Source search counts are 103 controller
 test attributes (90 main tests, ten live tests, two status tests, one live-worker
 test), not executable discovery. Run `cargo test -p opit-speech-to-text --lib controller::`
 with all 103 discovered tests, then full-workspace formatting, clippy with
-`-D warnings` and tests. Run socket-binding scenarios outside the worker sandbox.
+`-D warnings` and tests. Run socket-binding scenarios outside a socket-restricted sandbox.
 Existing hanging-paste, clipboard-format/delayed-rendering, blocking actor and quit
 limitations remain tracked in P2-01/P2-02/P2-03/P2-05/P2-12; retain any baseline
 native defects without fixing them in this move.
@@ -401,9 +401,8 @@ native defects without fixing them in this move.
 All twenty document moves have a destination in the [index](../README.md). The three release
 documents are dated historical snapshots, including their original limitations and public CI/download
 evidence. Private logs/build paths have been replaced by dated summaries; no downloadable logs are invented.
-Both specs and the active layout plan stay in `docs/superpowers/` until Task 12. Their historical
-move tables/old-path descriptions are intentional. Both specs' `docs/RELEASE-CHECKLIST.md` prose
-references are an intentional pending repair owned by Task 12; their live destination is now
+Task 12 retains both specs in `docs/design/` and the layout plan in `docs/archive/`. The archived
+plan's historical move tables/old-path descriptions are intentional. Both specs now refer to
 `docs/release/RELEASE-CHECKLIST.md`. The proposed `docs/CODE-SIGNING-POLICY.md` in the signing
 notes is a future document, not a broken existing target. No Linux support evidence is inferred
 from portable-crate checks; the [Linux status skeleton](linux-status.md) intentionally has no claims.
@@ -420,3 +419,37 @@ cargo test -p opit-ipc transport::windows::tests::private_pipe_roundtrip -- --ex
 
 - Retained, not introduced by the move: `LocalService::initialize` checks `closed` while holding the session lock, but `shutdown` sets `closed` without taking that lock. A shutdown landing between the check and `launch` lets one local server start. `shutdown` then waits for the lock in `stop`, so the process is removed rather than orphaned. The cost is one needless launch during exit. `shutdown_finishes_while_initialization_is_blocked_and_prevents_late_launch` blocks earlier and does not cover this interleaving.
 - On Windows, run `cargo test -p opit-speech-to-text --lib local::` and confirm the local model still downloads, loads, idles out and stops on exit.
+
+
+## Layout Task 12 — UI handoff and pending acceptance
+
+The feature/shared/preview files moved whole; only relative import targets changed in
+UI source. The two design specs are retained under `docs/design/`, and the layout plan
+is retained under `docs/archive/`. Settings and the translation dictionaries remain
+whole; state and navigation each retain one singleton. Root README edits are path
+substitutions only. No Linux backend, packaging or desktop support is implemented.
+
+Local verification: 147 passing UI tests in 24 files before and after, with identical
+full names and mapped paths (23 test files moved). Svelte reports zero errors and
+zero warnings; the production build passes. The production index reaches no preview
+mock/bootstrap strings. Portable Rust discovery is unchanged (299 tests); formatting,
+portable clippy and the three release-helper test files pass. These local results
+establish neither Windows compilation nor mounted UI/desktop acceptance.
+
+Browser preview (`ui/guide-preview.html`, synthetic data): all eight pages, setup
+steps one and two, `?lang=en`, light and dark, recording and stop, and the profile
+editor rendered with no failed module request or console error. All seven setup step
+modules load. Not exercised in the browser: setup steps three to seven (the read-only
+preview cannot pass the provider step's connection test), the rule dialogs and file
+preview results.
+
+- [ ] Windows owner: walk setup steps three to seven and open the rule dialogs in the
+  real app.
+- [ ] Windows owner: use disposable `OPIT_DATA_DIR`, a real microphone and an already
+  configured provider. While dictation is recording, close the real app window
+  (destroying its WebView), then reopen it from the tray. Verify current recording
+  status, navigation, stop/cancel actions, fresh page data and one active listener
+  per event; repeat reopen/reload to expose duplicate listeners or stale state.
+  Repeat idle and after completing a dictation, in both languages/themes. Browser
+  mocks and pure helper tests cannot establish this pass. Keep the existing native
+  insertion, clipboard, process-tree and installer acceptance items above pending.

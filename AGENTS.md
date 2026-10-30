@@ -2,16 +2,16 @@
 
 Windows voice-dictation tray app: press a hotkey, speak, the transcript is pasted at the cursor.
 Transcription uses the user's own API key (Groq / OpenAI / any OpenAI-compatible server).
-Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md`.
+Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/design/2026-09-30-opit-speech-to-text-design.md`.
 
 ## Working context
 
 - Read [documentation](docs/README.md) and [known issues / pending acceptance](docs/development/known-issues.md)
   before new work. The [publication snapshot](docs/archive/PUBLICATION-REPORT.md) is historical
   release evidence, not a current acceptance claim.
-- Active layout plan: `docs/superpowers/plans/2026-10-30-layout-cleanup.md`;
-  layout/Linux spec: `docs/superpowers/specs/2026-10-30-layout-and-linux-design.md`.
-  Both specs and the active plan stay at these paths until Task 12. Implement only the assigned task.
+- Layout cleanup plan: `docs/archive/2026-10-30-layout-cleanup.md`;
+  layout/Linux spec: `docs/design/2026-10-30-layout-and-linux-design.md`.
+  Both design specs are retained in `docs/design/`; the layout plan is archived. Implement only the assigned task.
 - No pushes, tags or releases unless the user asks in the current conversation.
 - Layout changes preserve behavior, public contracts, test discovery and installed-copy identity.
   Linux app backends, packages and desktop support require separate implementation and evidence.
@@ -25,11 +25,11 @@ Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-0
 | `crates/ipc` | `opit-ipc`: protocol types in `src/protocol.rs`, framing in `src/framing.rs`, Windows named-pipe transport in `src/transport/windows.rs`. |
 | `crates/cli` | `opit-cli`: standalone `opit` console tool; see `docs/guides/cli.md`. |
 | `crates/app` | Tauri app (`opit_app`): `src/app_core/mod.rs`, `commands/`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/factory.rs`, `platform/microphone.rs`; `src/shell/` owns startup/logging/events/i18n/tray/window/updates and the Tauri lifecycle, with root compatibility re-exports. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
-| `ui/` | Svelte 5 + Vite + Vitest: `src/pages/` and `pages/setup/`, `src/lib/components/`, shared `src/lib/api.ts`, `events.ts`, `types.ts`, `app.svelte.ts`, helpers and `i18n/`. Dev-only preview: `src/guide-preview.ts`, `src/BrowserPreview.svelte`, `guide-preview.html`. |
+| `ui/` | Svelte 5 + Vite + Vitest: `src/features/` owns home, dictation, history, profiles, rules, settings, setup (including `steps/`), files, guide, usage and updates. Shared `src/lib/` owns `bridge/` (API, events, types, errors), `state/`, `navigation/`, `utils/`, `i18n/` and primitive `components/`. Dev-only preview: `src/preview/guide-preview.ts`, `src/preview/BrowserPreview.svelte`, `guide-preview.html`. |
 | `rules/` | Built-in rule packs: `tr-core`, `tr-tech`, `fivem`. |
 | `scripts/` | CLI staging and release asset/signature/draft helpers; release tests in `scripts/release/`. |
 | `.github/workflows/` | `ci.yml`: Windows full workspace, Linux portable crates and UI; `release.yml`: verified signed NSIS assets to a draft. |
-| `docs/` | `README.md` index; `guides/`, `reference/`, `development/`, `release/`, dated `archive/`, `releases/`; active specs/plan remain under `superpowers/`. |
+| `docs/` | `README.md` index; `guides/`, `reference/`, `development/`, `release/`, `design/`, dated `archive/` (including the layout plan), `releases/`. |
 
 ## Commands
 
@@ -66,13 +66,14 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
 - **Never log or put in error messages** transcript text or API keys. API keys live only in
   Windows Credential Manager (`<api_key_ref>.opit-speech-to-text`); the UI only passes them to
   `set_api_key` and clears the input afterwards.
-- Commands reject with `CommandError { code, message, kind }`; keep `ui/src/lib/types.ts` /
-  `api.ts` in sync with Rust command names and argument names (JS uses camelCase args).
+- Commands reject with `CommandError { code, message, kind }`; keep `ui/src/lib/bridge/types.ts` /
+  `ui/src/lib/bridge/api.ts` in sync with Rust command names and argument names (JS uses camelCase args).
 - Blocking work (file I/O, keyring, SQLite, rule compilation) never runs on the Tauri main thread:
   such commands are `async` + `spawn_blocking`.
 - UI config writes go through the serialized `saveConfig(mutate)` chain in
-  `ui/src/lib/app.svelte.ts`; components never keep their own copy of `config` except a form draft.
-- UI: only components from `ui/src/lib/components/` and tokens from `ui/src/app.css` (no raw
+  `ui/src/lib/state/app.svelte.ts`; components never keep their own copy of `config` except a form draft.
+- UI: use existing primitives from `ui/src/lib/components/`, domain components from
+  `ui/src/features/` and tokens from `ui/src/app.css` (no raw
   colours), native `<dialog>` + `showModal()`, every input labelled, keyboard reachable, WCAG AA in
   light and dark. No new UI dependencies without a reason. CSP stays `default-src 'self'`
   (+ `media-src 'self' blob:`); no network requests from the UI.

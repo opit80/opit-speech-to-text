@@ -43,13 +43,14 @@ pending clean-Windows installation, restart and hardware checks. They are not cu
 - [Agent working rules and current layout](../AGENTS.md)
 - [0.1.3 release notes](releases/0.1.3.md)
 
-## Active design and plan
+## Design and archived layout plan
 
-- [Original design brief (2026-09-30)](superpowers/specs/2026-09-30-opit-speech-to-text-design.md)
-- [Layout cleanup and Linux design (2026-10-30)](superpowers/specs/2026-10-30-layout-and-linux-design.md)
-- [Layout cleanup implementation plan](superpowers/plans/2026-10-30-layout-cleanup.md)
+- [Original design brief (2026-09-30)](design/2026-09-30-opit-speech-to-text-design.md)
+- [Layout cleanup and Linux design (2026-10-30)](design/2026-10-30-layout-and-linux-design.md)
+- [Layout cleanup implementation plan](archive/2026-10-30-layout-cleanup.md)
 
-The active plan and both specs remain at these paths through Task 11. Task 12 alone relocates them.
+Both specs are retained under `design/`; Task 12 relocates the layout plan to `archive/`.
+Archiving the plan does not establish CI or desktop acceptance; pending checks remain in the known-issues ledger.
 Completed implementation plans were removed after extraction; their original filenames, source
 commit and item-by-item dispositions remain in the known-issues ledger and Git history.
 Linux status is intentionally an empty skeleton until actual spike and desktop evidence exists.

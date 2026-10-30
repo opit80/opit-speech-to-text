@@ -1,26 +1,26 @@
 <script lang="ts">
-  import { app, errorText, initApp, t } from "./lib/app.svelte";
-  import { navigate, router } from "./lib/router.svelte";
-  import type { Route } from "./lib/route";
+  import { app, errorText, initApp, t } from "./lib/state/app.svelte";
+  import { navigate, router } from "./lib/navigation/router.svelte";
+  import type { Route } from "./lib/navigation/route";
   import type { MessageKey } from "./lib/i18n";
-  import { api } from "./lib/api";
+  import { api } from "./lib/bridge/api";
   import Banner from "./lib/components/Banner.svelte";
   import Button from "./lib/components/Button.svelte";
   import Icon from "./lib/components/Icon.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
-  import { bannerVersion } from "./lib/update";
-  import UpdateInstallButton from "./lib/components/UpdateInstallButton.svelte";
-  import UpdateProgress from "./lib/components/UpdateProgress.svelte";
-  import Home from "./pages/Home.svelte";
-  import History from "./pages/History.svelte";
-  import Rules from "./pages/Rules.svelte";
-  import Profiles from "./pages/Profiles.svelte";
-  import Settings from "./pages/Settings.svelte";
-  import Setup from "./pages/Setup.svelte";
-  import Guide from "./pages/Guide.svelte";
-  import Usage from "./pages/Usage.svelte";
-  import Files from "./pages/Files.svelte";
-  import { watchTheme } from "./lib/theme";
+  import { bannerVersion } from "./features/updates/update";
+  import UpdateInstallButton from "./features/updates/UpdateInstallButton.svelte";
+  import UpdateProgress from "./features/updates/UpdateProgress.svelte";
+  import Home from "./features/home/Home.svelte";
+  import History from "./features/history/History.svelte";
+  import Rules from "./features/rules/Rules.svelte";
+  import Profiles from "./features/profiles/Profiles.svelte";
+  import Settings from "./features/settings/Settings.svelte";
+  import Setup from "./features/setup/Setup.svelte";
+  import Guide from "./features/guide/Guide.svelte";
+  import Usage from "./features/usage/Usage.svelte";
+  import Files from "./features/files/Files.svelte";
+  import { watchTheme } from "./lib/utils/theme";
 
 
   const NAV: { route: Route; icon: "home" | "history" | "files" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [

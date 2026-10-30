@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
-  import { t } from "../app.svelte";
-  import { placeTooltip, type TooltipPlacement } from "../tooltip";
+  import { t } from "../state/app.svelte";
+  import { placeTooltip, type TooltipPlacement } from "../utils/tooltip";
   import Icon from "./Icon.svelte";
 
   interface Props {
