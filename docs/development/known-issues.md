@@ -148,6 +148,33 @@ recording time limit to stop it: the global hook cannot see elevated-window keys
 - [ ] **M4-03 — uninstall/reinstall.** Verify keep-data uninstall and reinstall, opt-in delete-data removal including configured local folders, cancel-while-running preservation, and update/silent-reinstall guards. Preset/current refs are covered; orphaned credentials may need manual removal. Back up disposable data first.
 - [ ] **M4-04 — signing/security.** Confirm independent updater key/password backup securely, then pursue SignPath application/integration separately; preserve updater trust and immutable published assets. Neither snapshot proves Authenticode signing or backup completion.
 
+## Layout Task 3 — pending Windows acceptance
+
+The platform factory and physical microphone/uninstall moves require Windows evidence.
+No Linux app backend is enabled. Automated source comparisons do not establish native acceptance.
+
+- [ ] On Windows, compare full app library, integration and ignored discovery against the
+  pre-Task-3 commit using `cargo test -p opit-speech-to-text --lib -- --list`,
+  `cargo test -p opit-speech-to-text --lib -- --list --ignored`,
+  `cargo test -p opit-speech-to-text --tests -- --list` and
+  `cargo test -p opit-speech-to-text --tests -- --list --ignored`.
+  Only map `platform::windows::microphone::tests` to `platform::microphone::tests` and
+  `uninstall::tests` to `platform::windows::uninstall::tests`; require unchanged full
+  names/counts and ignored sets. The moved source contains ten microphone tests
+  (nine automatic, one ignored) and five uninstall tests; these are source counts.
+- [ ] Run full Windows workspace formatting, clippy and tests, plus
+  `cargo test -p opit-speech-to-text --test tauri_conf` (seven tests) and
+  `cargo test -p opit-speech-to-text --lib platform::windows::uninstall::tests` (five tests).
+  A zero-test result does not pass either targeted gate.
+- [ ] Owner: on a Windows desktop with a real microphone and throwaway `OPIT_DATA_DIR`, run
+  `cargo test -p opit-speech-to-text --lib platform::microphone::tests::smoke_record_one_second -- --ignored --exact --nocapture`;
+  expect one test. Verify normal dictation and the existing backend fallback paths.
+- [ ] Owner: in a disposable clean Windows VM, back up synthetic data and credentials,
+  then verify unticked/ticked uninstall, cancellation while running, silent reinstall
+  and update. Check data, credential namespace, autostart command and updater trust;
+  `--delete-credentials` must exit before logging or directory creation. Keep the
+  `$UpdateMode` guards intact. Never exercise cleanup against the owner's installation.
+
 ## Modern feature acceptance carried forward
 
 Each destination below retains the complete source checklist; none is marked passed here.

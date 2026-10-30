@@ -133,12 +133,12 @@ final text, selection, provider error bodies and keys never enter diagnostics.
 - New native providers: `crates/core/src/provider/deepgram.rs`,
   `crates/core/src/provider/streaming.rs`, `crates/core/src/provider/streaming/tests.rs`.
 - App integration: `crates/app/src/commands.rs`, `crates/app/src/providers.rs`,
-  `crates/app/src/file_jobs.rs`, `crates/app/src/uninstall.rs`,
+  `crates/app/src/file_jobs.rs`, `crates/app/src/platform/windows/uninstall.rs`,
   `crates/app/src/controller/mod.rs`, `crates/app/src/controller/tests.rs`.
 - New recording worker/tests: `crates/app/src/controller/live.rs`,
   `crates/app/src/controller/live_tests.rs`.
 - Platform integration: `crates/app/src/platform/mod.rs`,
-  `crates/app/src/platform/fake.rs`, `crates/app/src/platform/windows/microphone.rs`,
+  `crates/app/src/platform/fake.rs`, `crates/app/src/platform/microphone.rs`,
   `crates/app/src/platform/windows/overlay.rs`.
 - Overlay constructor updates: `crates/app/src/app_core.rs`, `crates/app/src/lib.rs`.
 - Contract and acceptance notes: `docs/reference/live-text.md`.

@@ -2,20 +2,22 @@
 
 pub mod autostart;
 pub mod clipboard;
+pub(crate) mod factory;
 pub mod foreground;
 pub(crate) mod hardware;
 pub mod hotkey;
 pub mod media;
-pub mod microphone;
 pub mod overlay;
 pub mod paster;
 pub(crate) mod process;
 pub mod secrets;
 pub mod sounds;
+pub mod uninstall;
 
+pub use super::microphone;
+pub use super::microphone::CpalMicrophone;
 pub use autostart::RegistryAutostart;
 pub use hotkey::WinHotkey;
-pub use microphone::CpalMicrophone;
 pub use overlay::WinOverlay;
 pub use paster::WinPaster;
 pub use secrets::KeyringStore;

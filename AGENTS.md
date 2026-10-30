@@ -24,7 +24,7 @@ Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-0
 | `crates/eval` | `opit-eval`: real-provider WER/term accuracy CLI; see `docs/guides/eval.md`. |
 | `crates/ipc` | `opit-ipc`: protocol types/framing in `src/lib.rs`, Windows named-pipe transport in `src/windows.rs`. |
 | `crates/cli` | `opit-cli`: standalone `opit` console tool; see `docs/guides/cli.md`. |
-| `crates/app` | Tauri app (`opit_app`): `src/app_core.rs`, `commands.rs`, `controller/`, `ask/`, `local/`, `platform/windows/`; shell startup/logging/events/i18n/tray/window/updates remain in `src/`. `src/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
+| `crates/app` | Tauri app (`opit_app`): `src/app_core.rs`, `commands.rs`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/factory.rs`, `platform/microphone.rs`; shell startup/logging/events/i18n/tray/window/updates remain in `src/`. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
 | `ui/` | Svelte 5 + Vite + Vitest: `src/pages/` and `pages/setup/`, `src/lib/components/`, shared `src/lib/api.ts`, `events.ts`, `types.ts`, `app.svelte.ts`, helpers and `i18n/`. Dev-only preview: `src/guide-preview.ts`, `src/BrowserPreview.svelte`, `guide-preview.html`. |
 | `rules/` | Built-in rule packs: `tr-core`, `tr-tech`, `fivem`. |
 | `scripts/` | CLI staging and release asset/signature/draft helpers; release tests in `scripts/release/`. |

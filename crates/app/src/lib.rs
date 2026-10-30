@@ -17,7 +17,8 @@ pub mod settings;
 pub mod startup;
 pub mod tray;
 pub mod tray_menu;
-pub mod uninstall;
+#[cfg(windows)]
+pub use platform::windows::uninstall;
 pub mod updates;
 pub mod window;
 
@@ -28,14 +29,10 @@ use opit_core::provider::retry::RETRY_DELAY;
 use tauri::{Manager, RunEvent};
 use tracing::{error, info, warn};
 
-use crate::app_core::{AppCore, Platform};
+use crate::app_core::AppCore;
 use crate::controller::{Env, HistorySink, Msg};
 use crate::events::TauriEvents;
 use crate::history_service::{DisabledHistory, HistoryService};
-use crate::platform::windows::{
-    CpalMicrophone, KeyringStore, RegistryAutostart, WinHotkey, WinOverlay, WinPaster, WinSounds,
-};
-use crate::platform::{Autostart, DebugAutostart, NoAutostart, NoOverlay, Overlay, SecretStore, UnavailableSecrets};
 use crate::providers::HttpProviders;
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::Paths;
@@ -45,6 +42,7 @@ pub const AUTOSTART_FLAG: &str = "--autostart";
 
 pub fn run() {
     // The uninstaller's clean-up (windows/hooks.nsh): no window, no tray, no log file.
+    #[cfg(windows)]
     if std::env::args().any(|arg| arg == uninstall::DELETE_CREDENTIALS_FLAG) {
         std::process::exit(uninstall::run());
     }
@@ -157,50 +155,20 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     };
 
     let (controller, inbox) = controller::channel();
-    let overlay: Arc<dyn Overlay> = match WinOverlay::new(config.ui.overlay_position, controller.overlay_sink()) {
-        Ok(overlay) => Arc::new(overlay),
-        Err(err) => {
-            error!(error = %err, "overlay unavailable");
-            Arc::new(NoOverlay)
-        }
-    };
-    let secrets: Arc<dyn SecretStore> = match KeyringStore::new() {
-        Ok(store) => Arc::new(store),
-        Err(err) => {
-            error!(error = %err, "credential store unavailable");
-            Arc::new(UnavailableSecrets(err.to_string()))
-        }
-    };
-    // Debug builds never touch the Run key, whichever code path asks for it.
-    let autostart: Arc<dyn Autostart> = if cfg!(debug_assertions) {
-        Arc::new(DebugAutostart)
-    } else {
-        match RegistryAutostart::for_current_exe() {
-            Ok(autostart) => Arc::new(autostart),
-            Err(err) => Arc::new(NoAutostart(err)),
-        }
-    };
-    let hotkey = Arc::new(WinHotkey::new());
-    let mic = Arc::new(CpalMicrophone::new());
-    let foreground = Arc::new(crate::platform::windows::foreground::WinForegroundApp);
-    let media = Arc::new(crate::platform::windows::media::new());
-    let sounds = Arc::new(WinSounds::new());
-    sounds.warm_up();
+    let platform::factory::PlatformServices { platform, paster, sounds } =
+        platform::factory::create(&config, controller.overlay_sink());
+    let foreground = platform.foreground.clone();
+    let media = platform.media.clone();
+    let secrets = platform.secrets.clone();
+    let hotkey = platform.hotkey.clone();
+    let mic = platform.mic.clone();
+    let overlay = platform.overlay.clone();
     let history_sink: Arc<dyn HistorySink> = match &history {
         Some(history) => history.clone(),
         None => Arc::new(DisabledHistory),
     };
 
     let notices = loaded.notice.into_iter().chain(rules_notice).collect();
-    let platform = Platform {
-        foreground: foreground.clone(),
-        media: media.clone(),
-        secrets: secrets.clone(),
-        hotkey: hotkey.clone(),
-        mic: mic.clone(),
-        overlay: overlay.clone(),
-        autostart,
-    };
     let core = Arc::new(AppCore::new(
         paths,
         settings.clone(),
@@ -246,7 +214,7 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         providers: Arc::new(HttpProviders::new(secrets.clone()).with_local(core.local.clone())),
         mic: mic.clone(),
         hotkey: hotkey.clone(),
-        paster: Arc::new(WinPaster::new()),
+        paster,
         overlay: overlay.clone(),
         sounds,
         history: history_sink,

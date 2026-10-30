@@ -1,10 +1,13 @@
 //! Platform seams. Windows implementations live in `platform::windows`; tests use `platform::fake`.
 
+pub(crate) mod factory;
 #[cfg(test)]
 pub mod fake;
 pub mod keys;
 #[cfg(any(windows, test))]
 mod media;
+#[cfg(windows)]
+pub mod microphone;
 pub(crate) mod process;
 #[cfg(windows)]
 pub mod windows;
