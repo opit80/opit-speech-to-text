@@ -9,6 +9,19 @@ permissions:
   contents: read
 
 jobs:
+  commit-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject AI attribution in commits
+        run: |
+          if git log --format='%an <%ae>%n%cn <%ce>%n%B' HEAD | grep -iE 'co-authored-by:.*(claude|anthropic)|noreply@anthropic\.com|^claude '; then
+            echo "::error::AI attribution found in commit history"
+            exit 1
+          fi
+
   rust:
     strategy:
       fail-fast: false

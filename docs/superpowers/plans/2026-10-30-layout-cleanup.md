@@ -121,7 +121,7 @@ Consumes: the four completed plans and their index, both specs, `AGENTS.md`, pub
     .github/workflows/release.yml docs/releases/0.1.3.md .claude/settings.json ui/src/guide-preview.ts \
     ui/src/lib/app-rules.ts ui/src/lib/learning.ts ui/src/lib/styles.ts ui/src/lib/voice-modes.ts
   git diff --cached --check
-  git commit -m 'docs: organize project documentation and preserve pending checks' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'docs: organize project documentation and preserve pending checks'
   ```
 
 ## Task 2 — Batch 2: shared process supervision and Windows hardware probing
@@ -152,7 +152,7 @@ Consumes: `controller::ErrorKind`, `opit_core::ask::MAX_ANSWER`, `ask::cli::{is_
     crates/app/src/platform/windows/process.rs crates/app/src/platform/windows/hardware.rs crates/app/src/platform/mod.rs crates/app/src/platform/windows/mod.rs \
     crates/app/src/local/hardware.rs crates/app/src/local/server.rs
   git diff --cached --check
-  git commit -m 'refactor(platform): centralize process supervision and Windows hardware probes' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(platform): centralize process supervision and Windows hardware probes'
   ```
 
 ## Task 3 — Batch 3: platform factory, uninstall isolation and shared microphone source
@@ -184,7 +184,7 @@ Consumes: `app_core::Platform`, `platform::{OverlaySink, Paster, Sounds}`, `opit
     crates/app/src/platform/factory.rs crates/app/src/platform/windows/factory.rs crates/app/src/platform/mod.rs crates/app/src/platform/windows/mod.rs \
     crates/app/src/lib.rs AGENTS.md docs/reference/live-text.md docs/development/known-issues.md
   git diff --cached --check
-  git commit -m 'refactor(platform): add backend factory and isolate Windows cleanup' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(platform): add backend factory and isolate Windows cleanup'
   ```
 
 ## Task 4 — Batch 4: shell lifecycle and presentation
@@ -218,7 +218,7 @@ Consumes: `platform::factory::{create, PlatformServices}`, `app_core::{AppCore, 
     docs/reference/live-text.md docs/reference/voice-modes.md docs/reference/cleanup-styles.md docs/development/known-issues.md \
     ui/src/lib/events.ts ui/src/lib/types.ts
   git diff --cached --check
-  git commit -m 'refactor(shell): group Tauri lifecycle and presentation modules' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(shell): group Tauri lifecycle and presentation modules'
   ```
 
 ## Task 5 — Batch 5: split AppCore by concern behind its public facade
@@ -248,7 +248,7 @@ Consumes: root aliases `startup::{Paths, StartupNotice}`, `settings::{Settings, 
     crates/app/src/app_core/tests/mod.rs AGENTS.md docs/reference/app-rules.md docs/reference/live-text.md \
     docs/reference/cleanup-styles.md docs/reference/voice-modes.md
   git diff --cached --check
-  git commit -m 'refactor(app): split AppCore by concern behind its facade' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(app): split AppCore by concern behind its facade'
   ```
 
 ## Task 6 — Batch 6a: move controller tests before touching responsibilities
@@ -275,7 +275,7 @@ Consumes: unchanged `controller::{Controller, Msg, Env, channel, run, meter}`, `
     crates/app/src/controller/tests.rs crates/app/src/controller/live_tests.rs crates/app/src/controller/tests/mod.rs crates/app/src/controller/tests/live_tests.rs \
     docs/reference/cleanup-styles.md docs/reference/app-rules.md docs/reference/live-text.md docs/reference/voice-modes.md
   git diff --cached --check
-  git commit -m 'refactor(controller): relocate tests without changing discovery' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(controller): relocate tests without changing discovery'
   ```
 
 ## Task 7 — Batch 6b: controller responsibilities without changing the actor
@@ -308,7 +308,7 @@ Consumes: the unchanged 103-test controller suite; platform traits/fakes; `Provi
     crates/app/src/controller/transcription.rs crates/app/src/controller/delivery.rs crates/app/src/controller/tests/mod.rs docs/reference/live-text.md \
     docs/reference/voice-modes.md docs/reference/cleanup-styles.md docs/development/known-issues.md
   git diff --cached --check
-  git commit -m 'refactor(controller): separate handle capture transcription and delivery' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(controller): separate handle capture transcription and delivery'
   ```
 
 ## Task 8 — Batch 7: core cleanup concern modules and unchanged facade
@@ -335,7 +335,7 @@ Consumes: `opit_core::pipeline::{Transcript, TranscriptStatus}`, `provider::Prof
     crates/core/src/cleanup/mod.rs crates/core/src/cleanup/config.rs crates/core/src/cleanup/prompts.rs crates/core/src/cleanup/response.rs \
     crates/core/src/cleanup/transport.rs docs/reference/cleanup-styles.md
   git diff --cached --check
-  git commit -m 'refactor(core): split cleanup behind the existing public facade' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(core): split cleanup behind the existing public facade'
   ```
 
 ## Task 9 — Batch 8: commands by domain with one invoke registry
@@ -381,7 +381,7 @@ Consumes: unchanged `app_core::{AppCore, CommandError, CorrectionDraft, HistoryU
     crates/app/src/commands/local.rs crates/app/src/commands/files.rs crates/app/src/commands/updates.rs AGENTS.md \
     docs/reference/app-rules.md docs/reference/live-text.md docs/reference/cleanup-styles.md docs/reference/voice-modes.md
   git diff --cached --check
-  git commit -m 'refactor(commands): group invoke handlers by domain' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(commands): group invoke handlers by domain'
   ```
 
 ## Task 10 — Batch 9: IPC protocol, framing and transport
@@ -406,7 +406,7 @@ Consumes: existing `opit_ipc` root contracts used by `crates/cli/src/main.rs` an
     crates/ipc/src/lib.rs crates/ipc/src/protocol.rs crates/ipc/src/framing.rs crates/ipc/src/windows.rs \
     crates/ipc/src/transport/mod.rs crates/ipc/src/transport/windows.rs
   git diff --cached --check
-  git commit -m 'refactor(ipc): separate protocol framing and Windows transport' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(ipc): separate protocol framing and Windows transport'
   ```
 
 ## Task 11 — Batch 10: local model runtime separation
@@ -437,7 +437,7 @@ Consumes: `platform::process::Tree`, `platform::windows::hardware::detect`, `loc
     crates/app/src/local/server.rs crates/app/src/local/runtime/mod.rs crates/app/src/local/runtime/hardware.rs crates/app/src/local/runtime/server.rs \
     crates/app/src/local/runtime/windows.rs crates/app/src/platform/windows/hardware.rs
   git diff --cached --check
-  git commit -m 'refactor(local): separate model logic from runtime metadata and discovery' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(local): separate model logic from runtime metadata and discovery'
   ```
 
 ## Task 12 — Batch 11: UI feature folders, preview and final documentation handoff
@@ -663,7 +663,7 @@ Root `App.svelte` still switches the same routes, now importing feature page com
     docs/development/known-issues.md docs/reference/app-rules.md docs/reference/cleanup-styles.md docs/reference/live-text.md \
     docs/reference/voice-modes.md
   git diff --cached --check
-  git commit -m 'refactor(ui): organize features shared modules and browser preview' -m 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>'
+  git commit -m 'refactor(ui): organize features shared modules and browser preview'
   ```
 
 ## Plan self-review and completion criteria

@@ -82,6 +82,9 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
 - Commit style: Conventional-ish prefixes as in `git log` (`feat(ui): …`, `fix(updater): …`,
   `docs: …`, `ci: …`). Work on a feature branch; merge to `main` locally with `--no-ff` only when
   the user agrees.
+- Commits and pull requests never carry AI attribution: no `Co-Authored-By: Claude`, no
+  `noreply@anthropic.com`, no "Generated with" line. The `commit-identity` CI job rejects them, and
+  `.claude/settings.json` must stay in the repo because it turns the trailer off.
 
 ## Do not touch / be careful
 

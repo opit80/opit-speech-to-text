@@ -77,7 +77,7 @@ Move batches, each one green and one commit, in this order:
 
 1. Documentation: regroup `docs/`, extract still-valid deferred work and manual checks from `docs/superpowers/plans/`, then
    remove the plan files from the tree (git history keeps them). Keep the original design and this one under
-   `docs/design/`. Remove tracked `.claude/settings.json`. Replace status and history in `AGENTS.md` with current
+   `docs/design/`. Keep tracked `.claude/settings.json`, which disables AI attribution. Replace status and history in `AGENTS.md` with current
    rules, updating its layout table. Fix public doc links to ignored `.superpowers` logs and local build paths.
 2. Shared process supervision (`ask/process.rs` to `platform/process.rs`) and Windows hardware probing.
 3. Platform factory replacing direct construction in `lib.rs`; isolate uninstall; share the cpal microphone source.
