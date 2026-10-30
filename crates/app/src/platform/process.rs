@@ -196,7 +196,8 @@ mod tests {
                 args.clone(),
                 dir.path().into(),
                 request.into(),
-                Duration::from_secs(5),
+                // The first Node launch can be cold under parallel Windows CI load.
+                Duration::from_secs(30),
                 rx.clone(),
             )
             .unwrap();

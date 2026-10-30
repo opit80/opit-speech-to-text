@@ -93,6 +93,11 @@ impl opit_core::provider::streaming::LiveSession for FakeLiveSession {
             if self.0.hang_finish.load(Ordering::SeqCst) {
                 return std::future::pending().await;
             }
+            // Like the real socket's finish handshake, consume queued frames before
+            // accepting a final result, even if stopping wins over next_update.
+            while let Some(update) = self.0.updates.lock().unwrap().pop_front() {
+                update?;
+            }
             self.0.result.lock().unwrap().clone()
         })
     }
