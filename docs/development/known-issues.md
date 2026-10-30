@@ -32,19 +32,19 @@ items. Each row is its retained destination. “Partly superseded” explicitly 
 | P1-05 | `opit-eval` `read_wav` panics on `bits_per_sample: 0`, and a `&#124;` in a sample name breaks the report table. | Retained candidate | `crates/eval/src/dataset.rs: read_wav subtracts one from bits_per_sample; crates/eval/src/report.rs: render` | Feed a malformed zero-bit WAV and a sample name containing a pipe; require an error without panic and a valid Markdown table. Check decoder rejection before attributing a reachable panic. |
 | P2-01 | Transcription task panic recovery resolved by Opit Speech to Text's dictation queue: a monitored worker reports a sanitized error and the queue advances. A hanging paste thread still cannot be escaped. | Retained / partly superseded | `crates/app/src/controller/tests/mod.rs: provider_worker_panic_does_not_wedge_the_controller and recording_continues_while_paste_and_restore_are_blocked` | Provider panic recovery is superseded by the monitored queue. Retain the hanging-paste limitation: use a blocked fake Paster and verify whether cancellation/shutdown can finish; do not claim recording concurrency makes paste escapable. |
 | P2-02 | A clipboard holding only uncopyable formats snapshots as empty, and the restore then clears it (`clipboard.rs`). | Retained candidate | `crates/app/src/platform/windows/clipboard.rs: snapshot versus selection_snapshot, restore` | On disposable Windows, copy only unsupported/GDI formats, enable restoration, dictate, and inspect original clipboard formats. Strict selection backup does not prove best-effort paste backup safety. |
-| P2-03 | `mic.start` and `history.record` block a Tokio worker inside the controller actor. | Retained candidate | `crates/app/src/controller/mod.rs: microphone start and history.record call sites` | Use a slow fake microphone/history store; observe actor responsiveness and Tokio worker blocking. Reassess after the controller move; do not fix here. |
+| P2-03 | `mic.start` and `history.record` block a Tokio worker inside the controller actor. | Retained candidate | `crates/app/src/controller/recording.rs: start; crates/app/src/controller/delivery.rs: record` | Use a slow fake microphone/history store; observe actor responsiveness and Tokio worker blocking. Reassess after the controller move; do not fix here. |
 | P2-04 | The overlay's action fires on a mouse-up without a matching mouse-down, so a stray Retry could paste. | Retained candidate | `crates/app/src/platform/windows/overlay.rs: WM_LBUTTONUP and overlay_button_click` | Send a mouse-up without a preceding mouse-down over Retry on a disposable desktop; expect no unintended delivery. |
 | P2-05 | Quit can lose the last log lines and a pending clipboard restore: the log guard is never dropped (`App::run` never returns on Windows), and Exit does not wait for the controller. | Retained / partly superseded | `crates/app/src/shell/mod.rs: RunEvent::ExitRequested sends Msg::Shutdown and drains media/local; crates/app/src/shell/logging.rs: WorkerGuard` | The old no-shutdown-dispatch description is stale. Still verify quit during pending paste/restore and final log flush: sending Shutdown and awaiting media/local is not a controller completion acknowledgement. |
 | P2-06 | Two quick tray "Open" clicks race two window builds. | Retained candidate | `crates/app/src/shell/window.rs: show_main and build` | Double-click tray Open rapidly with no WebView; require one window and no build error. |
 | P2-07 | The second instance logs `starting` before it exits. | Retained candidate | `crates/app/src/shell/mod.rs: starting log before single-instance plugin setup` | Start a second instance and inspect metadata-only logs; determine whether a redundant starting record remains. |
-| P2-08 | Resolved with the dictation queue: `ClipboardOnly` logs only that text remains on the clipboard, without guessing why auto-paste was skipped. | Superseded | `crates/app/src/controller/mod.rs: PasteOutcome::ClipboardOnly; crates/app/src/controller/tests/mod.rs: a_refused_paste_leaves_the_text_on_the_clipboard` | Retain clipboard-only metadata logging without guessing the reason. |
+| P2-08 | Resolved with the dictation queue: `ClipboardOnly` logs only that text remains on the clipboard, without guessing why auto-paste was skipped. | Superseded | `crates/app/src/controller/delivery.rs: PasteOutcome::ClipboardOnly; crates/app/src/controller/tests/mod.rs: a_refused_paste_leaves_the_text_on_the_clipboard` | Retain clipboard-only metadata logging without guessing the reason. |
 | P2-09 | A valid but locked `config.json` at start-up is moved aside as damaged. Its contents survive in `config.json.bad-*`. | Retained candidate | `crates/app/src/shell/startup.rs: config recovery; crates/app/src/app_core.rs: a_config_that_could_not_be_moved_aside_is_never_overwritten` | Hold a valid scratch config with restrictive Windows sharing and start; distinguish a sharing failure from corrupt data, confirm backup protection. |
 | P2-10 | back-to-back clipboard restoration resolved by the dictation queue: each paste waits for its own restore before the next paste starts; | Superseded | `crates/app/src/platform/windows/paster.rs: CLIPBOARD_OPERATION; crates/app/src/controller/tests/mod.rs: bounded_fifo_preserves_profiles_paste_policy_and_history_order` | Preserve serialized paste/restore ordering; verify native formats in the desktop pass. |
 | P2-11 | Ctrl+V sent with `wScan` 0; | Retained candidate | `crates/app/src/platform/windows/paster.rs: key_input and clipboard shortcut INPUT builders` | Check Ctrl+V behavior on multiple keyboard layouts and target controls, including scan-code-sensitive software. |
 | P2-12 | the snapshot forces rendering of every delayed format. | Retained candidate | `crates/app/src/platform/windows/clipboard.rs: snapshot and copy_hglobal` | Use a delayed-rendering clipboard owner on disposable Windows; check blocking and preservation of every format. |
 | P3-01 | Core: `add_correction` dedupes terms by exact match, so an existing `github` term gets a second `GitHub`. There are no tests for `header_comments` with no body or `to_yaml_with_header` with an empty header. | Retained / partly superseded | `crates/core/src/rules/pack.rs: add_correction delegates casing-only changes to add_term; term_updates_casing_in_place_with_turkish_folding` | Exact-match casing duplication is superseded. Retain the test-gap candidate: cover header_comments with a comment-only file and to_yaml_with_header with an empty header. |
 | P3-02 | `config-changed` is emitted after `config_lock` is released, so overlapping tray and UI saves can deliver an older config last. | Retained candidate | `crates/app/src/commands.rs: save_config/set_active_profile/learning_apply emit after AppCore returns; crates/app/src/app_core.rs: config_lock` | Interleave tray, UI config and learning/rules saves; collect event revisions/order and ensure older replies/events cannot overwrite newer config. |
-| P3-03 | The paste-failure text says "text is in History" when history is on, even if the history write itself failed. | Retained candidate | `crates/app/src/controller/mod.rs; crates/app/src/controller/tests/mod.rs: a_failed_paste_uses_the_sessions_history_setting` | Fail a history write and paste together with history enabled; check the user message does not promise an unavailable row. |
+| P3-03 | The paste-failure text says "text is in History" when history is on, even if the history write itself failed. | Retained candidate | `crates/app/src/controller/delivery.rs; crates/app/src/controller/tests/mod.rs: a_failed_paste_uses_the_sessions_history_setting` | Fail a history write and paste together with history enabled; check the user message does not promise an unavailable row. |
 | P3-04 | `test_connection` reads the keyring on the async runtime without `spawn_blocking`. | Retained candidate | `crates/app/src/app_core.rs: async test_connection directly calls platform.secrets.get; crates/app/src/commands.rs: test_connection` | Use a blocking fake keyring and observe runtime responsiveness; the cleanup-test path uses a blocking worker but does not supersede this path. |
 | P3-05 | Resolved by Opit Speech to Text's failed-dictation history: playback and retry tests reject `audio/../` paths that escape the audio directory; deletion also stays inside that directory. | Superseded | `crates/app/src/app_core.rs: history_audio_reads_only_files_in_the_audio_folder and failed_history_wav_loads_after_reopen_and_requires_history_enabled; crates/app/src/history_service.rs` | Keep playback/retry/deletion inside the audio directory, including audio/../ escape attempts. |
 | P3-06 | The capture expiry check-then-act gap and the `sync_pause` ordering race (nanosecond window). | Retained candidate | `crates/app/src/app_core.rs: set_hotkey_capture_for and sync_pause` | Stress expiry concurrent with restart/user pause; generation tests cover ordinary stale timers, not atomicity of check-then-store or pause ordering. |
@@ -359,6 +359,42 @@ downloads, GPU startup, microphone dictation and transcription speed require a
 separate manual pass on the target PC.
 
 - [ ] **F-10 — private IPC.** Source: [CLI guide](../guides/cli.md#building). On Windows, run the ignored private_pipe_roundtrip test with a suitable named-pipe runner; verify the user-only transport and privacy boundary. Linux cannot establish Windows named-pipe acceptance.
+
+## Layout Task 7 — pending native insertion acceptance
+
+Status: **pending**. Owner: Windows owner/orchestrator. This Linux layout move cannot
+compile the app or establish native focus, UIPI, clipboard-format or restoration
+acceptance. Fake `Paster` tests do not prove native behavior. Use a real microphone,
+a configured provider, disposable `OPIT_DATA_DIR` and synthetic non-private text.
+Record baseline results at pre-Task-7 commit
+`8bd95455af5646cc5b14b3dbff67063f62277652` and after the reviewed Task 7 change,
+including any pre-existing defects; neither desktop pass has been run here.
+
+- [ ] In a normal editor, start and stop dictation with the shortcut. Confirm insertion
+  reaches the stop-time target. Repeat using tray/UI stop; confirm clipboard-only
+  output, no synthesized insertion and text available for manual paste.
+- [ ] Start in a normal editor, focus an elevated editor and let the recording limit
+  stop it. Confirm UIPI safety: no automatic insertion into the elevated target,
+  clipboard-only feedback and text recoverable with manual Ctrl+V.
+- [ ] Enable clipboard restoration, copy an original marker, then dictate. Confirm
+  the original clipboard formats return when unchanged. Repeat while replacing the
+  clipboard during transcription; confirm the user's newer clipboard survives.
+- [ ] Queue two jobs with restoration enabled. Confirm FIFO insertion and that each
+  paste and its restore finish before the next paste starts; verify target text
+  and clipboard contents after each completion.
+- [ ] Repeat all of the above with History off. Confirm no new transcript files,
+  audio files or history rows. Record before/after observations without private text.
+
+Windows CI/orchestrator must compare full library test discovery and ignored sets
+before and after, retaining exact `controller::tests::*` and
+`controller::tests::live_tests::*` names. Source search counts are 103 controller
+test attributes (90 main tests, ten live tests, two status tests, one live-worker
+test), not executable discovery. Run `cargo test -p opit-speech-to-text --lib controller::`
+with all 103 discovered tests, then full-workspace formatting, clippy with
+`-D warnings` and tests. Run socket-binding scenarios outside the worker sandbox.
+Existing hanging-paste, clipboard-format/delayed-rendering, blocking actor and quit
+limitations remain tracked in P2-01/P2-02/P2-03/P2-05/P2-12; retain any baseline
+native defects without fixing them in this move.
 
 ## Document-retention and link exceptions
 

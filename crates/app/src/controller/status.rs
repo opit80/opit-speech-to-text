@@ -1,5 +1,11 @@
 //! What the controller reports to the tray and the UI.
 
+use super::{Controller, ERROR_HIDE, ERROR_WITH_BUTTON_HIDE, INFO_HIDE, Phase, Providers};
+use crate::i18n::Lang;
+use crate::platform::{OverlayAction, OverlayButton, OverlayView, RecordingTiming, Sound, Tone};
+use std::sync::PoisonError;
+use std::time::{Duration, Instant};
+
 use opit_core::pipeline::PipelineError;
 use opit_core::provider::ProviderError;
 use serde::Serialize;
@@ -126,6 +132,142 @@ impl Default for DictationStatus {
     fn default() -> Self {
         Self { state: DictationState::Idle, can_retry: false, waiting: 0, paused: false, retry_wait: None }
     }
+}
+
+impl<P: Providers> Controller<P> {
+    pub(super) fn show_progress(&self) {
+        let lang = self.env.settings.current().lang;
+        let text = match &self.phase {
+            Phase::Transcribing { asking: true, job, .. } => {
+                job.settings.lang.asking(job.settings.config.ask.agent.name(), job.started.elapsed().as_secs())
+            }
+            Phase::Transcribing { cleaning: true, job, .. } if job.voice.is_none() && !job.ask => {
+                lang.cleaning_skippable().into()
+            }
+            Phase::Transcribing { cleaning: true, .. } => lang.cleaning().into(),
+            Phase::Transcribing { progress: Some(progress), .. } => lang.retry_wait(*progress),
+            _ => lang.transcribing().into(),
+        };
+        self.show(view(Tone::Busy, text, None));
+    }
+
+    pub(super) fn fail(&mut self, kind: ErrorKind, lang: Lang) {
+        self.fail_with_message(kind, lang, lang.error(kind).to_string());
+    }
+
+    pub(super) fn fail_with_message(&mut self, kind: ErrorKind, lang: Lang, message: String) {
+        let button = if kind.needs_settings() {
+            Some(OverlayButton { action: OverlayAction::OpenSettings, label: lang.open_settings().into() })
+        } else if self.retry.is_some() {
+            Some(OverlayButton { action: OverlayAction::Retry, label: lang.retry().into() })
+        } else {
+            None
+        };
+        let hide_after = if button.is_some() { ERROR_WITH_BUTTON_HIDE } else { ERROR_HIDE };
+        self.show(OverlayView {
+            live_text: None,
+            tone: Tone::Error,
+            text: message.clone(),
+            level: None,
+            recording: None,
+            button,
+            hide_after: Some(hide_after),
+        });
+        self.play(Sound::Error);
+        self.set_state(DictationState::Error { kind, message });
+        self.set_state(DictationState::Idle);
+    }
+
+    pub(super) fn finish_info(&mut self, text: &str) {
+        self.show(view(Tone::Neutral, text, Some(INFO_HIDE)));
+        self.set_state(DictationState::Idle);
+    }
+
+    pub(super) fn play(&self, sound: Sound) {
+        if self.env.settings.current().config.ui.sound_feedback {
+            self.env.sounds.play(sound);
+        }
+    }
+
+    pub(super) fn show_recording(&self) {
+        if let Some(r) = &self.recording {
+            let label = if r.paused { r.settings.lang.recording_paused() } else { r.label };
+            let max = Duration::from_secs(u64::from(r.settings.config.recording.max_seconds));
+            let remaining = if r.paused { r.remaining } else { r.remaining.saturating_sub(r.resumed_at.elapsed()) };
+            let label = if r.voice.is_some() {
+                if r.paused { format!("{} · {}", r.label, label) } else { label.to_string() }
+            } else {
+                format!("{} - {}", label, r.settings.lang.style_name(&r.cleanup_style))
+            };
+            let mut view = listening(&r.settings.lang.with_waiting(&label, self.waiting.len()), r.level);
+            if !r.live_text.is_empty() {
+                view.live_text = Some(r.live_text.clone());
+            }
+            view.recording = Some(RecordingTiming {
+                session: r.session,
+                elapsed: max.saturating_sub(remaining),
+                updated_at: Instant::now(),
+                paused: r.paused,
+            });
+            self.env.overlay.show(view);
+        }
+    }
+
+    pub(super) fn show(&self, mut view: OverlayView) {
+        if self.recording.is_some() {
+            self.show_recording();
+        } else {
+            view.text = self.env.settings.current().lang.with_waiting(&view.text, self.waiting.len());
+            self.env.overlay.show(view);
+        }
+    }
+
+    pub(super) fn set_state(&mut self, state: DictationState) {
+        let state = if self.recording.is_some() { DictationState::Recording } else { state };
+        if state == DictationState::Idle && !self.waiting.is_empty() {
+            return;
+        }
+        let status = DictationStatus {
+            state,
+            can_retry: self.is_idle() && self.retry.is_some(),
+            waiting: self.waiting.len(),
+            paused: self.recording.as_ref().is_some_and(|r| r.paused),
+            retry_wait: match &self.phase {
+                Phase::Transcribing { progress, .. } => *progress,
+                _ => None,
+            },
+        };
+        if *self.status.lock().unwrap_or_else(PoisonError::into_inner) == status {
+            return;
+        }
+        *self.status.lock().unwrap_or_else(PoisonError::into_inner) = status.clone();
+        self.env.events.status_changed(&status);
+    }
+}
+
+pub(super) fn view(tone: Tone, text: impl Into<String>, hide_after: Option<Duration>) -> OverlayView {
+    OverlayView { live_text: None, tone, text: text.into(), level: None, recording: None, button: None, hide_after }
+}
+
+fn listening(label: &str, rms: f32) -> OverlayView {
+    OverlayView {
+        live_text: None,
+        tone: Tone::Busy,
+        text: label.into(),
+        level: Some(meter(rms)),
+        recording: None,
+        button: None,
+        hide_after: None,
+    }
+}
+
+/// Maps microphone RMS to a 0..1 bar on a -60..0 dB scale, so normal speech (≈ -20 dB)
+/// fills about two thirds of the bar instead of a sliver.
+pub fn meter(rms: f32) -> f32 {
+    if !rms.is_finite() || rms <= 0.0 {
+        return 0.0;
+    }
+    ((20.0 * rms.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

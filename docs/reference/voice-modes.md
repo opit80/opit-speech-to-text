@@ -14,6 +14,10 @@ crates/core/src/history/mod.rs
 crates/app/src/app_core/mod.rs
 crates/app/src/commands.rs
 crates/app/src/controller/mod.rs
+crates/app/src/controller/recording.rs
+crates/app/src/controller/transcription.rs
+crates/app/src/controller/delivery.rs
+crates/app/src/controller/status.rs
 crates/app/src/controller/tests/mod.rs
 crates/app/src/history_service.rs
 crates/app/src/shell/i18n.rs

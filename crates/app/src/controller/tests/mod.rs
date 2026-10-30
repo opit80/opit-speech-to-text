@@ -9,6 +9,7 @@ use opit_core::pipeline::{PreparedAudio, TranscriptStatus};
 use opit_core::provider::{Profile, ProviderError, RawTranscript, TranscribeRequest, Transcriber};
 use tokio::sync::{Semaphore, mpsc};
 
+use super::transcription::{CleanupLog, wait_for_retry};
 use super::*;
 use crate::platform::fake::*;
 use crate::platform::{HotkeyEvent, MicError, OverlayAction, PasteOutcome, Sound, Tone};
