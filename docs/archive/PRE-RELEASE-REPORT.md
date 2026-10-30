@@ -83,7 +83,7 @@ secret or personal detail; clean-machine installation/restart remained untested 
 
 ## Git and user-data boundary
 
-- Branch: **codex/release-readiness**, created from **codex/usage-guide** at `aefb2c9`.
+- Branch: **release/release-readiness**, created from **release/usage-guide** at `aefb2c9`.
 - Pre-existing edits and untracked feature files remain in place. The candidate build includes
   these local features. They were not silently staged or committed as unrelated work.
 - No commit, merge to `main`, remote addition, push, tag or GitHub release creation was performed.

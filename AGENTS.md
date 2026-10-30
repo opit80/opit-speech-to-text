@@ -85,6 +85,8 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
 - Commits and pull requests never carry AI attribution: no `Co-Authored-By: Claude`, no
   `noreply@anthropic.com`, no "Generated with" line. The `commit-identity` CI job rejects them, and
   `.claude/settings.json` must stay in the repo because it turns the trailer off.
+- Branch names and commit titles are written for a public history: name the change (`feat/…`,
+  `refactor/…`), never the tool that made it. Merge titles copy the branch name.
 
 ## Do not touch / be careful
 

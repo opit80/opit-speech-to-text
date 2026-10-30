@@ -15,10 +15,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Reject AI attribution in commits
+      - name: Check commit messages
         run: |
-          if git log --format='%an <%ae>%n%cn <%ce>%n%B' HEAD | grep -iE 'co-authored-by:.*(claude|anthropic)|noreply@anthropic\.com|^claude '; then
-            echo "::error::AI attribution found in commit history"
+          if git log --format='%an <%ae>%n%cn <%ce>%n%B' HEAD | grep -iE 'co-authored-by:.*(claude|anthropic)|noreply@anthropic\.com|^claude |codex/'; then
+            echo "::error::Disallowed text found in commit history"
             exit 1
           fi
 

@@ -1,6 +1,6 @@
 # Layout Cleanup Implementation Plan
 
-> **For agentic workers:** Tasks are executed by Codex workers, one task at a time, each followed by a read-only review worker. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Tasks are executed by separate workers, one task at a time, each followed by a read-only review worker. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Execute layout move batches 1–11 without changing Windows behaviour, public contracts, installed-copy identity or test coverage; leave explicit seams for the separately planned Linux port.
 **Architecture:** Move existing code mechanically into concern-owned modules, retaining compatibility facades where callers depend on them. A platform factory becomes the only startup backend constructor, while process supervision, hardware probing and local runtime metadata get explicit ownership. Documentation and UI imports move with their consumers; no Linux backend, capabilities API or UI redesign is implemented here.
