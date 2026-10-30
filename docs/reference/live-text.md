@@ -140,7 +140,7 @@ final text, selection, provider error bodies and keys never enter diagnostics.
 - Platform integration: `crates/app/src/platform/mod.rs`,
   `crates/app/src/platform/fake.rs`, `crates/app/src/platform/microphone.rs`,
   `crates/app/src/platform/windows/overlay.rs`.
-- Overlay constructor updates: `crates/app/src/app_core.rs`, `crates/app/src/shell/mod.rs`.
+- Overlay constructor updates: `crates/app/src/app_core/mod.rs`, `crates/app/src/shell/mod.rs`.
 - Contract and acceptance notes: `docs/reference/live-text.md`.
 
 ## Verification
