@@ -34,11 +34,11 @@ items. Each row is its retained destination. “Partly superseded” explicitly 
 | P2-02 | A clipboard holding only uncopyable formats snapshots as empty, and the restore then clears it (`clipboard.rs`). | Retained candidate | `crates/app/src/platform/windows/clipboard.rs: snapshot versus selection_snapshot, restore` | On disposable Windows, copy only unsupported/GDI formats, enable restoration, dictate, and inspect original clipboard formats. Strict selection backup does not prove best-effort paste backup safety. |
 | P2-03 | `mic.start` and `history.record` block a Tokio worker inside the controller actor. | Retained candidate | `crates/app/src/controller/mod.rs: microphone start and history.record call sites` | Use a slow fake microphone/history store; observe actor responsiveness and Tokio worker blocking. Reassess after the controller move; do not fix here. |
 | P2-04 | The overlay's action fires on a mouse-up without a matching mouse-down, so a stray Retry could paste. | Retained candidate | `crates/app/src/platform/windows/overlay.rs: WM_LBUTTONUP and overlay_button_click` | Send a mouse-up without a preceding mouse-down over Retry on a disposable desktop; expect no unintended delivery. |
-| P2-05 | Quit can lose the last log lines and a pending clipboard restore: the log guard is never dropped (`App::run` never returns on Windows), and Exit does not wait for the controller. | Retained / partly superseded | `crates/app/src/lib.rs: RunEvent::ExitRequested sends Msg::Shutdown and drains media/local; crates/app/src/logging.rs: WorkerGuard` | The old no-shutdown-dispatch description is stale. Still verify quit during pending paste/restore and final log flush: sending Shutdown and awaiting media/local is not a controller completion acknowledgement. |
-| P2-06 | Two quick tray "Open" clicks race two window builds. | Retained candidate | `crates/app/src/window.rs: show_main and build` | Double-click tray Open rapidly with no WebView; require one window and no build error. |
-| P2-07 | The second instance logs `starting` before it exits. | Retained candidate | `crates/app/src/lib.rs: starting log before single-instance plugin setup` | Start a second instance and inspect metadata-only logs; determine whether a redundant starting record remains. |
+| P2-05 | Quit can lose the last log lines and a pending clipboard restore: the log guard is never dropped (`App::run` never returns on Windows), and Exit does not wait for the controller. | Retained / partly superseded | `crates/app/src/shell/mod.rs: RunEvent::ExitRequested sends Msg::Shutdown and drains media/local; crates/app/src/shell/logging.rs: WorkerGuard` | The old no-shutdown-dispatch description is stale. Still verify quit during pending paste/restore and final log flush: sending Shutdown and awaiting media/local is not a controller completion acknowledgement. |
+| P2-06 | Two quick tray "Open" clicks race two window builds. | Retained candidate | `crates/app/src/shell/window.rs: show_main and build` | Double-click tray Open rapidly with no WebView; require one window and no build error. |
+| P2-07 | The second instance logs `starting` before it exits. | Retained candidate | `crates/app/src/shell/mod.rs: starting log before single-instance plugin setup` | Start a second instance and inspect metadata-only logs; determine whether a redundant starting record remains. |
 | P2-08 | Resolved with the dictation queue: `ClipboardOnly` logs only that text remains on the clipboard, without guessing why auto-paste was skipped. | Superseded | `crates/app/src/controller/mod.rs: PasteOutcome::ClipboardOnly; crates/app/src/controller/tests.rs: a_refused_paste_leaves_the_text_on_the_clipboard` | Retain clipboard-only metadata logging without guessing the reason. |
-| P2-09 | A valid but locked `config.json` at start-up is moved aside as damaged. Its contents survive in `config.json.bad-*`. | Retained candidate | `crates/app/src/startup.rs: config recovery; crates/app/src/app_core.rs: a_config_that_could_not_be_moved_aside_is_never_overwritten` | Hold a valid scratch config with restrictive Windows sharing and start; distinguish a sharing failure from corrupt data, confirm backup protection. |
+| P2-09 | A valid but locked `config.json` at start-up is moved aside as damaged. Its contents survive in `config.json.bad-*`. | Retained candidate | `crates/app/src/shell/startup.rs: config recovery; crates/app/src/app_core.rs: a_config_that_could_not_be_moved_aside_is_never_overwritten` | Hold a valid scratch config with restrictive Windows sharing and start; distinguish a sharing failure from corrupt data, confirm backup protection. |
 | P2-10 | back-to-back clipboard restoration resolved by the dictation queue: each paste waits for its own restore before the next paste starts; | Superseded | `crates/app/src/platform/windows/paster.rs: CLIPBOARD_OPERATION; crates/app/src/controller/tests.rs: bounded_fifo_preserves_profiles_paste_policy_and_history_order` | Preserve serialized paste/restore ordering; verify native formats in the desktop pass. |
 | P2-11 | Ctrl+V sent with `wScan` 0; | Retained candidate | `crates/app/src/platform/windows/paster.rs: key_input and clipboard shortcut INPUT builders` | Check Ctrl+V behavior on multiple keyboard layouts and target controls, including scan-code-sensitive software. |
 | P2-12 | the snapshot forces rendering of every delayed format. | Retained candidate | `crates/app/src/platform/windows/clipboard.rs: snapshot and copy_hglobal` | Use a delayed-rendering clipboard owner on disposable Windows; check blocking and preservation of every format. |
@@ -53,7 +53,7 @@ items. Each row is its retained destination. “Partly superseded” explicitly 
 | P3-09 | The load-error screen doubles the prefix ("could not load: Something went wrong: …") and has no retry. | Retained candidate | `ui/src/App.svelte: app.loadError screen; ui/src/lib/app.svelte.ts: initApp catch; ui/src/lib/errors.ts` | Reject initial IPC load in both languages; inspect duplicate prefixes and recovery/retry access. |
 | P3-10 | The `resumeError` banner does not clear when the hotkey is resumed from the tray. | Retained candidate | `ui/src/App.svelte: resumeError and resumeShortcut` | Fail UI Resume, then resume successfully from tray; require the stale error to disappear. |
 | P3-11 | The Button reserves a 12 px spinner slot on both sides, which makes ghost and icon buttons wide. | Retained candidate | `ui/src/lib/components/Button.svelte: spinner/slot layout` | Inspect ghost and icon button width, focus target and alignment in both themes at minimum width. |
-| P3-12 | Turkish wording: "tray" and "Çevriliyor" are kept for consistency with the spec and the overlay. | Historical-only | `ui/src/lib/i18n/tr.ts; crates/app/src/i18n.rs; original design brief` | This records a terminology decision, not a confirmed defect. Any future wording change requires bilingual/native consistency review. |
+| P3-12 | Turkish wording: "tray" and "Çevriliyor" are kept for consistency with the spec and the overlay. | Historical-only | `ui/src/lib/i18n/tr.ts; crates/app/src/shell/i18n.rs; original design brief` | This records a terminology decision, not a confirmed defect. Any future wording change requires bilingual/native consistency review. |
 | P3-13 | Home: the missing-key effect depends on the whole profile object, which causes flicker and an extra keyring lookup on unrelated config changes. The module-level `disposed` flag never resets (an HMR re-run stops loading). "Show all" is shown when history is off. | Retained candidate | `ui/src/pages/Home.svelte: active/api_key_ref effect, component-local disposed and history Show all link` | The old module-level description is stale: disposed is component-local. Instrument unrelated config saves for key lookup/flicker, rerun HMR effects, and open Home with history off before deciding which candidates remain. |
 | P3-14 | A delete or clear during an in-flight live refresh can drop the new row until the next event. | Retained candidate | `ui/src/pages/History.svelte: generation/listRequest, remove, refreshPending; ui/src/lib/history.test.ts` | Current mutation guards invalidate old loads and defer new events. Delay refresh, delete/clear, and complete a dictation concurrently; verify the new row remains. Pure helper tests do not establish mounted behavior. |
 | P3-15 | The contenteditable transcript shows spellcheck underlines (needs `spellcheck="false"`), and IME composition can still edit it. | Retained candidate | `ui/src/pages/History.svelte: data-transcript contenteditable=plaintext-only versus edit textarea spellcheck=false` | Use spelling and IME composition on the read-only transcript; verify displayed/persisted text cannot be changed accidentally. |
@@ -78,14 +78,14 @@ items. Each row is its retained destination. “Partly superseded” explicitly 
 | ID | Source item | Disposition and destination / current evidence | Check |
 | --- | --- | --- | --- |
 | P2-F1 | Index Plan 2 outcome, fixed by Plan 3 Task 2: blocking commands | Superseded: `crates/app/src/commands.rs` uses async blocking wrappers for file/keyring/history work. P3-04 separately retains the direct test_connection keyring call. | Preserve off-main-thread work. |
-| P2-F2 | Same source: tray pause notification | Superseded: `crates/app/src/tray.rs`, `ui/src/lib/app.svelte.ts` hotkey-state subscription. | Native tray/banner acceptance remains M3-08. |
+| P2-F2 | Same source: tray pause notification | Superseded: `crates/app/src/shell/tray.rs`, `ui/src/lib/app.svelte.ts` hotkey-state subscription. | Native tray/banner acceptance remains M3-08. |
 | P2-F3 | Same source: paste text with history disabled | Superseded: `a_failed_paste_does_not_mention_history_when_it_is_disabled` in `crates/app/src/controller/tests.rs`. | P3-03 separately retains failed history-write wording. |
 | P2-F4 | Same source: set_active_profile read-modify-write | Superseded: `crates/app/src/app_core.rs` uses update_config under config_lock; `update_config_applies_the_change_under_the_lock`. | P3-02 retains notification/learning ordering, not the fixed locked read. |
 | P2-F5 | Same source: microphone worker panic message | Superseded: `crates/app/src/commands.rs` list_microphones maps JoinError to a safe unavailable error. | Do not expose worker panic contents. |
 | P4-D1 | Index Plan 4 outcome / Task 6: SignPath workflow integration | Retained: [signing application notes](../release/signpath-application.md), `.github/workflows/release.yml`. Updater signatures do not establish Authenticode signing. | Complete application/integration separately after maintainer authorization; verify downloaded installer signing. |
 | P4-D2 | Same source: release notes in app | Retained candidate: `ui/src/lib/types.ts` UpdateInfo.notes, `ui/src/pages/Settings.svelte`. | Offer a fixture release with notes; determine whether/how they should be displayed. |
-| P4-D3 | Same source: tray Updates entry | Retained candidate: `crates/app/src/tray_menu.rs`. | Inspect native tray for update discovery/action; decide whether to add an entry in feature work. |
-| P4-D4 | Same source: stalled update download waits for ten-minute total timeout | Retained candidate: `crates/app/src/updates.rs`. | Stall a fixture download after headers; measure timeout and recovery; evaluate an idle timeout separately. |
+| P4-D3 | Same source: tray Updates entry | Retained candidate: `crates/app/src/shell/tray_menu.rs`. | Inspect native tray for update discovery/action; decide whether to add an entry in feature work. |
+| P4-D4 | Same source: stalled update download waits for ten-minute total timeout | Retained candidate: `crates/app/src/shell/updates.rs`. | Stall a fixture download after headers; measure timeout and recovery; evaluate an idle timeout separately. |
 | H1 | Plan index implementation outcomes, historical counts and public-contract descriptions | Historical-only: source commit above; current contracts live in code and reference docs. Old task code blocks are not execution instructions. | Use current CI/discovery, never copy historical counts as current results. |
 | H2 | Plan 4 Task 7 / index: local 0.1.0 signed build, absolute installer path and private outputs | Historical-only: 2026-10-01 Windows build reported 6,078,034 bytes (5.80 MB), below 15 MB; updater signature version/key checks passed. Installer execution and clean-machine acceptance were not established. Later public evidence is in [publication snapshot](../archive/PUBLICATION-REPORT.md). | Rebuild using current release instructions; the private installer/logs are not public downloads. |
 | H3 | Plan 4/index first-publication GitHub/tag/secrets/draft instructions | Historical-only: [2026-10-03 publication snapshot](../archive/PUBLICATION-REPORT.md) supersedes “nothing published” and repository-creation work; [first-release runbook](../archive/FIRST-RELEASE.md) retains historical procedure. | Do not repeat publication or rotate keys for layout work. Independent key/password backup remains unconfirmed; confirm securely without printing/copying secrets into the repository. |
@@ -174,6 +174,40 @@ No Linux app backend is enabled. Automated source comparisons do not establish n
   and update. Check data, credential namespace, autostart command and updater trust;
   `--delete-credentials` must exit before logging or directory creation. Keep the
   `$UpdateMode` guards intact. Never exercise cleanup against the owner's installation.
+
+## Layout Task 4 — pending Windows acceptance
+
+The shell move preserves the root module aliases, lifecycle order and installed-copy
+identity. Source comparisons on Linux do not establish Windows compilation or desktop acceptance.
+
+- [ ] On Windows, record full app library, integration and ignored discovery for the
+  pre-Task-4 commit `2b7a9b8f8bb2a8b6c35edc0647fac12980119bbe` and the reviewed candidate using
+  `cargo test -p opit-speech-to-text --lib -- --list`,
+  `cargo test -p opit-speech-to-text --lib -- --list --ignored`,
+  `cargo test -p opit-speech-to-text --tests -- --list` and
+  `cargo test -p opit-speech-to-text --tests -- --list --ignored`.
+  Compare complete names/counts and ignored sets, mapping only `startup::`, `logging::`,
+  `events::`, `i18n::`, `tray::`, `tray_menu::`, `window::` and `updates::` to their
+  `shell::` prefixes. Integration names stay unchanged. The moved inline source suites
+  contain 25 tests: startup six, i18n seven, tray_menu four and updates eight; these
+  are source counts, not Windows discovery results.
+- [ ] Run `cargo fmt --all --check`,
+  `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`,
+  followed by `cargo test -p opit-speech-to-text --test logging_init` (one test),
+  `cargo test -p opit-speech-to-text --test tauri_conf` (seven tests) and
+  `cargo test -p opit-speech-to-text --lib shell::i18n::tests::native_strings_preserve_utf8_and_ask_wording -- --exact`
+  (one test). A zero-test result does not pass these targeted gates. Run socket-binding
+  portable suites outside the worker sandbox; Linux cannot compile the app here.
+- [ ] Owner: use a disposable clean Windows VM and synthetic backed-up data/credentials
+  for M4-01 through M4-03: install, update from an existing lower version, restart,
+  keep-data/delete-data uninstall, cancellation while running and silent reinstall.
+  Confirm settings/history/rules/keys, data locations, credential namespace, autostart
+  command, updater trust and `$UpdateMode` guards. `--delete-credentials` must still
+  exit before logging or directory creation; never target the owner's installation.
+- [ ] Owner: check normal and autostart launches, second-instance focus, tray actions,
+  close/reopen during recording, update busy hold and normal quit during pending
+  clipboard restoration. Confirm media restoration/local-server termination and final
+  log flushing; retained P2-05 through P2-07 remain pending, not fixed by this move.
 
 ## Modern feature acceptance carried forward
 

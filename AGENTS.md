@@ -24,7 +24,7 @@ Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-0
 | `crates/eval` | `opit-eval`: real-provider WER/term accuracy CLI; see `docs/guides/eval.md`. |
 | `crates/ipc` | `opit-ipc`: protocol types/framing in `src/lib.rs`, Windows named-pipe transport in `src/windows.rs`. |
 | `crates/cli` | `opit-cli`: standalone `opit` console tool; see `docs/guides/cli.md`. |
-| `crates/app` | Tauri app (`opit_app`): `src/app_core.rs`, `commands.rs`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/factory.rs`, `platform/microphone.rs`; shell startup/logging/events/i18n/tray/window/updates remain in `src/`. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
+| `crates/app` | Tauri app (`opit_app`): `src/app_core.rs`, `commands.rs`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/factory.rs`, `platform/microphone.rs`; `src/shell/` owns startup/logging/events/i18n/tray/window/updates and the Tauri lifecycle, with root compatibility re-exports. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
 | `ui/` | Svelte 5 + Vite + Vitest: `src/pages/` and `pages/setup/`, `src/lib/components/`, shared `src/lib/api.ts`, `events.ts`, `types.ts`, `app.svelte.ts`, helpers and `i18n/`. Dev-only preview: `src/guide-preview.ts`, `src/BrowserPreview.svelte`, `guide-preview.html`. |
 | `rules/` | Built-in rule packs: `tr-core`, `tr-tech`, `fivem`. |
 | `scripts/` | CLI staging and release asset/signature/draft helpers; release tests in `scripts/release/`. |
@@ -62,7 +62,7 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
 - Code, comments, docs and commit messages are in **English**. Every user-facing UI string exists
   in both `ui/src/lib/i18n/en.ts` and `tr.ts` (parity is tested) — no literal user text in
   `.svelte` files. Turkish strings use correct orthography (ç, ğ, ı, İ, ö, ş, ü). The Rust side
-  (tray, overlay) has its own strings in `crates/app/src/i18n.rs`.
+  (tray, overlay) has its own strings in `crates/app/src/shell/i18n.rs`.
 - **Never log or put in error messages** transcript text or API keys. API keys live only in
   Windows Credential Manager (`<api_key_ref>.opit-speech-to-text`); the UI only passes them to
   `set_api_key` and clears the input afterwards.

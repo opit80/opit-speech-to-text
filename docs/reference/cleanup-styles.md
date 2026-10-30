@@ -191,8 +191,8 @@ Modified:
 
 - Core: `crates/core/src/cleanup/mod.rs`, `config.rs`, `history/mod.rs`, `lib.rs`.
 - App: `crates/app/src/app_core.rs`, `commands.rs`, `controller/mod.rs`, `controller/tests.rs`,
-  `events.rs`, `file_jobs.rs`, `history_service.rs`, `i18n.rs`, `lib.rs`, `platform/fake.rs`,
-  `platform/keys.rs`, `platform/mod.rs`, `platform/windows/hotkey.rs`, `tray.rs`, `tray_menu.rs`.
+  `shell/events.rs`, `file_jobs.rs`, `history_service.rs`, `shell/i18n.rs`, `shell/mod.rs`, `platform/fake.rs`,
+  `platform/keys.rs`, `platform/mod.rs`, `platform/windows/hotkey.rs`, `shell/tray.rs`, `shell/tray_menu.rs`.
 
 All commands ran sequentially from the repo root with
 `CARGO_TARGET_DIR=.superpowers/cargo-target` and `CARGO_NET_OFFLINE=true`:

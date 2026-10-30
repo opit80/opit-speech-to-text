@@ -336,7 +336,7 @@ export interface UpdateInfo {
   notes: string | null;
 }
 
-/** Mirrors `updates::UpdateState` (crates/app/src/updates.rs). */
+/** Mirrors `updates::UpdateState` (crates/app/src/shell/updates.rs). */
 export type UpdateState =
   | { kind: "idle" }
   | { kind: "checking" }

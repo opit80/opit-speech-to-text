@@ -1,4 +1,4 @@
-// Typed wrappers for every Rust → UI event (crates/app/src/events.rs).
+// Typed wrappers for every Rust → UI event (crates/app/src/shell/events.rs).
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppConfig, DictationStatus, HotkeyState, MicTestEvent, UpdateState } from "./types";
 import type { FileEvent } from "./types";

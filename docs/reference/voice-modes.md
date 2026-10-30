@@ -16,7 +16,7 @@ crates/app/src/commands.rs
 crates/app/src/controller/mod.rs
 crates/app/src/controller/tests.rs
 crates/app/src/history_service.rs
-crates/app/src/i18n.rs
+crates/app/src/shell/i18n.rs
 crates/app/src/platform/mod.rs
 crates/app/src/platform/fake.rs
 crates/app/src/platform/keys.rs
