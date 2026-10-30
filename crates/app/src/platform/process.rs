@@ -19,7 +19,7 @@ pub fn run(
     if *cancel.borrow() || cancel.has_changed().is_err() {
         return Err(ErrorKind::Cancelled);
     }
-    if super::cli::is_shim(&executable) && directory.to_string_lossy().starts_with(r"\\") {
+    if crate::ask::cli::is_shim(&executable) && directory.to_string_lossy().starts_with(r"\\") {
         // cmd.exe cannot retain a UNC working directory. Fail closed rather than
         // silently running a workspace-enabled agent from the Windows directory.
         return Err(ErrorKind::Rejected);
@@ -76,7 +76,7 @@ pub fn run(
 }
 
 fn build_command(executable: PathBuf, args: Vec<String>) -> Result<Command, ErrorKind> {
-    if super::cli::is_shim(&executable) {
+    if crate::ask::cli::is_shim(&executable) {
         // cmd.exe interprets metacharacters even inside quoted argv. Reject them in
         // the resolved path; model/session values are already restricted by cli::arguments.
         let path = executable.to_str().ok_or(ErrorKind::Rejected)?;
@@ -101,69 +101,7 @@ fn build_command(executable: PathBuf, args: Vec<String>) -> Result<Command, Erro
 }
 
 #[cfg(windows)]
-pub(crate) struct Tree(windows::Win32::Foundation::HANDLE);
-
-// The owned job handle has no thread affinity and is accessed through exclusive ownership.
-#[cfg(windows)]
-unsafe impl Send for Tree {}
-
-#[cfg(windows)]
-impl Tree {
-    pub(crate) fn new() -> Result<Self, ErrorKind> {
-        use windows::Win32::System::JobObjects::*;
-        unsafe {
-            let handle = CreateJobObjectW(None, None).map_err(|_| ErrorKind::Rejected)?;
-            let tree = Self(handle);
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const _,
-                std::mem::size_of_val(&limits) as u32,
-            )
-            .map_err(|_| ErrorKind::Rejected)?;
-            Ok(tree)
-        }
-    }
-    pub(crate) fn attach(&mut self, child: &std::process::Child) -> Result<(), ErrorKind> {
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::{CloseHandle, HANDLE};
-        use windows::Win32::System::{Diagnostics::ToolHelp::*, JobObjects::AssignProcessToJobObject, Threading::*};
-        // The child cannot execute or create descendants before assignment succeeds.
-        unsafe {
-            AssignProcessToJobObject(self.0, HANDLE(child.as_raw_handle())).map_err(|_| ErrorKind::Rejected)?;
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0).map_err(|_| ErrorKind::Rejected)?;
-            let mut entry = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
-            let mut next = Thread32First(snapshot, &mut entry);
-            let mut resumed = false;
-            while next.is_ok() {
-                if entry.th32OwnerProcessID == child.id()
-                    && let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID)
-                {
-                    resumed |= ResumeThread(thread) != u32::MAX;
-                    let _ = CloseHandle(thread);
-                }
-                next = Thread32Next(snapshot, &mut entry);
-            }
-            let _ = CloseHandle(snapshot);
-            if resumed { Ok(()) } else { Err(ErrorKind::Rejected) }
-        }
-    }
-    pub(crate) fn stop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1);
-        }
-    }
-}
-#[cfg(windows)]
-impl Drop for Tree {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(self.0);
-        }
-    }
-}
+pub(crate) use super::windows::process::Tree;
 
 #[cfg(not(windows))]
 pub(crate) struct Tree;
@@ -190,7 +128,7 @@ mod tests {
         std::io::stdin().read_to_string(&mut input).unwrap();
         if let Some(path) = input.strip_prefix("tree:") {
             Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "ask::process::tests::fake_grandchild", "--nocapture"])
+                .args(["--exact", "platform::process::tests::fake_grandchild", "--nocapture"])
                 .env("OPIT_ASK_GRANDCHILD_PID", path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -218,7 +156,7 @@ mod tests {
         let executable = std::env::current_exe().unwrap();
         run(
             executable,
-            vec!["--exact".into(), "ask::process::tests::fake_child".into(), "--nocapture".into()],
+            vec!["--exact".into(), "platform::process::tests::fake_child".into(), "--nocapture".into()],
             std::env::current_dir().unwrap(),
             input.into(),
             timeout,
@@ -252,7 +190,7 @@ mod tests {
         let (_tx, rx) = watch::channel(false);
         for agent in [opit_core::ask::Agent::Claude, opit_core::ask::Agent::Codex] {
             let config = opit_core::ask::AskConfig { agent, ..Default::default() };
-            let args = super::super::cli::arguments(&config, Some("12345678-1234-1234-1234-123456789abc")).unwrap();
+            let args = crate::ask::cli::arguments(&config, Some("12345678-1234-1234-1234-123456789abc")).unwrap();
             let bytes = run(
                 dir.path().join("shim with spaces.cmd"),
                 args.clone(),

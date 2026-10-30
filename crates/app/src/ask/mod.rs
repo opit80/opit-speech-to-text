@@ -1,6 +1,5 @@
 //! Local Ask orchestration. Request and answer buffers never implement Debug or enter logs.
-mod cli;
-pub(crate) mod process;
+pub(crate) mod cli;
 
 use std::sync::{
     Arc,
@@ -13,7 +12,7 @@ use opit_core::cleanup::{ChatMessage, CleanupClient, CleanupError};
 use tokio::sync::{Mutex, watch};
 
 use crate::controller::ErrorKind;
-use crate::platform::SecretStore;
+use crate::platform::{SecretStore, process};
 
 pub use cli::{AgentStatus, statuses};
 

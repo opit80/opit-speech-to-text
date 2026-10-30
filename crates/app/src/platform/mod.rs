@@ -5,6 +5,7 @@ pub mod fake;
 pub mod keys;
 #[cfg(any(windows, test))]
 mod media;
+pub(crate) mod process;
 #[cfg(windows)]
 pub mod windows;
 

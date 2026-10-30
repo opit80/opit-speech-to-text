@@ -1,7 +1,7 @@
 //! Opit Speech to Text's offline model installation and shared server supervisor.
 pub mod catalogue;
 mod download;
-mod hardware;
+pub(crate) mod hardware;
 mod server;
 
 use crate::settings::SettingsHandle;

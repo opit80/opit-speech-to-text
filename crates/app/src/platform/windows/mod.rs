@@ -3,11 +3,13 @@
 pub mod autostart;
 pub mod clipboard;
 pub mod foreground;
+pub(crate) mod hardware;
 pub mod hotkey;
 pub mod media;
 pub mod microphone;
 pub mod overlay;
 pub mod paster;
+pub(crate) mod process;
 pub mod secrets;
 pub mod sounds;
 

@@ -8,7 +8,7 @@ use tokio::time::Instant;
 pub enum Process {
     Native {
         child: Child,
-        tree: crate::ask::process::Tree,
+        tree: crate::platform::process::Tree,
     },
     #[cfg(test)]
     Fake(std::sync::Arc<std::sync::atomic::AtomicBool>),
@@ -55,7 +55,7 @@ impl Process {
             use std::os::windows::process::CommandExt;
             command.creation_flags(0x00000004 | 0x08000000);
         }
-        let mut tree = crate::ask::process::Tree::new().map_err(|_| LocalError::Launch)?;
+        let mut tree = crate::platform::process::Tree::new().map_err(|_| LocalError::Launch)?;
         let mut child = command.spawn().map_err(|_| LocalError::Launch)?;
         if tree.attach(&child).is_err() {
             let _ = child.kill();

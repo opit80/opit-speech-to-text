@@ -192,7 +192,7 @@ pub fn parse(agent: Agent, bytes: &[u8]) -> Result<(String, Option<String>), Err
     Ok((text.trim().into(), session))
 }
 
-pub fn is_shim(path: &Path) -> bool {
+pub(crate) fn is_shim(path: &Path) -> bool {
     path.extension().is_some_and(|s| s.eq_ignore_ascii_case("cmd") || s.eq_ignore_ascii_case("bat"))
 }
 
