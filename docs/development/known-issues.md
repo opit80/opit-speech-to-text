@@ -407,3 +407,11 @@ references are an intentional pending repair owned by Task 12; their live destin
 `docs/release/RELEASE-CHECKLIST.md`. The proposed `docs/CODE-SIGNING-POLICY.md` in the signing
 notes is a future document, not a broken existing target. No Linux support evidence is inferred
 from portable-crate checks; the [Linux status skeleton](linux-status.md) intentionally has no claims.
+
+## Layout Task 10 — pending Windows acceptance
+
+The ignored named-pipe roundtrip does not run in CI. On Windows, expect exactly one passing test:
+
+```sh
+cargo test -p opit-ipc transport::windows::tests::private_pipe_roundtrip -- --exact --ignored
+```
