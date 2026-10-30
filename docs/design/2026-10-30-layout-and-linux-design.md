@@ -130,6 +130,25 @@ Before the Linux port, a throwaway prototype on the owner's KDE Wayland session 
 protocol documents: portal shortcut with press and release, libei paste into a real app, layer-shell overlay without
 focus theft, and the clipboard mechanism. Findings update this document. The spike is not kept.
 
+### Findings (2026-10-31, KDE Plasma 6.8 Wayland, portal versions 2)
+
+| Question | Result | What the port must do |
+|---|---|---|
+| Portal shortcut | Works. Press and release both arrive with correct timing (2013 ms and 314 ms holds, keys sent through `ydotool`). Hold-to-talk is viable on KDE. | Offer hold on KDE. Other desktops remain unverified. |
+| App identity | An unsandboxed process is refused ("An app id is required"). `org.freedesktop.host.portal.Registry.Register` must come before other portal calls, and it fails ("App info not found") unless `<app id>.desktop` is installed. | Ship the `.desktop` file with every package. An AppImage writes its own on first run, before it asks for a shortcut. |
+| Shortcut id | Each new id opens a KDE dialog and leaves an entry in `kglobalshortcutsrc`, even for the same keys. A known id binds again without a dialog. | Use fixed ids. Never derive one from a process or session. |
+| Trigger keys | `Ctrl+Alt+D` never fired on the owner's machine, while `Ctrl+Shift+F9` did. The owner's layout uses `lv3:alt_switch`, which makes Alt a third-level key; this is the likely cause, not separately proven. The Windows default, `RightCtrl+RightShift`, is modifier-only and was not tried. | The Linux default has no Alt and no modifier-only combination, and users can change it. Setup confirms the shortcut fires before moving on, because a bound shortcut can still be dead. |
+| libei paste | Works. A focused test window received Ctrl+V and its text length matched the clipboard. Evdev key codes were enough. | Use this path on KDE. |
+| Paste permission | The restore token was accepted. `Start` took 7 ms on one later run and 2524 ms on another, and the owner did not observe whether a dialog appeared. | Open question: test whether later sessions run with no prompt, before relying on it for each dictation. |
+| Overlay | Works. A GTK3 layer-shell surface appeared, and the owner could keep typing anywhere. | Use it where layer-shell exists. |
+| Clipboard | Reads and writes work with no window of the app's own, through data-control. The test text was still readable after the process exited, most likely held by Klipper. Reading straight after a write returned the previous value, so the spike's restore check failed. | Do not treat an immediate read as the new value. Wait or verify the write before comparing, and keep clipboard tests away from a real user clipboard. |
+
+Fallbacks, from the approach used by [dikte](https://github.com/yusufipk/dikte), a GPL-3.0 project. This project is MIT, so ideas only and no code:
+
+- Paste where the RemoteDesktop portal is missing or refused: `ydotool`, when its daemon is available, reported plainly in setup.
+- Shortcut where the portal is missing: bind the `opit` CLI toggle in system shortcuts, as already decided. Setup may do this itself through `gsettings` on GNOME.
+- A `/dev/input` listener is not adopted. It needs the `input` group and can read every key the user types.
+
 ## Constraints
 
 - All rules in `AGENTS.md`: English code and docs, en/tr parity, no transcript or key text in logs, blocking work off
