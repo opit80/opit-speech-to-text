@@ -1,5 +1,8 @@
 # First release runbook
 
+> Historical snapshot — 2026-10-03. Statements and procedures below describe that date;
+> they do not establish current support or completed installation/desktop acceptance.
+
 Candidate: **0.1.3**. Repository: **opit80/opit-speech-to-text**, public, MIT license.
 These are the configured defaults; publication is a separate maintainer action.
 The maintainer's installed local app is already 0.1.2. The candidate is 0.1.3 so the default
@@ -30,7 +33,7 @@ updater comparator can offer it to that installation; publishing another 0.1.2 w
    rejection of modified installer bytes, and rejection of a forged manifest version. It never
    starts an installer, window, microphone or keyring operation. Production HTTPS settings stay
    unchanged. The release workflow runs it on its own generated artifacts before any draft upload.
-6. Run `docs/RELEASE-CHECKLIST.md` in a clean Windows VM. Do not use the maintainer's running
+6. Run `docs/release/RELEASE-CHECKLIST.md` in a clean Windows VM. Do not use the maintainer's running
    app or real data for destructive installer/uninstaller tests. `OPIT_DATA_DIR` alone does
    not isolate Windows credentials, autostart, installer registry entries or the clipboard.
 

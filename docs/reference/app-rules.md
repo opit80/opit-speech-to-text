@@ -127,7 +127,7 @@ Added:
 
 - `crates/core/src/app_rules.rs`
 - `crates/app/src/platform/windows/foreground.rs`
-- `docs/app-rules.md`
+- `docs/reference/app-rules.md`
 
 Changed:
 

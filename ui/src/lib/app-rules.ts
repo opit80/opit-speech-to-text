@@ -1,4 +1,4 @@
-// Per-app rules: pure helpers mirroring crates/core/src/app_rules.rs (docs/app-rules.md).
+// Per-app rules: pure helpers mirroring crates/core/src/app_rules.rs (docs/reference/app-rules.md).
 import type { MessageKey } from "./i18n";
 import type { AppRule, PasteAfter, PasteMethod } from "./types";
 

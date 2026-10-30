@@ -146,7 +146,7 @@ what you said or your API keys.
 | `ui/` | Svelte 5 front end of the app window |
 | `rules/` | Built-in rule packs (`tr-core`, `tr-tech`, `fivem`) |
 | `scripts/release/` | `latest-json.mjs`: release assets and the updater manifest |
-| `docs/` | Design brief, implementation plans and the [release checklist](docs/RELEASE-CHECKLIST.md) |
+| `docs/` | Design brief, implementation plans and the [release checklist](docs/release/RELEASE-CHECKLIST.md) |
 
 ## Development
 
@@ -198,7 +198,7 @@ For maintainers:
    installer, `.sig`, `latest.json` and `SHA256SUMS`, verifies the installer signature and signed
    version against the app's public key, and attaches them to a **draft** release. A rerun
    refreshes a draft; it refuses to overwrite an already published release.
-3. Run [`docs/RELEASE-CHECKLIST.md`](docs/RELEASE-CHECKLIST.md) on a clean Windows with the
+3. Run [`docs/release/RELEASE-CHECKLIST.md`](docs/release/RELEASE-CHECKLIST.md) on a clean Windows with the
    draft's installer, then publish the draft with **Pre-release off** and **Set as latest release
    on**. Publishing is what makes
    `https://github.com/opit80/opit-speech-to-text/releases/latest/download/latest.json` visible
@@ -208,13 +208,13 @@ Repository secrets: `TAURI_SIGNING_PRIVATE_KEY` (the content of the private key 
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never regenerate the key: installed apps accept only updates
 signed with it, so a new key strands every installed copy.
 
-For the first publication, follow [docs/FIRST-RELEASE.md](docs/FIRST-RELEASE.md).
+For the first publication, follow [docs/archive/FIRST-RELEASE.md](docs/archive/FIRST-RELEASE.md).
 Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Private vulnerability reporting:
 [SECURITY.md](SECURITY.md).
 
 ## Measuring accuracy
 
-See [`docs/eval.md`](docs/eval.md) for building a personal dataset and running `opit-eval`.
+See [`docs/guides/eval.md`](docs/guides/eval.md) for building a personal dataset and running `opit-eval`.
 
 ## License
 

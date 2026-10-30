@@ -12,7 +12,7 @@ if (!import.meta.env.DEV) throw new Error("Guide preview is only available in th
 const params = new URLSearchParams(location.search);
 // Synthetic local installation state for browser review; no download or process is started.
 const localPreset: Profile = { provider:"local_whisper",id:"local",name:"Local (offline)",base_url:"http://127.0.0.1:1",model:"ggml-large-v3-turbo-q5_0.bin",api_key_ref:null,language:"tr",audio_format:"wav",response_format:"verbose_json",send_prompt:true,send_keywords:false,apply_rules:true,apply_cleanup:false,fallback_profile_id:null };
-// Mirrors the Rust Deepgram Nova-3 preset (docs/live-text.md).
+// Mirrors the Rust Deepgram Nova-3 preset (docs/reference/live-text.md).
 const deepgramPreset: Profile = { provider:"deepgram",id:"deepgram",name:"Deepgram",base_url:"https://api.deepgram.com/v1",model:"nova-3",api_key_ref:"deepgram",language:"tr",audio_format:"wav",response_format:"json",send_prompt:false,send_keywords:false,apply_rules:true,apply_cleanup:true,fallback_profile_id:null };
 const localPreview: LocalState = {
   builds:[{ id:"blas",file:"preview.zip",url:"",sha256:"",size:21715607 },{ id:"cuda12",file:"preview.zip",url:"",sha256:"",size:684913404 }],

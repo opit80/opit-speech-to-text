@@ -35,7 +35,7 @@ Windows Credential Manager, autostart and the clipboard are still system resourc
 
 ## Releases
 
-Maintainers follow [docs/RELEASE-CHECKLIST.md](docs/RELEASE-CHECKLIST.md). Release automation
+Maintainers follow [docs/release/RELEASE-CHECKLIST.md](docs/release/RELEASE-CHECKLIST.md). Release automation
 creates or refreshes a draft, verifies installer signatures and never publishes automatically.
 Contributors do not need the updater private key; use `cargo tauri build --no-sign` for a local
 installer. Unsigned installers cannot be used for automatic updates.

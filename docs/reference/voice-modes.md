@@ -22,7 +22,7 @@ crates/app/src/platform/fake.rs
 crates/app/src/platform/keys.rs
 crates/app/src/platform/windows/clipboard.rs
 crates/app/src/platform/windows/paster.rs
-docs/voice-modes.md (new)
+docs/reference/voice-modes.md (new)
 ```
 
 ## Config contract
@@ -225,6 +225,8 @@ required for this package.
 
 ## Automated verification
 
+Historical Windows verification snapshot, 2026-10-28.
+
 The final checks ran sequentially on Windows with `CARGO_NET_OFFLINE=true` and
 `CARGO_TARGET_DIR=.superpowers/cargo-target`:
 
@@ -246,7 +248,8 @@ cargo test --workspace --offline                     PASS
 | app updater_artifacts / updater_live | 0 / 0 | 1 / 1 |
 
 All main-target and doc-test suites with zero tests also passed. Total: 540 passed,
-15 ignored, zero failed. Full local output: `.superpowers/package4-tests.log` (ignored).
+15 ignored, zero failed. These are the 2026-10-28 Windows results from private local output,
+not downloadable logs or proof of the native microphone/clipboard/provider acceptance above.
 The initial new core prompt/limit tests failed before implementation, then passed. Coverage
 includes old config defaults and normalization, shortcut conflicts and release events,
 schema migration/reopening, edit with/without selection, LLM failure without paste,

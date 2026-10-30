@@ -178,12 +178,14 @@ automated test boundary.
 
 ## Changed files and automated verification
 
+Historical Windows verification snapshot, 2026-10-28.
+
 Added:
 
 - `crates/core/src/cleanup/styles.rs`
 - `crates/core/src/hotkey.rs`
 - `crates/core/tests/cleanup_styles_http.rs`
-- `docs/cleanup-styles.md`
+- `docs/reference/cleanup-styles.md`
 
 Modified:
 
@@ -208,6 +210,7 @@ All commands ran sequentially from the repo root with
 | `opit-speech-to-text` | lib: 267; main: 0; logging_init: 1; tauri_conf: 7; updater_artifacts: 0; updater_live: 0 | lib: 11; updater_artifacts: 1; updater_live: 1 |
 
 All four library doc-test batches have zero tests. Total: **514 passed, 14 ignored, 0 failed**.
-The test log is `.superpowers/package2-workspace-tests.log` (ignored build evidence).
+This 2026-10-28 Windows verification summary is retained from private local output; the log
+is not a public artifact. It does not establish the real microphone/desktop/provider checks above.
 `git diff --check` passed and `ui/` has no diff. No new dependencies, git writes, commits,
 branch switches, pushes, tags or releases were performed.

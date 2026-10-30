@@ -141,7 +141,7 @@ final text, selection, provider error bodies and keys never enter diagnostics.
   `crates/app/src/platform/fake.rs`, `crates/app/src/platform/windows/microphone.rs`,
   `crates/app/src/platform/windows/overlay.rs`.
 - Overlay constructor updates: `crates/app/src/app_core.rs`, `crates/app/src/lib.rs`.
-- Contract and acceptance notes: `docs/live-text.md`.
+- Contract and acceptance notes: `docs/reference/live-text.md`.
 
 ## Verification
 

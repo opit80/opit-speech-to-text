@@ -1,5 +1,8 @@
 # Publication and updater report — 2026-10-03
 
+> Historical snapshot — 2026-10-03. Statements and procedures below describe that date;
+> they do not establish current support or completed installation/desktop acceptance.
+
 **Outcome:** [v0.1.3](https://github.com/opit80/opit-speech-to-text/releases/tag/v0.1.3) is published
 as a stable **Latest** release. Source, release assets and updater downloads are public. This report
 covers publication/download verification; the user explicitly excluded updating/restarting the
@@ -59,8 +62,9 @@ Signature, signed version, manifest, download URL and checksums passed. Installe
   configured public GitHub endpoint. A Tauri mock application at 0.1.2 discovered 0.1.3, downloaded
   and verified its installer; a current-version mock received no update. No installer was executed.
 
-Local evidence is in `target/release-readiness/`: `public-download-proof.json`,
-`published-updater-test.log`, build/check logs and release notes. Build/download outputs are ignored.
+On 2026-10-03, independent public downloads, signature/checksum verification and the live
+updater test established the download results above. Private build/download logs are not supplied
+here; the public CI links remain the published evidence. No installer execution was tested.
 
 ## Explicit verification boundary
 
@@ -68,7 +72,7 @@ The existing installed application remained at **0.1.2** and was not stopped, up
 Real app data, clipboard, API credentials and autostart were not modified by this publication task.
 Clean-machine installation/uninstallation, actual restart/data preservation, microphone/provider
 dictation, tray RAM and SmartScreen interaction remain manual acceptance work in
-[RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md). These are not claimed as passed.
+[RELEASE-CHECKLIST.md](../release/RELEASE-CHECKLIST.md). These are not claimed as passed.
 
 The next release uses the same versioned-tag → verified draft → reviewed Latest publication
 workflow. Do not move the published tag, replace its installer or regenerate the updater key.

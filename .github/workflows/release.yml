@@ -2,7 +2,7 @@ name: Release
 
 # Pushing a tag vX.Y.Z builds the signed NSIS installer and the updater manifest and attaches
 # them to a DRAFT GitHub Release. Nothing reaches users until a person runs
-# docs/RELEASE-CHECKLIST.md and publishes the draft (releases/latest ignores drafts).
+# docs/release/RELEASE-CHECKLIST.md and publishes the draft (releases/latest ignores drafts).
 on:
   push:
     tags: ["v*.*.*"]

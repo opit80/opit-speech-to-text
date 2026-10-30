@@ -1,5 +1,8 @@
 # Pre-release readiness report — 2026-10-03
 
+> Historical snapshot — 2026-10-03. Statements and procedures below describe that date;
+> they do not establish current support or completed installation/desktop acceptance.
+
 **Historical preparation snapshot.** Publication was subsequently authorized and completed;
 see [PUBLICATION-REPORT.md](PUBLICATION-REPORT.md) for the live release and download evidence.
 
@@ -73,10 +76,10 @@ Directory: `release-assets/0.1.3/` (Git-ignored).
 - Installer SHA-256: `8c477b91b1d2554460688d6ee2e7697d3d4d4797077f1a610abe120f7f39a5b9`.
 - Updater-signed, **not Windows Authenticode-signed**; SignPath integration remains separate work.
 
-Local evidence is under `target/release-readiness/`: test/build logs, redacted Gitleaks reports,
-source file/hash inventory, complete source candidate and its archive. The archive contains the
-review candidate working tree, not a tagged release. Detection scans do not guarantee the absence
-of every possible secret or personal detail; publication still requires source/history review.
+On 2026-10-03, local test/build logs, redacted scans and a source/hash inventory supported
+the Windows preparation results summarized above. Those private outputs are not published logs
+or a reproducible tagged release archive. Detection scans do not guarantee the absence of every
+secret or personal detail; clean-machine installation/restart remained untested in this snapshot.
 
 ## Git and user-data boundary
 
@@ -93,7 +96,7 @@ of every possible secret or personal detail; publication still requires source/h
 1. Review and finalize the candidate source into scoped commits; approve the local merge to
    `main`. The dirty working tree is not a reproducible release tag yet.
 2. Confirm a secure independent backup of the existing updater key and password.
-3. Run the complete [release checklist](RELEASE-CHECKLIST.md) in a disposable clean Windows
+3. Run the complete [release checklist](../release/RELEASE-CHECKLIST.md) in a disposable clean Windows
    environment: installation, wizard/real microphone/provider, clipboard/hotkeys, autostart,
    uninstall cancellation/data options, latency and tray RAM. Windows Sandbox and WSL are not
    installed here; the existing user's running app is not a safe destructive test environment.
@@ -107,4 +110,4 @@ of every possible secret or personal detail; publication still requires source/h
    and a real lower-version update: install, restart, new version, preserved data and dictation guard.
 
 Execution steps and the explicit Latest publication command are in
-[FIRST-RELEASE.md](FIRST-RELEASE.md); draft notes are in [releases/0.1.3.md](releases/0.1.3.md).
+[FIRST-RELEASE.md](FIRST-RELEASE.md); draft notes are in [releases/0.1.3.md](../releases/0.1.3.md).

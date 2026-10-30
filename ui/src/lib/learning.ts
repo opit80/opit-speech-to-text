@@ -1,4 +1,4 @@
-// Learning dictionary: History edits that offer personal rule/term additions (docs/learning-dictionary.md).
+// Learning dictionary: History edits that offer personal rule/term additions (docs/reference/learning-dictionary.md).
 import type { Dictation, LearningItem, LearningTarget, TermChange } from "./types";
 
 /** Must match `MAX_HISTORY_TEXT_BYTES` in crates/app (UTF-8 bytes, measured before trimming). */

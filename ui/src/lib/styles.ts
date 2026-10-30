@@ -1,4 +1,4 @@
-// Cleanup styles: pure helpers mirroring crates/core/src/cleanup/styles.rs (docs/cleanup-styles.md).
+// Cleanup styles: pure helpers mirroring crates/core/src/cleanup/styles.rs (docs/reference/cleanup-styles.md).
 import type { BuiltinStyleId, CleanupConfig, CleanupStyle, Lang, StyleDefaults } from "./types";
 
 export const BUILTIN_STYLE_IDS: readonly BuiltinStyleId[] = ["raw", "clean", "formal", "casual", "prompt"];

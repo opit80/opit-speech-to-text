@@ -1,4 +1,4 @@
-// Voice edit of the selected text and dictate-and-translate (docs/voice-modes.md).
+// Voice edit of the selected text and dictate-and-translate (docs/reference/voice-modes.md).
 import { cleanupValid } from "./cleanup";
 import type { MessageKey } from "./i18n";
 import type { AppConfig, CleanupConfig, Dictation, DictationMode, Lang, TranslateLanguage } from "./types";

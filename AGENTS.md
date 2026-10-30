@@ -4,39 +4,48 @@ Windows voice-dictation tray app: press a hotkey, speak, the transcript is paste
 Transcription uses the user's own API key (Groq / OpenAI / any OpenAI-compatible server).
 Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md`.
 
-## Status (2026-10-03)
+## Working context
 
-- Plans 1–4 are all implemented and merged to `main` (core, app shell, UI, release). Plan index,
-  outcomes, open manual passes and **deferred findings** (candidates for the next work):
-  `docs/superpowers/plans/README.md` — read it before starting new work.
-- The first public release **v0.1.3** is published as stable **Latest** at
-  `https://github.com/opit80/opit-speech-to-text/releases/tag/v0.1.3`; `origin` is configured.
-  Windows/Linux/UI CI, release packaging and production updater downloads passed. See
-  `docs/PUBLICATION-REPORT.md` for evidence and the explicitly untested installation/hardware boundary.
-- Do **not** push additional changes, tag or create releases unless the user asks in that conversation.
+- Read [documentation](docs/README.md) and [known issues / pending acceptance](docs/development/known-issues.md)
+  before new work. The [publication snapshot](docs/archive/PUBLICATION-REPORT.md) is historical
+  release evidence, not a current acceptance claim.
+- Active layout plan: `docs/superpowers/plans/2026-10-30-layout-cleanup.md`;
+  layout/Linux spec: `docs/superpowers/specs/2026-10-30-layout-and-linux-design.md`.
+  Both specs and the active plan stay at these paths until Task 12. Implement only the assigned task.
+- No pushes, tags or releases unless the user asks in the current conversation.
+- Layout changes preserve behavior, public contracts, test discovery and installed-copy identity.
+  Linux app backends, packages and desktop support require separate implementation and evidence.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `crates/core` | `opit-core`: audio prep, provider client, rule engine, prompt builder, history, config. **No Tauri or Windows crates**; must build and test on Linux. |
-| `crates/eval` | `opit-eval` CLI: WER / term accuracy against a real provider (`docs/eval.md`). |
-| `crates/app` | `opit-speech-to-text` (lib `opit_app`): Tauri 2 tray app — `commands.rs` (invoke API), `app_core.rs`, `controller/` (dictation state machine), `platform/` (cpal mic, WH_KEYBOARD_LL hook, SendInput paste, Win32 overlay, keyring, autostart), `updates.rs`, `uninstall.rs`, `windows/hooks.nsh` (NSIS hooks), `tauri.conf.json`. |
-| `ui/` | Svelte 5 + Vite + Vitest. `src/lib/` = typed `api.ts`/`events.ts`/`types.ts`, live state `app.svelte.ts`, `i18n/en.ts` + `tr.ts`, `components/`; `src/pages/` (+ `pages/setup/` wizard). |
-| `rules/` | Built-in rule packs (`tr-core`, `tr-tech`, `fivem`). |
-| `scripts/release/` | `latest-json.mjs` (+ `node:test` tests): release asset renaming and updater manifest. |
-| `.github/workflows/` | `ci.yml` (fmt/clippy/test on Windows + Linux, UI check/test/build), `release.yml` (tag → signed NSIS + `latest.json` → draft release). |
-| `docs/` | Spec, plans, `RELEASE-CHECKLIST.md`, `signpath-application.md`, `eval.md`. |
+| `crates/core` | `opit-core`: audio, providers, config, pipeline, rules, history, cleanup, file transcription and domain logic. **No Tauri or Windows crates**; builds and tests on Linux. |
+| `crates/eval` | `opit-eval`: real-provider WER/term accuracy CLI; see `docs/guides/eval.md`. |
+| `crates/ipc` | `opit-ipc`: protocol types/framing in `src/lib.rs`, Windows named-pipe transport in `src/windows.rs`. |
+| `crates/cli` | `opit-cli`: standalone `opit` console tool; see `docs/guides/cli.md`. |
+| `crates/app` | Tauri app (`opit_app`): `src/app_core.rs`, `commands.rs`, `controller/`, `ask/`, `local/`, `platform/windows/`; shell startup/logging/events/i18n/tray/window/updates remain in `src/`. `src/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
+| `ui/` | Svelte 5 + Vite + Vitest: `src/pages/` and `pages/setup/`, `src/lib/components/`, shared `src/lib/api.ts`, `events.ts`, `types.ts`, `app.svelte.ts`, helpers and `i18n/`. Dev-only preview: `src/guide-preview.ts`, `src/BrowserPreview.svelte`, `guide-preview.html`. |
+| `rules/` | Built-in rule packs: `tr-core`, `tr-tech`, `fivem`. |
+| `scripts/` | CLI staging and release asset/signature/draft helpers; release tests in `scripts/release/`. |
+| `.github/workflows/` | `ci.yml`: Windows full workspace, Linux portable crates and UI; `release.yml`: verified signed NSIS assets to a draft. |
+| `docs/` | `README.md` index; `guides/`, `reference/`, `development/`, `release/`, dated `archive/`, `releases/`; active specs/plan remain under `superpowers/`. |
 
 ## Commands
 
-Run from the repo root unless noted. All of these must pass before every commit that touches them:
+Run from the repo root unless noted. Run builds/tests sequentially. Windows CI must pass
+full-workspace clippy/tests; Linux cannot compile the app in the layout phase. Before every
+commit touching the relevant files:
 
 ```sh
 cargo fmt --all --check
+# Windows CI / suitable Windows runner:
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test scripts/release/latest-json.test.mjs      # when scripts/release changes
+# Linux portable gate (socket-binding tests need an unrestricted runner):
+cargo clippy --workspace --exclude opit-speech-to-text --all-targets -- -D warnings
+cargo test --workspace --exclude opit-speech-to-text
+node --test scripts/release/*.test.mjs                # when scripts/release changes
 cd ui && npm run check && npm test && npm run build   # svelte-check must give 0 errors AND 0 warnings
 ```
 
@@ -75,6 +84,10 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
   the user agrees.
 
 ## Do not touch / be careful
+
+- Preserve product name, identifier `io.github.opit80.opit-speech-to-text`, executable/asset names,
+  `APP_DIR_NAME`, credential service/suffix, autostart value, updater endpoint/public key and NSIS
+  guards. Autostart registration requires both `ui.autostart` and `ui.setup_done`.
 
 - **Updater signing key** `%USERPROFILE%\.tauri\opit-speech-to-text.key` (+ `.pub`, `.password`):
   never print, copy into the repo, commit or regenerate it — a new key strands every installed
