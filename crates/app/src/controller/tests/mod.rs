@@ -57,7 +57,6 @@ fn cleanup_log_records_one_safe_metadata_line_for_every_outcome() {
 }
 
 // ---------- scripted providers ----------
-#[path = "live_tests.rs"]
 mod live_tests;
 
 #[tokio::test]

@@ -134,9 +134,9 @@ final text, selection, provider error bodies and keys never enter diagnostics.
   `crates/core/src/provider/streaming.rs`, `crates/core/src/provider/streaming/tests.rs`.
 - App integration: `crates/app/src/commands.rs`, `crates/app/src/providers.rs`,
   `crates/app/src/file_jobs.rs`, `crates/app/src/platform/windows/uninstall.rs`,
-  `crates/app/src/controller/mod.rs`, `crates/app/src/controller/tests.rs`.
+  `crates/app/src/controller/mod.rs`, `crates/app/src/controller/tests/mod.rs`.
 - New recording worker/tests: `crates/app/src/controller/live.rs`,
-  `crates/app/src/controller/live_tests.rs`.
+  `crates/app/src/controller/tests/live_tests.rs`.
 - Platform integration: `crates/app/src/platform/mod.rs`,
   `crates/app/src/platform/fake.rs`, `crates/app/src/platform/microphone.rs`,
   `crates/app/src/platform/windows/overlay.rs`.
