@@ -132,7 +132,7 @@ Added:
 Changed:
 
 - `crates/core/src/config.rs`, `crates/core/src/lib.rs`
-- `crates/app/src/app_core/mod.rs`, `crates/app/src/commands.rs`, `crates/app/src/shell/mod.rs`
+- `crates/app/src/app_core/mod.rs`, `crates/app/src/commands/`, `crates/app/src/shell/mod.rs`
 - `crates/app/src/controller/mod.rs`, `crates/app/src/controller/tests/mod.rs`
 - `crates/app/src/shell/i18n.rs`
 - `crates/app/src/platform/mod.rs`, `crates/app/src/platform/fake.rs`

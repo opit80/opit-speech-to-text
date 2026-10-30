@@ -12,7 +12,7 @@ crates/core/src/config.rs
 crates/core/src/cleanup/mod.rs
 crates/core/src/history/mod.rs
 crates/app/src/app_core/mod.rs
-crates/app/src/commands.rs
+crates/app/src/commands/
 crates/app/src/controller/mod.rs
 crates/app/src/controller/recording.rs
 crates/app/src/controller/transcription.rs

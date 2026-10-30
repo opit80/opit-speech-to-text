@@ -195,7 +195,7 @@ Added:
 Modified:
 
 - Core: `crates/core/src/cleanup/mod.rs`, `config.rs`, `history/mod.rs`, `lib.rs`.
-- App: `crates/app/src/app_core/mod.rs`, `commands.rs`, `controller/mod.rs`, `controller/recording.rs`,
+- App: `crates/app/src/app_core/mod.rs`, `commands/`, `controller/mod.rs`, `controller/recording.rs`,
   `controller/transcription.rs`, `controller/delivery.rs`, `controller/status.rs`, `controller/tests/mod.rs`,
   `shell/events.rs`, `file_jobs.rs`, `history_service.rs`, `shell/i18n.rs`, `shell/mod.rs`, `platform/fake.rs`,
   `platform/keys.rs`, `platform/mod.rs`, `platform/windows/hotkey.rs`, `shell/tray.rs`, `shell/tray_menu.rs`.

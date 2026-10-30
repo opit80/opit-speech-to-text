@@ -132,7 +132,7 @@ final text, selection, provider error bodies and keys never enter diagnostics.
   `crates/core/src/provider/profile.rs`.
 - New native providers: `crates/core/src/provider/deepgram.rs`,
   `crates/core/src/provider/streaming.rs`, `crates/core/src/provider/streaming/tests.rs`.
-- App integration: `crates/app/src/commands.rs`, `crates/app/src/providers.rs`,
+- App integration: `crates/app/src/commands/`, `crates/app/src/providers.rs`,
   `crates/app/src/file_jobs.rs`, `crates/app/src/platform/windows/uninstall.rs`,
   `crates/app/src/controller/mod.rs`, `crates/app/src/controller/recording.rs`,
   `crates/app/src/controller/transcription.rs`, `crates/app/src/controller/status.rs`,
