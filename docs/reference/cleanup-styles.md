@@ -1,5 +1,10 @@
 # Cleanup styles: backend and UI contract
 
+Cleanup implementation ownership: `crates/core/src/cleanup/mod.rs` retains the public facade and
+pipeline application; `cleanup/config.rs`, `prompts.rs`, `response.rs` and `transport.rs` own
+configuration, prompt construction, response guards and HTTP transport. `cleanup/styles.rs` retains
+style defaults and the inherent `CleanupConfig` style methods.
+
 Cleanup stays opt-in (`cleanup.enabled: false` by default). A successful dictation also
 requires its successful provider profile's `apply_cleanup` flag and the existing cleanup
 eligibility checks. Selecting a style never enables cleanup or changes that profile flag.
