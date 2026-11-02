@@ -69,7 +69,7 @@ jobs:
         env:
           OPIT_RELEASE_ASSETS: ${{ github.workspace }}/release-assets
         run: cargo test -p opit-speech-to-text --test updater_artifacts -- --ignored
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-release-assets
           path: release-assets/*
@@ -129,7 +129,7 @@ jobs:
         run: |
           node scripts/release/latest-json.mjs linux-assets "$OPIT_RELEASE_TAG" target/release/bundle/appimage target/release/bundle/deb release-assets
           node scripts/release/latest-json.mjs verify "$OPIT_RELEASE_TAG" release-assets
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-release-assets
           path: release-assets/*
