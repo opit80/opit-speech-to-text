@@ -156,6 +156,16 @@ mod tests {
     }
 
     #[test]
+    fn google_preset_uses_the_new_model_without_changing_openrouter() {
+        let presets = presets();
+        let google = &presets.iter().find(|p| p.id == "google").unwrap().config;
+        assert_eq!(google.base_url, "https://generativelanguage.googleapis.com/v1beta/openai");
+        assert_eq!(google.model, "gemini-3.5-flash-lite");
+        let openrouter = &presets.iter().find(|p| p.id == "openrouter").unwrap().config;
+        assert_eq!(openrouter.model, "google/gemini-2.5-flash-lite");
+    }
+
+    #[test]
     fn presets_keep_separate_keys_and_baseten_is_first() {
         let presets = presets();
         assert_eq!(presets[0].id, "baseten");

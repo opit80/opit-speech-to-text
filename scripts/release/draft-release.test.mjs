@@ -28,3 +28,12 @@ test("published releases and malformed release responses are never overwritten",
     assert.throws(() => draftCommands(release, "v0.1.2", "release-assets"), /draft/i);
   }
 });
+
+test("combined drafts upload the exact Windows and Linux asset list", () => {
+  const commands = draftCommands(null, "v0.1.2", "release-assets", ["windows-x86_64", "linux-x86_64"]);
+  const files = commands[0].filter((arg) => arg.startsWith("release-assets"));
+  assert.equal(files.length, 7);
+  assert.ok(files.some((arg) => arg.endsWith("opit-speech-to-text_0.1.2_x64-setup.exe")));
+  assert.ok(files.some((arg) => arg.endsWith("opit-speech-to-text_0.1.2_amd64.AppImage")));
+  assert.ok(files.some((arg) => arg.endsWith("opit-speech-to-text_0.1.2_amd64.deb")));
+});

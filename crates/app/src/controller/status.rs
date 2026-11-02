@@ -16,6 +16,7 @@ pub enum ErrorKind {
     MissingKey,
     InvalidKey,
     PaymentRequired,
+    ModelNotFound,
     TooLarge,
     RateLimited,
     Server,
@@ -31,10 +32,11 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub const ALL: [ErrorKind; 15] = [
+    pub const ALL: [ErrorKind; 16] = [
         ErrorKind::MissingKey,
         ErrorKind::InvalidKey,
         ErrorKind::PaymentRequired,
+        ErrorKind::ModelNotFound,
         ErrorKind::TooLarge,
         ErrorKind::RateLimited,
         ErrorKind::Server,
@@ -51,7 +53,10 @@ impl ErrorKind {
 
     /// Errors the user fixes in Settings rather than by trying again.
     pub fn needs_settings(self) -> bool {
-        matches!(self, ErrorKind::MissingKey | ErrorKind::InvalidKey | ErrorKind::Credentials)
+        matches!(
+            self,
+            ErrorKind::MissingKey | ErrorKind::InvalidKey | ErrorKind::ModelNotFound | ErrorKind::Credentials
+        )
     }
 }
 
@@ -62,6 +67,7 @@ impl From<opit_core::cleanup::CleanupError> for ErrorKind {
             MissingKey => Self::MissingKey,
             InvalidKey => Self::InvalidKey,
             PaymentRequired => Self::PaymentRequired,
+            ModelNotFound => Self::ModelNotFound,
             RateLimited => Self::RateLimited,
             Server => Self::Server,
             Network => Self::Network,
@@ -148,7 +154,13 @@ impl<P: Providers> Controller<P> {
             Phase::Transcribing { progress: Some(progress), .. } => lang.retry_wait(*progress),
             _ => lang.transcribing().into(),
         };
-        self.show(view(Tone::Busy, text, None));
+        let view = view(Tone::Busy, text, None);
+        #[cfg(target_os = "linux")]
+        let view = OverlayView {
+            button: Some(OverlayButton { action: OverlayAction::Cancel, label: lang.cancel_action().into() }),
+            ..view
+        };
+        self.show(view);
     }
 
     pub(super) fn fail(&mut self, kind: ErrorKind, lang: Lang) {
@@ -209,6 +221,13 @@ impl<P: Providers> Controller<P> {
                 updated_at: Instant::now(),
                 paused: r.paused,
             });
+            #[cfg(target_os = "linux")]
+            {
+                view.button = Some(OverlayButton {
+                    action: OverlayAction::Cancel,
+                    label: r.settings.lang.cancel_action().into(),
+                });
+            }
             self.env.overlay.show(view);
         }
     }
@@ -281,6 +300,8 @@ mod tests {
         let pipeline = PipelineError::Provider(ProviderError::Timeout);
         assert_eq!(ErrorKind::from(&pipeline), ErrorKind::Timeout);
         assert!(ErrorKind::InvalidKey.needs_settings() && !ErrorKind::Server.needs_settings());
+        assert_eq!(ErrorKind::from(opit_core::cleanup::CleanupError::ModelNotFound), ErrorKind::ModelNotFound);
+        assert!(ErrorKind::ModelNotFound.needs_settings());
     }
 
     #[test]

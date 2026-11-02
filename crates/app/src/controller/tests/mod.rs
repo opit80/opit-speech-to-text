@@ -35,6 +35,7 @@ fn cleanup_log_records_one_safe_metadata_line_for_every_outcome() {
         ("skipped", None, "Cancelled"),
         ("failed", Some(CleanupError::Timeout), "Timeout"),
         ("failed", Some(CleanupError::PaymentRequired), "PaymentRequired"),
+        ("failed", Some(CleanupError::ModelNotFound), "ModelNotFound"),
         ("failed", Some(CleanupError::RateLimited), "RateLimited"),
         ("failed", Some(CleanupError::Server), "Server"),
         ("failed", Some(CleanupError::Truncated), "Truncated"),
@@ -1587,7 +1588,13 @@ async fn history_retry_replaces_the_row_and_copies_once_without_pasting_or_resto
 
 #[tokio::test]
 async fn toggle_records_transcribes_pastes_and_saves() {
-    let mut h = harness(AppConfig::default());
+    let config = AppConfig::default();
+    let mut h = harness(config.clone());
+    let personal = opit_core::rules::RulePack::from_yaml(
+        "schema: 1\nid: user\nname: Personal\ncorrections:\n  Claude Code: [cloud code]\n",
+    )
+    .unwrap();
+    h.settings.replace(Settings::build(config, Some(personal), Some("en-US")).0);
     h.script("groq", vec![Ok("cloud code'u aç")]);
 
     h.hotkey(HotkeyEvent::ComboDown);
@@ -2615,6 +2622,8 @@ async fn voice_llm_failure_never_pastes_and_retains_failed_edit_or_translation()
     for (event, mode, status, kind) in [
         (HotkeyEvent::Edit, "edit", 402, ErrorKind::PaymentRequired),
         (HotkeyEvent::Translate, "translate", 402, ErrorKind::PaymentRequired),
+        (HotkeyEvent::Edit, "edit", 404, ErrorKind::ModelNotFound),
+        (HotkeyEvent::Translate, "translate", 404, ErrorKind::ModelNotFound),
         (HotkeyEvent::Edit, "edit", 429, ErrorKind::RateLimited),
         (HotkeyEvent::Translate, "translate", 429, ErrorKind::RateLimited),
         (HotkeyEvent::Edit, "edit", 500, ErrorKind::Server),
@@ -2855,4 +2864,102 @@ async fn voice_preparation_shutdown_drops_capture_without_activating_recording()
     .unwrap();
     assert!(h.paster.texts().is_empty());
     assert!(h.history.entries().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_recovery_retains_multiple_results_even_without_history_or_clipboard() {
+    for outcome in [PasteOutcome::ClipboardOnly, PasteOutcome::Failed("unavailable".into())] {
+        let mut config = AppConfig::default();
+        config.history.enabled = false;
+        let mut h = harness(config);
+        *h.paster.outcome.lock().unwrap() = outcome.clone();
+        h.script("groq", vec![Ok("first"), Ok("second")]);
+        for _ in 0..2 {
+            h.send(Msg::Toggle);
+            h.send(Msg::Toggle);
+            h.expect(&[Recording, Transcribing, Pasting]).await;
+            if matches!(outcome, PasteOutcome::Failed(_)) {
+                h.expect_error(ErrorKind::Paste).await;
+            } else {
+                h.expect(&[Idle]).await;
+            }
+        }
+        assert!(h.history.entries().is_empty());
+        let snapshot = h.handle.pending_results();
+        assert_eq!(snapshot.results.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["first", "second"]);
+        let remaining = h.handle.dismiss_pending_result(snapshot.results[0].id);
+        assert_eq!(remaining.results.len(), 1);
+        assert_eq!(remaining.results[0].text, "second");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_shortcut_probe_confirms_real_hotkey_or_cli_without_recording() {
+    let h = harness(AppConfig::default());
+    h.handle.set_shortcut_test(true).await.unwrap();
+    h.hotkey(HotkeyEvent::ComboDown);
+    // A round trip through the actor orders this read after the hotkey message.
+    let _ = h.handle.control(ControlAction::Cancel).await;
+    assert!(h.handle.shortcut_test().confirmed);
+    assert_eq!(h.handle.status().state, Idle);
+    assert_eq!(h.providers.calls(), 0);
+    h.handle.set_shortcut_test(false).await.unwrap();
+    assert!(!h.handle.shortcut_test().active);
+    h.handle.set_shortcut_test(true).await.unwrap();
+    assert!(!h.handle.shortcut_test().confirmed);
+    h.handle.control(ControlAction::Toggle).await.unwrap();
+    assert!(h.handle.shortcut_test().confirmed);
+    assert_eq!(h.handle.status().state, Idle);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_overlay_cancel_discards_recording_without_transcribing() {
+    let mut h = harness(AppConfig::default());
+    h.send(Msg::Toggle);
+    h.expect(&[Recording]).await;
+    assert_eq!(h.overlay.last().button.unwrap().action, OverlayAction::Cancel);
+    h.send(Msg::Overlay(OverlayAction::Cancel));
+    h.expect(&[Cancelled, Idle]).await;
+    assert_eq!(h.providers.calls(), 0);
+    assert!(h.paster.texts().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn desktop_shortcut_uses_press_semantics_pastes_and_preserves_saved_hold_mode() {
+    let mut config = AppConfig::default();
+    config.hotkey.mode = HotkeyMode::PushToTalk;
+    let mut h = harness(config);
+    *h.hotkey.press_only.lock().unwrap() = true;
+    *h.paster.allow_auto.lock().unwrap() = Some(true);
+    h.script("groq", vec![Ok("synthetic shortcut result")]);
+    h.handle.control(ControlAction::Shortcut(HotkeyEvent::ComboDown)).await.unwrap();
+    h.expect(&[Recording]).await;
+    h.handle.control(ControlAction::Shortcut(HotkeyEvent::Pause)).await.unwrap();
+    assert!(h.handle.status().paused);
+    h.handle.control(ControlAction::Shortcut(HotkeyEvent::Pause)).await.unwrap();
+    assert!(!h.handle.status().paused);
+    h.handle.control(ControlAction::Shortcut(HotkeyEvent::ComboDown)).await.unwrap();
+    h.wait_for(|state| state.state == Idle).await;
+    assert_eq!(h.paster.pasted.lock().unwrap().len(), 1);
+    assert!(h.paster.policies.lock().unwrap()[0], "desktop presses use normal hotkey paste semantics");
+    assert_eq!(h.settings.current().config.hotkey.mode, HotkeyMode::PushToTalk);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn late_desktop_command_probe_never_starts_recording() {
+    let h = harness(AppConfig::default());
+    h.handle.control(ControlAction::ShortcutProbe).await.unwrap();
+    assert_eq!(h.handle.status().state, Idle);
+    h.handle.set_shortcut_test(true).await.unwrap();
+    h.handle.control(ControlAction::ShortcutProbe).await.unwrap();
+    assert!(h.handle.shortcut_test().confirmed);
+    h.handle.set_shortcut_test(false).await.unwrap();
+    h.handle.control(ControlAction::ShortcutProbe).await.unwrap();
+    assert_eq!(h.handle.status().state, Idle);
+    assert_eq!(h.providers.calls(), 0);
 }

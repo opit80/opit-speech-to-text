@@ -20,17 +20,26 @@ use crate::app_core::AppCore;
 use crate::controller::{Env, HistorySink, Msg};
 use crate::events::TauriEvents;
 use crate::history_service::{DisabledHistory, HistoryService};
+use crate::ipc;
 use crate::providers::HttpProviders;
 use crate::settings::{Settings, SettingsHandle};
 use crate::startup::Paths;
-use crate::{app_core, commands, controller, file_jobs, platform};
 #[cfg(windows)]
-use crate::{ipc, uninstall};
+use crate::uninstall;
+use crate::{commands, controller, file_jobs, platform};
 
 /// Windows passes this when it starts the app at sign-in; the app then starts in the tray.
 pub const AUTOSTART_FLAG: &str = "--autostart";
 
+struct TrayAvailable(std::sync::atomic::AtomicBool);
+
+pub(crate) fn tray_available(app: &tauri::AppHandle) -> bool {
+    app.try_state::<TrayAvailable>().is_some_and(|tray| tray.0.load(std::sync::atomic::Ordering::SeqCst))
+}
+
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    platform::linux::cli::dispatch();
     // The uninstaller's clean-up (windows/hooks.nsh): no window, no tray, no log file.
     #[cfg(windows)]
     if std::env::args().any(|arg| arg == uninstall::DELETE_CREDENTIALS_FLAG) {
@@ -67,11 +76,10 @@ pub fn run() {
 
     let exit_state = Arc::new(std::sync::atomic::AtomicU8::new(0));
     app.run(move |app, event| match event {
-        // `code: None` = the user closed the last window: stay in the tray.
-        RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-        RunEvent::ExitRequested { code: Some(code), api, .. }
-            if exit_state.load(std::sync::atomic::Ordering::SeqCst) != 2 =>
-        {
+        RunEvent::ExitRequested { code, api, .. } if code.is_none() && (cfg!(windows) || tray_available(app)) => {
+            api.prevent_exit();
+        }
+        RunEvent::ExitRequested { code, api, .. } if exit_state.load(std::sync::atomic::Ordering::SeqCst) != 2 => {
             api.prevent_exit();
             if exit_state
                 .compare_exchange(0, 1, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
@@ -102,7 +110,7 @@ pub fn run() {
                     warn!("local shutdown did not finish cleanly");
                 }
                 exit_state.store(2, std::sync::atomic::Ordering::SeqCst);
-                app.exit(code);
+                app.exit(code.unwrap_or(0));
             });
         }
         RunEvent::Exit => info!("exiting"),
@@ -201,7 +209,12 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
         foreground,
         media,
         settings: settings.clone(),
-        providers: Arc::new(HttpProviders::new(secrets.clone()).with_local(core.local.clone())),
+        providers: Arc::new({
+            let providers = HttpProviders::new(secrets.clone());
+            #[cfg(windows)]
+            let providers = providers.with_local(core.local.clone());
+            providers
+        }),
         mic: mic.clone(),
         hotkey: hotkey.clone(),
         paster,
@@ -213,23 +226,68 @@ fn setup(app: &mut tauri::App, paths: Paths, start_hidden: bool) {
     };
     tauri::async_runtime::spawn(controller::run(&controller, inbox, env));
 
+    #[cfg(windows)]
     core.local.start_background();
-    core.apply_hotkey(&config);
-    core.apply_autostart(app_core::autostart_wanted(&config));
+    #[cfg(windows)]
+    {
+        core.apply_hotkey(&config);
+        core.apply_autostart(crate::app_core::autostart_wanted(&config));
+    }
+    // The portal can wait on a desktop dialog, which must not hold up the Tauri main thread.
+    #[cfg(not(windows))]
+    {
+        let setup_core = core.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            setup_core.apply_startup_settings();
+        });
+    }
     if let Some(view) = core.startup_overlay() {
         overlay.show(view);
     }
-    #[cfg(windows)]
     ipc::spawn(handle.clone(), core.clone());
     app.manage(core);
 
-    if let Err(err) = tray::create(&handle) {
-        error!(error = %err, "tray icon unavailable");
-    }
+    let tray_available = match tray::create(&handle) {
+        Ok(()) => true,
+        Err(err) => {
+            error!(error = %err, "tray icon unavailable");
+            false
+        }
+    };
+    app.manage(TrayAvailable(std::sync::atomic::AtomicBool::new(tray_available && cfg!(windows))));
+    #[cfg(windows)]
     if !(start_hidden || config.ui.start_in_tray)
         && let Err(err) = window::build(&handle, None)
     {
         error!(error = %err, "could not open the main window");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let open_at_start = !(start_hidden || config.ui.start_in_tray);
+        tauri::async_runtime::spawn(async move {
+            let mut first = true;
+            let mut previous_hotkey = None;
+            loop {
+                let available = tray_available && platform::linux::session::tray_host_available().await;
+                let previous = handle.state::<TrayAvailable>().0.swap(available, std::sync::atomic::Ordering::SeqCst);
+                if previous != available || first {
+                    events::emit(&handle, "platform-capabilities-changed", ());
+                }
+                if let Some(core) = handle.try_state::<Arc<AppCore>>() {
+                    let hotkey = core.hotkey_state();
+                    if previous_hotkey.as_ref() != Some(&hotkey) {
+                        events::hotkey_state(&handle, &hotkey);
+                        previous_hotkey = Some(hotkey);
+                    }
+                }
+                if ((first && open_at_start) || !available) && handle.get_webview_window(window::MAIN_WINDOW).is_none()
+                {
+                    window::show_main(&handle, None);
+                }
+                first = false;
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
     }
     info!(first_run = loaded.created, "ready");
 }

@@ -20,7 +20,7 @@ fn config(server: &MockServer, mode: RulesMode) -> EvalConfig {
     let mut profile = presets::groq();
     profile.base_url = format!("{}/v1", server.uri());
     let pack = RulePack::from_yaml(
-        "schema: 1\nid: t\nname: T\nterms: [Claude Code]\ncorrections:\n  Claude Code: [cloud code]\n",
+        "schema: 1\nid: user\nname: Personal\nterms: [Claude Code]\ncorrections:\n  Claude Code: [cloud code]\n",
     )
     .unwrap();
     let (rules, _) = RuleSet::compile(&[pack]);
@@ -56,4 +56,23 @@ async fn silent_samples_are_reported_without_a_request() {
     let results = run_eval(&samples, &config(&server, RulesMode::On)).await.unwrap();
     assert!(results[0].off.is_none());
     assert_eq!(results[0].on.as_ref().unwrap().error.as_deref(), Some("no speech was detected"));
+}
+
+#[tokio::test]
+async fn no_personal_rules_still_filters_stock_phrases_only_with_rules_on() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"text": "Thanks for watching"})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let mut config = config(&server, RulesMode::Both);
+    config.rules = RuleSet::empty();
+    let samples = vec![Sample { name: "short".into(), recording: tone(), reference: String::new() }];
+    let results = run_eval(&samples, &config).await.unwrap();
+    assert_eq!(results[0].off.as_ref().unwrap().hypothesis, "Thanks for watching");
+    let on = results[0].on.as_ref().unwrap();
+    assert!(on.hypothesis.is_empty());
+    assert!(on.error.is_none());
+    assert_eq!(on.terms.expected, 0);
 }

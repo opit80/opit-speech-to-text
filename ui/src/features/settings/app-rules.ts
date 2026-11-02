@@ -39,11 +39,11 @@ export function foldExe(exe: string): string {
 export type ExeProblem = "required" | "invalid";
 
 /** A process file name such as `code.exe`: no path, wildcard, reserved or control character. */
-export function exeProblem(exe: string): ExeProblem | null {
+export function exeProblem(exe: string, platform: "windows" | "linux" = "windows"): ExeProblem | null {
   const name = exe.trim();
   if (!name) return "required";
   if (/[\u0000-\u001f\u007f/\\:*?"<>|]/.test(name)) return "invalid";
-  if (!/^.+\.exe$/i.test(name)) return "invalid";
+  if (platform === "windows" ? !/^.+\.exe$/i.test(name) : !/^[^.][^/\\]*$/.test(name)) return "invalid";
   return null;
 }
 

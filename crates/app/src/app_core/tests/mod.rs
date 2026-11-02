@@ -402,6 +402,7 @@ fn fixture_with(dir: tempfile::TempDir, notices: Vec<StartupNotice>) -> Fixture 
 
 /// A damaged config.json that start-up could not move aside, because another program
 /// holds it open without sharing. Returns the fixture and that lock.
+#[cfg(windows)]
 fn fixture_with_a_kept_bad_config() -> (Fixture, std::fs::File) {
     use std::os::windows::fs::OpenOptionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -414,6 +415,7 @@ fn fixture_with_a_kept_bad_config() -> (Fixture, std::fs::File) {
     (fixture_with(dir, loaded.notice.into_iter().collect()), lock)
 }
 
+#[cfg(windows)]
 fn bad_config_backups(paths: &Paths) -> Vec<String> {
     std::fs::read_dir(&paths.root)
         .unwrap()
@@ -423,6 +425,7 @@ fn bad_config_backups(paths: &Paths) -> Vec<String> {
         .collect()
 }
 
+#[cfg(windows)]
 #[test]
 fn a_config_that_could_not_be_moved_aside_is_never_overwritten() {
     let (f, lock) = fixture_with_a_kept_bad_config();
@@ -446,6 +449,7 @@ fn a_config_that_could_not_be_moved_aside_is_never_overwritten() {
     assert_eq!(bad_config_backups(&f.core.paths).len(), 1);
 }
 
+#[cfg(windows)]
 #[test]
 fn a_kept_bad_config_that_is_gone_no_longer_blocks_saving() {
     let (f, lock) = fixture_with_a_kept_bad_config();
@@ -539,6 +543,35 @@ fn unchanged_hotkey_is_not_reinstalled() {
     config.paste.trailing_space = false;
     f.core.save_config(config).unwrap();
     assert!(f.hotkey.registered.lock().unwrap().is_empty());
+}
+
+#[cfg(not(windows))]
+#[test]
+fn delayed_startup_hotkey_registration_uses_the_latest_saved_settings() {
+    let f = fixture();
+    let mut config = f.core.config();
+    config.hotkey.keys = vec!["F13".into()];
+    config.hotkey.enabled = false;
+    f.core.save_config(config).unwrap();
+    f.hotkey.registered.lock().unwrap().clear();
+    f.core.apply_startup_settings();
+    assert_eq!(*f.hotkey.registered.lock().unwrap(), [vec!["F13".to_string()]]);
+    assert!(*f.hotkey.paused.lock().unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_hotkey_is_retried_when_saved_keys_are_unchanged() {
+    let f = fixture();
+    *f.hotkey.fail_register.lock().unwrap() = Some(HotkeyError::Install("desktop entry missing".into()));
+    f.core.apply_hotkey(&f.core.config());
+    assert!(f.core.hotkey_state().error.is_some());
+    *f.hotkey.fail_register.lock().unwrap() = None;
+    f.hotkey.registered.lock().unwrap().clear();
+    let config = f.core.config();
+    f.core.save_config(config.clone()).unwrap();
+    assert_eq!(*f.hotkey.registered.lock().unwrap(), [config.hotkey.keys]);
+    assert!(f.core.hotkey_state().error.is_none());
 }
 
 #[test]
@@ -664,6 +697,42 @@ fn hotkey_capture_pauses_the_hook_and_expires() {
     assert!(!core.hotkey_state().paused, "capture is not the user's pause");
     std::thread::sleep(Duration::from_millis(300));
     assert!(!*hotkey.paused.lock().unwrap(), "capture expired");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn linux_capture_blocks_relay_dispatch_until_cancel_or_timeout() {
+    use crate::ipc::dispatch;
+    use opit_ipc::{Command, Request};
+
+    let f = fixture();
+    let core = Arc::new(f.core);
+    let relay = |action: &str| Request::new(Command::Shortcut { action: action.into() });
+    core.set_hotkey_capture(true);
+    for action in ["dictation", "pause", "cancel", "ask", "edit", "translate", "style_cycle", "style:formal", "probe"] {
+        assert_eq!(dispatch(core.clone(), relay(action)).await.unwrap_err().code, "hotkey_capture");
+    }
+    assert!(f.mic.requested.lock().unwrap().is_empty());
+    assert_eq!(core.status().state, crate::controller::DictationState::Idle);
+    // Ordinary CLI reads still work while capturing.
+    assert!(dispatch(core.clone(), Request::new(Command::Status)).await.is_ok());
+    core.set_hotkey_capture(false);
+    // This fixture has no controller actor: reaching its closed channel yields cancelled.
+    assert_eq!(dispatch(core.clone(), relay("probe")).await.unwrap_err().code, "cancelled");
+
+    core.set_hotkey_capture_for(true, Duration::from_millis(30));
+    assert_eq!(dispatch(core.clone(), relay("probe")).await.unwrap_err().code, "hotkey_capture");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(dispatch(core.clone(), relay("probe")).await.unwrap_err().code, "cancelled");
+    // An older safety timer must not release a newer capture.
+    core.set_hotkey_capture_for(true, Duration::from_millis(30));
+    core.set_hotkey_capture(false);
+    core.set_hotkey_capture_for(true, Duration::from_secs(30));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(dispatch(core.clone(), relay("dictation")).await.unwrap_err().code, "hotkey_capture");
+    core.set_hotkey_paused(true);
+    core.set_hotkey_capture(false);
+    assert_eq!(dispatch(core.clone(), relay("dictation")).await.unwrap_err().code, "shortcuts_paused");
 }
 
 #[test]
@@ -1020,7 +1089,7 @@ fn invalid_user_rules_are_rejected_and_nothing_is_written() {
 #[test]
 fn preview_uses_a_draft_without_saving_it() {
     let f = fixture();
-    let draft = "schema: 1\nid: user\nname: Me\ncorrections:\n  Opit: [opid]\nreplacements:\n  - { from: '(', to: x, regex: true }\n";
+    let draft = "schema: 1\nid: user\nname: Me\ncorrections:\n  Opit: [opid]\n  Claude Code: [cloud code]\nreplacements:\n  - { from: '(', to: x, regex: true }\n";
     let preview = f.core.rules_preview("opid ve cloud code", Some(draft)).unwrap();
     assert_eq!(preview.text, "Opit ve Claude Code");
     assert_eq!(preview.warnings.len(), 1);
@@ -1032,6 +1101,7 @@ fn preview_uses_a_draft_without_saving_it() {
 #[test]
 fn prompt_budget_reflects_the_context_sentence() {
     let f = fixture();
+    f.core.save_user_rules("schema: 1\nid: user\nname: Me\nterms: [Opit]\n").unwrap();
     let mut config = f.core.config();
     config.rules.prompt_context = "Yazılım konuşması".into();
     f.core.save_config(config).unwrap();
@@ -1101,6 +1171,7 @@ fn cleanup_errors_keep_safe_kinds_for_all_consumers() {
         (CleanupError::MissingKey, ErrorKind::MissingKey, "missing_key"),
         (CleanupError::InvalidKey, ErrorKind::InvalidKey, "invalid_key"),
         (CleanupError::PaymentRequired, ErrorKind::PaymentRequired, "payment_required"),
+        (CleanupError::ModelNotFound, ErrorKind::ModelNotFound, "model_not_found"),
         (CleanupError::RateLimited, ErrorKind::RateLimited, "rate_limited"),
         (CleanupError::Server, ErrorKind::Server, "server"),
         (CleanupError::Network, ErrorKind::Network, "network"),

@@ -27,6 +27,7 @@ fn transcript() -> Transcript {
 async fn http_errors_have_safe_specific_kinds_without_retrying() {
     for (status, body, expected) in [
         (402, r#"{"error":"please check your current payment status."}"#, CleanupError::PaymentRequired),
+        (404, r#"{"error":"private transcript and key"}"#, CleanupError::ModelNotFound),
         (
             400,
             r#"{"error":{"message":"API key not valid","details":[{"reason":"API_KEY_INVALID"}]}}"#,
@@ -239,6 +240,7 @@ async fn terminal_errors_do_not_hedge_for_any_shared_transport_caller() {
             (401, Some("private response"), "stop", CleanupError::InvalidKey),
             (402, Some("private response"), "stop", CleanupError::PaymentRequired),
             (403, Some("private response"), "stop", CleanupError::InvalidKey),
+            (404, Some("private response"), "stop", CleanupError::ModelNotFound),
             (408, Some("private response"), "stop", CleanupError::Rejected),
             (429, Some("private response"), "stop", CleanupError::RateLimited),
             (503, Some("private response"), "stop", CleanupError::Server),

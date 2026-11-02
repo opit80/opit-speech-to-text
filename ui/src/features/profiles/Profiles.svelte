@@ -48,7 +48,7 @@
     presetsError = null;
     try {
       const loaded = await api.profilePresets();
-      if (!disposed) presets = loaded;
+      if (!disposed) presets = app.capabilities?.local_models === false ? loaded.filter((preset) => preset.provider !== "local_whisper") : loaded;
     } catch (error) {
       if (!disposed) presetsError = errorText(error);
     } finally {

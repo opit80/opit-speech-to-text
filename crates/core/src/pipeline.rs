@@ -335,7 +335,7 @@ mod tests {
 
     use super::*;
     use crate::provider::{Profile, presets};
-    use crate::rules::builtin::assemble;
+    use crate::rules::RulePack;
 
     struct Scripted {
         profile: Profile,
@@ -416,8 +416,11 @@ mod tests {
         }
     }
 
-    fn tech_rules() -> RuleSet {
-        RuleSet::compile(&assemble(None, &["tr-core".to_string(), "tr-tech".to_string()])).0
+    fn personal_rules() -> RuleSet {
+        let personal = RulePack::from_yaml(
+            "schema: 1\nid: user\nname: Test\nlanguage: tr\nterms: [Claude Code, Claude, GitHub]\ncorrections:\n  Claude Code: [cloud code]\n",
+        ).unwrap();
+        RuleSet::compile(&[personal]).0
     }
 
     #[tokio::test]
@@ -441,8 +444,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn default_rules_without_personal_rules_drop_short_audio_hallucinations() {
+        let config = crate::config::AppConfig::default();
+        let rules = RuleSet::compile(&[]).0;
+        assert!(rules.terms().is_empty());
+        let mut primary = Scripted::new("default", vec![Ok("Altyazı M.K.")]);
+        primary.profile = config.active_profile().unwrap().clone();
+        let result = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
+        assert_eq!(result.status, TranscriptStatus::Hallucination);
+        assert!(result.text.is_empty());
+        assert!(result.hits.is_empty());
+    }
+
+    #[tokio::test]
     async fn stock_phrases_only_filter_short_audio_and_preserve_single_words() {
-        let rules = tech_rules();
+        let rules = RuleSet::empty();
         for (text, duration, enabled, expected) in [
             ("THANKS, for watching! Thanks for watching.", 6000, true, TranscriptStatus::Hallucination),
             ("Thanks for watching", 6001, true, TranscriptStatus::Ok),
@@ -622,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn rules_run_on_the_provider_text() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let primary = Scripted::new("a", vec![Ok("cloud code'u aç")]);
         let t = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
         assert_eq!(t.raw_text, "cloud code'u aç");
@@ -633,7 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn rules_are_skipped_when_the_profile_says_so() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let mut primary = Scripted::new("a", vec![Ok(" cloud code'u aç ")]);
         primary.profile.apply_rules = false;
         let t = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
@@ -643,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_and_hallucinated_outputs_are_flagged() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let blank = Scripted::new("a", vec![Ok("   ")]);
         let t = transcribe(&speech(), &ctx(&blank, None, &rules)).await.unwrap();
         assert_eq!((t.text.as_str(), t.status), ("", TranscriptStatus::Empty));
@@ -656,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_follows_the_profile() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let primary = Scripted::new("a", vec![Ok("x")]);
         let mut with_context = ctx(&primary, None, &rules);
         with_context.prompt_context = "Yazılım konuşması";

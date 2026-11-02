@@ -1,4 +1,5 @@
 //! The installer, the uninstaller hooks and the app must agree on names and paths.
+#![cfg(windows)]
 
 use opit_app::platform::windows::autostart::VALUE_NAME;
 

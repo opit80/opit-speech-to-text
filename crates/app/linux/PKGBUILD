@@ -1,0 +1,59 @@
+# Local-checkout recipe. Run makepkg from crates/app/linux in this repository.
+# The source snapshot includes uncommitted port work; it never reads user app data.
+pkgname=opit-speech-to-text
+pkgver=0.1.3
+pkgrel=1
+pkgdesc='Voice dictation with your own transcription provider'
+arch=('x86_64')
+url='https://github.com/opit80/opit-speech-to-text'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'gtk-layer-shell' 'alsa-lib' 'libayatana-appindicator'
+         'libsecret' 'wl-clipboard' 'xclip')
+makedepends=('cargo' 'nodejs' 'npm' 'pkgconf')
+optdepends=('xdg-desktop-portal: Wayland global shortcuts and insertion permissions'
+            'playerctl: pause and resume media during dictation'
+            'ydotool: Wayland input fallback when the portal is unavailable'
+            'libcanberra: sound feedback'
+            'libnotify: clipboard-only and status notifications'
+            'gnome-shell-extension-appindicator: tray icon on GNOME')
+source=()
+sha256sums=()
+options=('!lto')
+
+prepare() {
+  local repo_root
+  repo_root=$(realpath "$startdir/../../..")
+  test -f "$repo_root/crates/app/tauri.conf.json" || return 1
+  mkdir -p "$srcdir/opit-source"
+  # Explicit source roots avoid copying .git, updater keys, user data or build caches.
+  tar -C "$repo_root" --exclude=target --exclude=node_modules --exclude=dist --exclude=gen \
+    --exclude=crates/app/linux/src --exclude=crates/app/linux/pkg --exclude='*.pkg.tar.*' \
+    --exclude=.env --exclude='.env.*' --exclude='*.key' --exclude='*.password' \
+    -cf - Cargo.toml Cargo.lock rustfmt.toml LICENSE crates ui rules scripts |
+    tar -C "$srcdir/opit-source" -xf -
+  cd "$srcdir/opit-source"
+  test "$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([^"]*\)"$/\1/p' Cargo.toml)" = "$pkgver" || return 1
+  cargo fetch --locked
+  cd ui
+  npm ci
+}
+
+build() {
+  cd "$srcdir/opit-source"
+  export CARGO_TARGET_DIR="$srcdir/opit-source/target/agent-build"
+  export CARGO_BUILD_JOBS=1
+  node scripts/build-cli.mjs
+  npm --prefix ui run build
+  cargo build --frozen --release -p opit-speech-to-text --features tauri/custom-protocol
+}
+
+package() {
+  cd "$srcdir/opit-source"
+  install -Dm755 target/agent-build/release/opit-speech-to-text "$pkgdir/usr/bin/opit-speech-to-text"
+  install -Dm755 target/agent-build/release/opit "$pkgdir/usr/bin/opit"
+  install -Dm644 crates/app/linux/io.github.opit80.opit-speech-to-text.desktop \
+    "$pkgdir/usr/share/applications/io.github.opit80.opit-speech-to-text.desktop"
+  install -Dm644 crates/app/icons/128x128.png \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/opit-speech-to-text.png"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

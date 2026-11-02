@@ -125,8 +125,7 @@ impl AppCore {
             None => (current.rules.clone(), Vec::new()),
             Some(yaml) => {
                 let draft = RulePack::from_yaml(yaml)?;
-                let packs = opit_core::rules::builtin::assemble(Some(draft), &current.config.rules.enabled_packs);
-                let (rules, warnings) = RuleSet::compile(&packs);
+                let (rules, warnings) = RuleSet::compile(&[draft]);
                 (Arc::new(rules), warnings)
             }
         };

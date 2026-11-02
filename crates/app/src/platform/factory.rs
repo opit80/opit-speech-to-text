@@ -2,10 +2,8 @@
 
 use std::sync::Arc;
 
-#[cfg(windows)]
 use opit_core::config::AppConfig;
 
-#[cfg(windows)]
 use super::OverlaySink;
 use super::{Paster, Sounds};
 use crate::app_core::Platform;
@@ -19,4 +17,9 @@ pub(crate) struct PlatformServices {
 #[cfg(windows)]
 pub(crate) fn create(config: &AppConfig, overlay_sink: OverlaySink) -> PlatformServices {
     super::windows::factory::create(config, overlay_sink)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn create(config: &AppConfig, overlay_sink: OverlaySink) -> PlatformServices {
+    super::linux::create(config, overlay_sink)
 }

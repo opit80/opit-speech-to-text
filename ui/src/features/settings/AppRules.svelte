@@ -203,7 +203,7 @@
   async function saveRule() {
     if (!draft || saving) return;
     const rule = prepareRule($state.snapshot(draft) as AppRule);
-    problem = exeProblem(rule.exe);
+    problem = exeProblem(rule.exe, app.capabilities?.platform ?? "windows");
     if (problem) {
       await tick();
       document.querySelector<HTMLElement>(`#${formId} [aria-invalid="true"]`)?.focus();
@@ -249,8 +249,10 @@
 </script>
 
 {#if view}
+  {#if !view.enabled}
   <Switch label={t("app_rules.enabled")} info={t("app_rules.enabled_hint")} checked={view.enabled}
     onchange={(v) => void save((rules) => rules, v)} />
+  {/if}
   {#if view.rules.length}
     <ul aria-label={t("app_rules.list")}>
       {#each view.rules as rule, index (rule.id)}

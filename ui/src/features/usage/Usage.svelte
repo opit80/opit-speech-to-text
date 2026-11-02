@@ -52,7 +52,7 @@
 <div class="usage">
   <PageHeader title={t("usage.title")} info={t("usage.retained_note")} />
   <div class="toolbar"><Select label={t("usage.period")} value={period} {options} onchange={(v) => { period = v as UsagePeriod; void load(); }} /><Button busy={busy} onclick={() => void load()}><Icon name="retry" />{t("settings.refresh")}</Button></div>
-  {#if !app.config?.history.enabled}<Banner tone="info">{t("usage.history_off")} <a href="#/settings">{t("guide.open_settings")}</a></Banner>{/if}
+  {#if !app.config?.history.enabled}<Banner tone="info">{t("usage.history_off")} <a href="#/settings">{t("common.open_settings")}</a></Banner>{/if}
   {#if error}<Banner tone="error">{error}</Banner>{/if}
   <section aria-label={t("usage.summary")} aria-busy={busy}>
     {#if busy}<p class="muted" role="status">{t("common.loading")}</p>
@@ -63,7 +63,7 @@
         <div><dt><InfoTip text={t("usage.characters_hint")}>{t("usage.characters")}</InfoTip></dt><dd>{formatNumber(stats.characters, app.lang)}</dd></div>
         <div><dt><InfoTip text={t("usage.latency_hint")}>{t("usage.latency")}</InfoTip></dt><dd>{stats.successful ? formatMilliseconds(stats.average_latency_ms, app.lang) : t("usage.no_result")}</dd></div>
       </dl>
-    {:else if stats}<div class="empty"><Icon name="mic" size={28} /><h2>{t("usage.empty_title")}</h2><p class="muted">{t("usage.empty_body")}</p><a href="#/guide">{t("nav.guide")}</a></div>{/if}
+    {:else if stats}<div class="empty"><Icon name="mic" size={28} /><h2>{t("usage.empty_title")}</h2><p class="muted">{t("usage.empty_body")}</p><a href="#/home">{t("nav.home")}</a></div>{/if}
   </section>
 </div>
 

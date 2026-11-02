@@ -4,6 +4,20 @@ use std::collections::HashSet;
 
 use crate::text::fold;
 
+// Whole-output stock phrases from short recordings; independent of personal rules.
+pub(super) const DEFAULT_PHRASES: &[&str] = &[
+    "altyazı m.k",
+    "altyazı ekleyen",
+    "altyazılar m.k",
+    "abone ol",
+    "abone olun",
+    "abone olmayı unutmayın",
+    "izlediğiniz için teşekkürler",
+    "thank you",
+    "thanks for watching",
+    "please subscribe",
+];
+
 // Canonical Latin accent groups; decomposed combining marks are discarded below.
 fn fold_accent(c: char) -> char {
     match c {

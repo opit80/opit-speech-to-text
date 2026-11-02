@@ -5,7 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-if (process.platform !== "win32") throw new Error("The Windows bundle requires a Windows CLI build.");
+if (!["win32", "linux"].includes(process.platform)) throw new Error("No CLI bundle is configured for this platform.");
+const executable = process.platform === "win32" ? "opit.exe" : "opit";
 const targetDir = resolve(root, process.env.CARGO_TARGET_DIR || "target/agent-build");
 const target = process.env.TAURI_ENV_TARGET_TRIPLE;
 const args = ["build", "--offline", "--release", "-p", "opit-cli"];
@@ -17,4 +18,4 @@ const build = spawnSync("cargo", args, {
 if (build.error || build.status !== 0) process.exit(build.status || 1);
 const staged = join(root, "target", "cli-bundle");
 mkdirSync(staged, { recursive: true });
-copyFileSync(join(targetDir, ...(target ? [target] : []), "release", "opit.exe"), join(staged, "opit.exe"));
+copyFileSync(join(targetDir, ...(target ? [target] : []), "release", executable), join(staged, executable));

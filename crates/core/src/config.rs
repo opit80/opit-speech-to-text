@@ -116,6 +116,9 @@ pub struct HotkeyConfig {
     pub keys: Vec<String>,
     /// Empty disables the optional recording pause shortcut.
     pub pause_keys: Vec<String>,
+    /// Optional Linux command shortcut; Windows retains its recording Escape hook.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cancel_keys: Vec<String>,
     pub ask_keys: Vec<String>,
     pub edit_keys: Vec<String>,
     pub translate_keys: Vec<String>,
@@ -127,8 +130,12 @@ pub struct HotkeyConfig {
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
+            #[cfg(target_os = "linux")]
+            keys: vec!["LeftCtrl".into(), "LeftShift".into(), "F9".into()],
+            #[cfg(not(target_os = "linux"))]
             keys: vec!["RightCtrl".into(), "RightShift".into()],
             pause_keys: Vec::new(),
+            cancel_keys: Vec::new(),
             ask_keys: Vec::new(),
             edit_keys: Vec::new(),
             translate_keys: Vec::new(),
@@ -224,24 +231,13 @@ impl Default for HistoryConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RulesConfig {
-    pub enabled_packs: Vec<String>,
     /// Short context sentence placed at the start of the Whisper prompt.
     pub prompt_context: String,
     /// Spell standalone integers in the transcription profile's language.
     pub numbers_as_words: bool,
-}
-
-impl Default for RulesConfig {
-    fn default() -> Self {
-        Self {
-            enabled_packs: vec!["tr-core".into(), "tr-tech".into()],
-            prompt_context: String::new(),
-            numbers_as_words: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -270,7 +266,7 @@ pub struct UiConfig {
     pub autostart: bool,
     pub overlay_position: OverlayPosition,
     pub sound_feedback: bool,
-    /// The first-run wizard was finished or skipped.
+    /// The first-run wizard was finished.
     pub setup_done: bool,
     /// Ask GitHub for a newer version at start-up and once a day (release builds only).
     pub check_updates: bool,
@@ -444,6 +440,17 @@ fn migrate(mut value: Value) -> Result<Value, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_cancel_preserves_old_config_and_windows_serialization() {
+        let config: AppConfig =
+            serde_json::from_str(r#"{"hotkey":{"keys":["F13"],"mode":"push_to_talk","enabled":true}}"#).unwrap();
+        assert!(config.hotkey.cancel_keys.is_empty());
+        assert_eq!(config.hotkey.keys, ["F13"]);
+        assert_eq!(config.hotkey.mode, HotkeyMode::PushToTalk);
+        let value = serde_json::to_value(&config).unwrap();
+        assert!(value["hotkey"].get("cancel_keys").is_none());
+    }
 
     #[test]
     fn new_cleanup_timeout_preserves_legacy_and_explicit_config_values() {
@@ -698,6 +705,9 @@ mod tests {
         assert_eq!(c.schema_version, CONFIG_SCHEMA_VERSION);
         assert_eq!(c.active_profile_id, "groq");
         assert_eq!(c.profiles, vec![presets::groq(), presets::openai()]);
+        #[cfg(target_os = "linux")]
+        assert_eq!(c.hotkey.keys, ["LeftCtrl", "LeftShift", "F9"]);
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(c.hotkey.keys, ["RightCtrl", "RightShift"]);
         assert_eq!(c.hotkey.mode, HotkeyMode::Toggle);
         assert!(c.hotkey.pause_keys.is_empty());
@@ -705,7 +715,7 @@ mod tests {
         assert!(!c.paste.restore_clipboard && c.paste.trailing_space);
         assert!(c.history.enabled && !c.history.save_audio);
         assert_eq!(c.history.audio_retention_days, 30);
-        assert_eq!(c.rules.enabled_packs, ["tr-core", "tr-tech"]);
+        assert_eq!(c.rules, RulesConfig::default());
         assert!(!c.ui.start_in_tray && c.ui.autostart && c.ui.sound_feedback);
         assert_eq!(c.ui.overlay_position, OverlayPosition::RightCenter);
         assert!(!c.ui.setup_done);
@@ -723,6 +733,24 @@ mod tests {
         assert!(!c.paste.trailing_space);
         assert!(!c.paste.restore_clipboard);
         assert_eq!(c.profiles.len(), 2);
+    }
+
+    #[test]
+    fn removed_packs_config_preserves_all_other_settings() {
+        let mut expected = AppConfig { ui_language: Some("tr".into()), ..AppConfig::default() };
+        expected.rules.prompt_context = "Personal context".into();
+        expected.rules.numbers_as_words = true;
+        expected.paste.trailing_space = false;
+        expected.history.enabled = false;
+        expected.hotkey.keys = vec!["F13".into()];
+        expected.profiles[0].model = "personal-model".into();
+        let mut legacy: Value = serde_json::from_str(&expected.to_json()).unwrap();
+        legacy["rules"]["enabled_packs"] = serde_json::json!(["tr-core", "tr-tech", "fivem"]);
+        let loaded = AppConfig::from_json(&legacy.to_string()).unwrap();
+        assert_eq!(loaded, expected);
+        let saved: Value = serde_json::from_str(&loaded.to_json()).unwrap();
+        assert!(saved["rules"].get("enabled_packs").is_none());
+        assert_eq!(AppConfig::from_json(&loaded.to_json()).unwrap(), expected);
     }
 
     #[test]
@@ -777,7 +805,7 @@ mod tests {
 
     #[test]
     fn number_spelling_defaults_off_for_existing_configs_and_round_trips() {
-        let old = AppConfig::from_json(r#"{"rules":{"enabled_packs":[],"prompt_context":""}}"#).unwrap();
+        let old = AppConfig::from_json(r#"{"rules":{"prompt_context":""}}"#).unwrap();
         assert!(!old.rules.numbers_as_words);
         let mut config = old;
         config.rules.numbers_as_words = true;

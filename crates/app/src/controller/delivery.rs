@@ -132,6 +132,11 @@ impl<P: Providers> Controller<P> {
         let Phase::Pasting { mut job, transcript, audio, .. } = mem::replace(&mut self.phase, Phase::Idle) else {
             unreachable!("checked above")
         };
+        #[cfg(target_os = "linux")]
+        if !matches!(outcome, PasteOutcome::Pasted) {
+            self.session_state.lock().unwrap_or_else(PoisonError::into_inner).retain(&transcript.text);
+            self.env.events.pending_results_changed();
+        }
         let lang = job.settings.lang;
         let elapsed = job.started.elapsed();
         self.record(&job, &transcript, audio.as_deref());
@@ -297,6 +302,7 @@ pub(super) async fn save_transcription(
             Ok(t) => t.cleanup_error.map(|error| match error {
                 CleanupError::InvalidKey => "invalid_key",
                 CleanupError::PaymentRequired => "payment_required",
+                CleanupError::ModelNotFound => "model_not_found",
                 CleanupError::RateLimited => "rate_limited",
                 CleanupError::Server => "server",
                 _ => "rejected",

@@ -5,7 +5,7 @@ export type Lang = "en" | "tr";
 export type Theme = "system" | "light" | "dark";
 
 export type ErrorKind =
-  | "missing_key" | "invalid_key" | "payment_required" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
+  | "missing_key" | "invalid_key" | "payment_required" | "model_not_found" | "too_large" | "rate_limited" | "server" | "network" | "timeout"
   | "bad_response" | "rejected" | "audio" | "microphone" | "credentials" | "paste" | "cancelled";
 
 export type DictationState = "idle" | "recording" | "transcribing" | "cleaning" | "asking" | "pasting" | "cancelled" | "error";
@@ -144,6 +144,7 @@ export interface AppConfig {
   hotkey: {
     keys: string[];
     pause_keys: string[];
+    cancel_keys?: string[];
     ask_keys: string[];
     /** Cycles through the cleanup styles with `in_cycle`; empty disables it. */
     style_cycle_keys: string[];
@@ -170,7 +171,7 @@ export interface AppConfig {
   /** Only whether suggestions are offered after a History edit; nothing is added without confirmation. */
   learning: LearningConfig;
   history: { enabled: boolean; save_audio: boolean; audio_retention_days: number; max_entries: number };
-  rules: { enabled_packs: string[]; prompt_context: string; numbers_as_words: boolean };
+  rules: { prompt_context: string; numbers_as_words: boolean };
   ui: {
     theme: Theme;
     start_in_tray: boolean;
@@ -189,6 +190,19 @@ export interface AppInfo {
   log_dir: string;
   system_locale: string | null;
   debug_build: boolean;
+}
+
+export interface PlatformCapabilities {
+  platform: "windows" | "linux";
+  local_models: boolean;
+  per_app_rules: boolean;
+  overlay: boolean;
+  media_duck: boolean;
+  updates: boolean;
+  tray: boolean;
+  shortcut_release: boolean;
+  shortcut_capture: boolean;
+  shortcut_backend: "windows" | "kde" | "gnome" | "x11" | "manual";
 }
 
 export type TranscriptStatus = "ok" | "empty" | "hallucination" | "failed";
@@ -294,16 +308,6 @@ export interface RulePack {
   replacements?: Replacement[];
   hallucinations?: string[];
 }
-export interface PackInfo {
-  id: string;
-  name: string;
-  language: string;
-  terms: number;
-  corrections: number;
-  replacements: number;
-  hallucinations: number;
-}
-
 export type CorrectionOutcome = "added_variant" | "added_term" | "already_present";
 export interface CorrectionDraft {
   yaml: string;
@@ -312,6 +316,7 @@ export interface CorrectionDraft {
 
 export interface HotkeyState {
   paused: boolean;
+  pending: boolean;
   error: string | null;
 }
 
@@ -375,7 +380,15 @@ export interface StyleDefaults {
 }
 
 /** `validate_hotkey` targets. */
-export type HotkeyTarget = "dictation" | "pause" | "ask" | "style_cycle" | "edit" | "translate" | `style:${string}`;
+export type HotkeyTarget = "dictation" | "pause" | "cancel" | "ask" | "style_cycle" | "edit" | "translate" | `style:${string}`;
+
+export interface LinuxShortcutState {
+  backend: "kde" | "gnome" | "x11" | "manual";
+  registered: string | null;
+  command: string;
+  after_login: boolean;
+  conflict: boolean;
+}
 
 export interface CleanupConfig {
   enabled: boolean;
@@ -424,3 +437,9 @@ export interface AskConfig {
   cleanup_request: boolean;
 }
 export interface AgentStatus { agent: AskAgent; installed: boolean; }
+
+
+/** Linux-only recovery, retained in native memory until dismissed or the app exits. */
+export interface PendingResult { id: number; text: string }
+export interface PendingResults { revision: number; results: PendingResult[] }
+export interface ShortcutTest { generation: number; active: boolean; confirmed: boolean }

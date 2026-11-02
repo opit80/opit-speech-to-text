@@ -4,10 +4,13 @@ pub(crate) mod factory;
 #[cfg(test)]
 pub mod fake;
 pub mod keys;
+#[cfg(target_os = "linux")]
+pub mod linux;
 #[cfg(any(windows, test))]
 mod media;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 pub mod microphone;
+pub(crate) mod overlay;
 pub(crate) mod process;
 #[cfg(windows)]
 pub mod windows;
@@ -142,6 +145,18 @@ pub type HotkeySink = Arc<dyn Fn(HotkeyEvent) + Send + Sync>;
 pub use opit_core::hotkey::HotkeyError;
 
 pub trait Hotkey: Send + Sync {
+    fn supports_release(&self) -> bool {
+        true
+    }
+    /// Portal permission requests can outlive the config write without blocking it.
+    fn registration_pending(&self) -> bool {
+        false
+    }
+
+    /// A backend that loses its connection after registration can report it on the next query.
+    fn runtime_error(&self) -> Option<String> {
+        None
+    }
     /// Replace auxiliary shortcuts atomically. Voice modes also emit their matching release event.
     fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError>;
     /// Installs (or re-targets) the global hook for `keys` (names like "RightCtrl").
@@ -212,6 +227,8 @@ pub enum Tone {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayAction {
+    #[cfg(target_os = "linux")]
+    Cancel,
     Retry,
     OpenSettings,
 }
@@ -233,7 +250,7 @@ pub struct RecordingTiming {
 
 impl RecordingTiming {
     pub fn elapsed_at(&self, now: Instant) -> Duration {
-        self.elapsed + if self.paused { Duration::ZERO } else { now.saturating_duration_since(self.updated_at) }
+        overlay::recording_elapsed(self, now)
     }
 }
 
@@ -255,6 +272,9 @@ pub struct OverlayView {
 pub type OverlaySink = Arc<dyn Fn(OverlayAction) + Send + Sync>;
 
 pub trait Overlay: Send + Sync {
+    fn available(&self) -> bool {
+        true
+    }
     fn show(&self, view: OverlayView);
     fn hide(&self);
     fn set_position(&self, position: OverlayPosition);
@@ -299,6 +319,9 @@ pub trait Autostart: Send + Sync {
 pub struct NoOverlay;
 
 impl Overlay for NoOverlay {
+    fn available(&self) -> bool {
+        false
+    }
     fn show(&self, _view: OverlayView) {}
     fn hide(&self) {}
     fn set_position(&self, _position: OverlayPosition) {}

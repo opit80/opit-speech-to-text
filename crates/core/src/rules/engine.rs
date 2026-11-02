@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use regex::{Regex, RegexBuilder};
 use serde::Serialize;
 
-use super::hallucination::HallucinationFilter;
+use super::hallucination::{DEFAULT_PHRASES, HallucinationFilter};
 use super::matcher::{MatchHit, Pattern, PhraseMatcher};
 use super::pack::RulePack;
 use crate::text::{capitalize_like, fold, sentence_start};
@@ -67,7 +67,7 @@ impl RuleSet {
         let mut corrections = Vec::new();
         let mut replacements = Vec::new();
         let mut casing = Vec::new();
-        let mut hallucinations = Vec::new();
+        let mut hallucinations: Vec<String> = DEFAULT_PHRASES.iter().map(|phrase| (*phrase).to_string()).collect();
         let mut terms = Vec::new();
         let mut term_keys = HashSet::new();
         let mut glossary = Vec::new();
@@ -264,6 +264,59 @@ mod tests {
     }
 
     #[test]
+    fn golden_sentences_with_personal_rules() {
+        let rules = compile(&[pack(
+            "user",
+            r#"
+language: tr
+terms: [Claude Code, GitHub, TypeScript, Node.js, ox_lib, QBCore, ServerKit]
+corrections:
+  Claude Code: [cloud code]
+  hâlâ: [hala]
+  burada: [burda]
+  ox_lib: [ox lib]
+  QBCore: [qb core]
+  ServerKit: [server kit]
+  deployla: [diployla]
+  TypeScript: [type script]
+  Node.js: [node js]
+  GitHub: [git hub]
+replacements:
+  - { from: polivin, to: plugin, regex: true }
+"#,
+        )]);
+        for (input, expected) in [
+            ("cloud code'u github'a pushla", "Claude Code'u GitHub'a pushla"),
+            ("Hala burda mısın?", "Hâlâ burada mısın?"),
+            ("sunucuda ox lib ve qb core ile server kit var", "sunucuda ox_lib ve QBCore ile ServerKit var"),
+            ("Bunu diployla, sonra pull request aç.", "Bunu deployla, sonra pull request aç."),
+            ("şimdi polivinleri güncelle", "şimdi pluginleri güncelle"),
+            ("type script ve node js", "TypeScript ve Node.js"),
+            ("eve git", "eve git"),
+            ("kodu git hub'a at", "kodu GitHub'a at"),
+        ] {
+            assert_eq!(rules.apply(input), expected, "input: {input}");
+        }
+        let built = crate::rules::prompt::build_prompt("Türkçe yazılım geliştirme", rules.terms(), "tr");
+        assert!(built.dropped_terms.is_empty());
+    }
+
+    #[test]
+    fn default_hallucinations_are_filtered() {
+        let rules = RuleSet::empty();
+        for phrase in DEFAULT_PHRASES {
+            assert!(rules.is_hallucination(phrase));
+        }
+        assert!(rules.is_hallucination("Altyazı M.K."));
+        assert!(rules.is_hallucination("İzlediğiniz için teşekkürler."));
+        assert!(rules.is_hallucination("Izlediginiz icin tesekkurler! İzlediğiniz için teşekkürler."));
+        assert!(!rules.is_hallucination("Teşekkürler, görüşürüz."));
+        for word in ["a", "e", "mk", "m.k"] {
+            assert!(!rules.is_hallucination(word));
+        }
+    }
+
+    #[test]
     fn applies_corrections_then_replacements_then_casing() {
         let rules = compile(&[pack(
             "p",
@@ -275,8 +328,8 @@ mod tests {
     #[test]
     fn personal_pack_wins_on_the_same_variant() {
         let user = pack("user", "corrections:\n  X: [foo]\n");
-        let builtin = pack("b", "corrections:\n  Y: [foo]\n");
-        assert_eq!(compile(&[user, builtin]).apply("bir foo"), "bir X");
+        let secondary = pack("b", "corrections:\n  Y: [foo]\n");
+        assert_eq!(compile(&[user, secondary]).apply("bir foo"), "bir X");
     }
 
     #[test]
@@ -332,15 +385,16 @@ mod tests {
     #[test]
     fn terms_are_deduped_in_priority_order() {
         let user = pack("user", "terms: [GitHub, Sigrid]\n");
-        let builtin = pack("b", "terms: [github, FiveM, '  ']\n");
-        assert_eq!(compile(&[user, builtin]).terms(), ["GitHub", "Sigrid", "FiveM"]);
+        let secondary = pack("b", "terms: [github, FiveM, '  ']\n");
+        assert_eq!(compile(&[user, secondary]).terms(), ["GitHub", "Sigrid", "FiveM"]);
     }
 
     #[test]
     fn hallucinations_come_from_all_packs() {
         let rules =
-            compile(&[pack("a", "hallucinations: [altyazı m.k]\n"), pack("b", "hallucinations: [thank you]\n")]);
-        assert!(rules.is_hallucination("Altyazı M.K."));
+            compile(&[pack("a", "hallucinations: [custom silence]\n"), pack("b", "hallucinations: [another ghost]\n")]);
+        assert!(rules.is_hallucination("Custom silence."));
+        assert!(rules.is_hallucination("Another ghost!"));
         assert!(rules.is_hallucination("Thank you."));
         assert!(!rules.is_hallucination("Merhaba"));
     }
@@ -350,7 +404,7 @@ mod tests {
         let rules = RuleSet::empty();
         assert_eq!(rules.apply("cloud code"), "cloud code");
         assert!(rules.terms().is_empty());
-        assert!(!rules.is_hallucination("thank you"));
+        assert!(rules.is_hallucination("thank you"));
     }
 
     #[test]

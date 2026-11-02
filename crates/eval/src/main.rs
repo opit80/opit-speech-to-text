@@ -6,7 +6,6 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use opit_core::provider::retry::RETRY_DELAY;
 use opit_core::provider::{Profile, presets};
-use opit_core::rules::builtin::assemble;
 use opit_core::rules::{RuleSet, load_pack_file};
 use opit_eval::run::{EvalConfig, RulesMode, run_eval};
 use opit_eval::{dataset, report};
@@ -38,10 +37,7 @@ struct Args {
     language: String,
     #[arg(long, value_enum, default_value_t = RulesMode::Both)]
     rules: RulesMode,
-    /// Built-in packs to enable, comma-separated.
-    #[arg(long, value_delimiter = ',', default_value = "tr-core,tr-tech")]
-    packs: Vec<String>,
-    /// Personal rule pack (user.yaml), applied with the highest priority.
+    /// Personal rules (user.yaml).
     #[arg(long)]
     user_rules: Option<PathBuf>,
     /// Prompt context sentence.
@@ -63,7 +59,7 @@ async fn main() -> Result<()> {
     }
 
     let user = args.user_rules.as_deref().map(load_pack_file).transpose().context("cannot load --user-rules")?;
-    let (rules, warnings) = RuleSet::compile(&assemble(user, &args.packs));
+    let (rules, warnings) = RuleSet::compile(user.as_slice());
     for warning in &warnings {
         eprintln!("warning [{}]: {}", warning.pack_id, warning.message);
     }
@@ -115,5 +111,17 @@ fn default_key_var(preset: Preset) -> &'static str {
         Preset::Groq => "GROQ_API_KEY",
         Preset::Openai => "OPENAI_API_KEY",
         Preset::Custom => "OPIT_API_KEY",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_personal_rules_and_rejects_removed_pack_option() {
+        let args = Args::try_parse_from(["opit-eval", "--dir", "dataset", "--user-rules", "user.yaml"]).unwrap();
+        assert_eq!(args.user_rules, Some(PathBuf::from("user.yaml")));
+        assert!(Args::try_parse_from(["opit-eval", "--dir", "dataset", "--packs", "legacy"]).is_err());
     }
 }

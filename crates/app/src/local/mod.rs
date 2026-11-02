@@ -741,7 +741,8 @@ mod tests {
     }
     #[test]
     fn folder_is_ascii_and_test_root_overrides_custom_folder() {
-        let root = std::env::current_dir().unwrap().join("scratch");
+        // A fixed path: the checkout itself may sit under a non-ASCII folder.
+        let root = PathBuf::from(if cfg!(windows) { r"C:\opit-scratch" } else { "/opit-scratch" });
         let mut config = LocalConfig {
             models_folder: Some(root.join("custom").to_string_lossy().into_owned()),
             ..Default::default()

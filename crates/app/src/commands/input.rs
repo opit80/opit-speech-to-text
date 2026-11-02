@@ -75,6 +75,11 @@ pub(super) fn validate_hotkey(
     target: Option<String>,
     config: Option<AppConfig>,
 ) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    if !keys.is_empty() {
+        crate::platform::linux::shortcut_combo::Combo::new(&keys)
+            .map_err(|_| CommandError::new("invalid_input", "Invalid Linux shortcut combination"))?;
+    }
     match target {
         Some(target) => core.validate_shortcut(keys, &target, config),
         None => AppCore::validate_hotkey(&keys),

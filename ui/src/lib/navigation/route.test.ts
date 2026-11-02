@@ -7,7 +7,6 @@ describe("parseRoute", () => {
     expect(parseRoute("#settings")).toBe("settings");
     expect(parseRoute("#/history?q=x")).toBe("history");
     expect(parseRoute("#/rules/extra")).toBe("rules");
-    expect(parseRoute("#/guide")).toBe("guide");
     expect(parseRoute("#/usage")).toBe("usage");
     expect(parseRoute("#/files")).toBe("files");
   });
@@ -15,6 +14,8 @@ describe("parseRoute", () => {
     expect(parseRoute("")).toBe("home");
     expect(parseRoute("#/")).toBe("home");
     expect(parseRoute("#/nope")).toBe("home");
+    expect(parseRoute("#/guide")).toBe("home");
+    expect(parseRoute("#/guide?lang=tr")).toBe("home");
   });
   it("round-trips", () => expect(parseRoute(routeHash("setup"))).toBe("setup"));
 });

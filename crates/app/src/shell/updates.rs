@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_updater::{Update, UpdaterExt};
+use tauri_plugin_updater::Update;
+use tauri_plugin_updater::UpdaterExt;
 use tracing::{info, warn};
 
 use crate::app_core::CommandError;
@@ -174,8 +175,41 @@ fn publish(app: &AppHandle) -> UpdateState {
     state
 }
 
+/// Self-update is available only for Windows installers and release AppImages.
+pub fn supported() -> bool {
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        appimage_build_supported(
+            cfg!(debug_assertions),
+            std::env::var_os("APPIMAGE").as_deref().map(std::path::Path::new),
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn appimage_build_supported(debug: bool, image: Option<&std::path::Path>) -> bool {
+    !debug && image.is_some_and(std::path::Path::is_absolute)
+}
+
 /// Runs one check, or returns the current state while a check or an install is running.
 pub async fn check(app: &AppHandle) -> UpdateState {
+    #[cfg(target_os = "linux")]
+    if !supported() {
+        let lang = app
+            .try_state::<std::sync::Arc<crate::app_core::AppCore>>()
+            .map(|core| core.settings.current().lang)
+            .unwrap_or(crate::shell::i18n::Lang::En);
+        app.state::<UpdateService>().with(|m| {
+            if m.begin_check() {
+                m.finish_check(Err(lang.linux_updates_unavailable().into()));
+            }
+        });
+        return publish(app);
+    }
     if !app.state::<UpdateService>().with(|m| m.begin_check()) {
         return current(app);
     }
@@ -198,6 +232,10 @@ pub async fn check(app: &AppHandle) -> UpdateState {
 /// the plugin starts the installer and exits the process. No dictation can start in the meantime
 /// (the exit would kill it); when the install fails, dictation works again.
 pub async fn install(app: &AppHandle, controller: &ControllerHandle) -> Result<(), CommandError> {
+    #[cfg(target_os = "linux")]
+    if !supported() {
+        return Err(CommandError::new("unavailable", "Only a release AppImage can update itself"));
+    }
     if cfg!(debug_assertions) {
         return Err(CommandError::new("unavailable", "only the installed app can update itself"));
     }
@@ -224,12 +262,18 @@ pub async fn install(app: &AppHandle, controller: &ControllerHandle) -> Result<(
         publish(app);
         return Err(CommandError::new("update", err.to_string()));
     }
+    #[cfg(target_os = "linux")]
+    app.restart();
+    #[cfg(windows)]
     Ok(())
 }
 
 /// Release builds: one check after [`AUTO_CHECK_DELAY`], then every [`AUTO_CHECK_INTERVAL`],
 /// each only while `ui.check_updates` is on. Failures are logged and kept as `CheckFailed`.
 pub fn spawn_auto_check(app: AppHandle, settings: SettingsHandle) {
+    if !supported() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(AUTO_CHECK_DELAY).await;
         loop {
@@ -244,6 +288,15 @@ pub fn spawn_auto_check(app: AppHandle, settings: SettingsHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_release_appimages_offer_self_update() {
+        assert!(!appimage_build_supported(true, Some(std::path::Path::new("/tmp/Opit.AppImage"))));
+        assert!(!appimage_build_supported(false, None));
+        assert!(!appimage_build_supported(false, Some(std::path::Path::new("relative.AppImage"))));
+        assert!(appimage_build_supported(false, Some(std::path::Path::new("/tmp/Opit.AppImage"))));
+    }
 
     fn info(version: &str) -> UpdateInfo {
         UpdateInfo { version: version.into(), current_version: "0.1.0".into(), notes: None }

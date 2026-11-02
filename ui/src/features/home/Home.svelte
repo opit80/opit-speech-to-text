@@ -4,13 +4,13 @@
   import { isVoiceMode } from "../dictation/voice-modes";
   import { api } from "../../lib/bridge/api";
   import { app, errorText, loadStyleDefaults, setActiveStyle, t } from "../../lib/state/app.svelte";
-  import { onHistoryAdded } from "../../lib/bridge/events";
+  import { onHistoryAdded, onPendingResultsChanged } from "../../lib/bridge/events";
   import { formatDateTime, formatSeconds } from "../../lib/utils/format";
   import { formatCombo } from "../dictation/hotkey";
   import { navigate } from "../../lib/navigation/router.svelte";
   import { styleDisplayName } from "../dictation/styles";
   import { toast } from "../../lib/state/toast.svelte";
-  import type { Dictation } from "../../lib/bridge/types";
+  import type { Dictation, PendingResult, PendingResults } from "../../lib/bridge/types";
   import Banner from "../../lib/components/Banner.svelte";
   import Button from "../../lib/components/Button.svelte";
   import Icon from "../../lib/components/Icon.svelte";
@@ -18,6 +18,70 @@
   import Select from "../../lib/components/Select.svelte";
   import DictationControl from "../dictation/DictationControl.svelte";
 
+
+  import { mergePendingResults } from "./pending-results";
+
+  let pending = $state<PendingResults>({ revision: 0, results: [] });
+  let recoveryLoading = $state(false);
+  let recoveryError = $state<string | null>(null);
+  let recoveryBusy = $state<number | null>(null);
+
+  $effect(() => {
+    if (app.capabilities?.platform !== "linux") return;
+    let cancelled = false;
+    let stop: (() => void) | undefined;
+    recoveryLoading = true;
+    async function load() {
+      try {
+        const snapshot = await api.pendingResults();
+        if (!cancelled) {
+          pending = mergePendingResults(pending, snapshot);
+          recoveryError = null;
+        }
+      } catch (error) {
+        if (!cancelled) recoveryError = errorText(error);
+      } finally {
+        if (!cancelled) recoveryLoading = false;
+      }
+    }
+    onPendingResultsChanged(() => void load()).then((unlisten) => {
+      if (cancelled) unlisten();
+      else { stop = unlisten; void load(); }
+    }).catch((error: unknown) => {
+      if (!cancelled) { recoveryError = errorText(error); recoveryLoading = false; }
+    });
+    return () => { cancelled = true; stop?.(); };
+  });
+
+  async function retryRecovery() {
+    if (recoveryLoading || disposed) return;
+    recoveryLoading = true;
+    try {
+      pending = mergePendingResults(pending, await api.pendingResults());
+      if (!disposed) recoveryError = null;
+    } catch (error) {
+      if (!disposed) recoveryError = errorText(error);
+    } finally {
+      if (!disposed) recoveryLoading = false;
+    }
+  }
+
+  async function recoveryAction(item: PendingResult, dismiss: boolean) {
+    if (recoveryBusy !== null || disposed) return;
+    recoveryBusy = item.id;
+    recoveryError = null;
+    try {
+      if (dismiss) pending = mergePendingResults(pending, await api.dismissPendingResult(item.id));
+      else {
+        await navigator.clipboard.writeText(item.text);
+        if (!disposed) toast(t("common.copied"));
+      }
+    } catch (error) {
+      if (!disposed) recoveryError = errorText(error);
+    } finally {
+      if (!disposed) recoveryBusy = null;
+    }
+  }
 
   let recent = $state<Dictation[]>([]);
   let listBusy = $state(true);
@@ -193,9 +257,35 @@
 <div>
   <PageHeader title={t("home.title")} />
   <div class="home-cards">
+    {#if app.capabilities?.platform === "linux" && !app.capabilities.tray}
+      <Banner tone="warning">{t("settings.no_tray_linux")}</Banner>
+    {/if}
+    {#if app.capabilities?.platform === "linux" && (pending.results.length > 0 || recoveryLoading || recoveryError)}
+      <section class="card stack" aria-labelledby="pending-results-title" aria-busy={recoveryLoading}>
+        <h2 id="pending-results-title">{t("home.pending_title")}</h2>
+        <p class="muted">{t("home.pending_body")}</p>
+        {#if recoveryLoading}<p role="status">{t("common.loading")}</p>{/if}
+        {#if recoveryError}
+          <Banner tone="error">{recoveryError}
+            {#snippet action()}<Button busy={recoveryLoading} onclick={() => void retryRecovery()}>{t("common.retry")}</Button>{/snippet}
+          </Banner>
+        {/if}
+        <ul class="recent-list">
+          {#each pending.results as item (item.id)}
+            <li>
+              <p class="recovery-text">{item.text}</p>
+              <div class="row">
+                <Button disabled={recoveryBusy !== null} onclick={() => void recoveryAction(item, false)}>{t("common.copy")}</Button>
+                <Button variant="ghost" disabled={recoveryBusy !== null} onclick={() => void recoveryAction(item, true)}>{t("common.dismiss")}</Button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
     <DictationControl status={app.status} busy={actionBusy} disabled={profileBusy} feedbackVisible={app.status.state === "error" || !!actionError}
-      profileName={active?.name} shortcut={formatCombo(app.config?.hotkey.keys ?? [], app.lang)}
-      shortcutEnabled={app.config?.hotkey.enabled ?? false} mode={app.config?.hotkey.mode ?? "toggle"}
+      shortcut={formatCombo(app.config?.hotkey.keys ?? [], app.lang, app.capabilities?.platform)}
+      shortcutEnabled={app.config?.hotkey.enabled ?? false} mode={app.capabilities?.platform === "linux" && !app.capabilities.shortcut_release ? "toggle" : app.config?.hotkey.mode ?? "toggle"}
       ontoggle={() => void runDictation(api.toggleDictation)} oncancel={() => void runDictation(api.cancelDictation)}>
       {#snippet feedback()}
       {#if app.status.state === "error"}
@@ -219,11 +309,14 @@
       {/snippet}
     </DictationControl>
 
+    {#if (app.config?.profiles.length ?? 0) >= 2 || app.config?.cleanup.enabled || profileError || keyError || missingKey}
     <section class="card stack" aria-label={t("home.profile")} aria-busy={profileBusy || keyBusy || styleBusy}>
+      {#if (app.config?.profiles.length ?? 0) >= 2}
       <Select label={t("home.profile")}
         bind:value={selectedProfile, (id) => void setProfile(id)}
         options={app.config?.profiles.map((profile) => ({ value: profile.id, label: profile.name })) ?? []}
         disabled={!app.config || app.status.state !== "idle" || profileBusy || actionBusy} />
+      {/if}
       {#if profileError}<Banner tone="error">{profileError}</Banner>{/if}
       {#if app.config?.cleanup.enabled}
         <Select label={t("home.style")} bind:value={selectedStyle, (id) => void setStyle(id)} options={styleOptions} />
@@ -239,6 +332,8 @@
         </Banner>
       {/if}
     </section>
+
+    {/if}
 
     <section class="card stack" aria-labelledby="home-recent">
       <div class="recent-header">
@@ -296,5 +391,6 @@
   li + li { border-top: 1px solid var(--border); }
   .dictation-content { flex: 1; min-width: 0; }
   .metadata { display: flex; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; font-size: var(--text-sm); margin-bottom: var(--space-1); }
+  .recovery-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
   .transcript { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; }
 </style>

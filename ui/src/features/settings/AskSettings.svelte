@@ -1,4 +1,4 @@
-﻿<script lang="ts">
+<script lang="ts">
   import { onMount, untrack } from "svelte";
   import { api } from "../../lib/bridge/api";
   import { app, errorText, saveConfig, t } from "../../lib/state/app.svelte";
@@ -70,7 +70,10 @@
 
 <form class="stack" onsubmit={(event) => { event.preventDefault(); void save(); }}>
   <fieldset class="stack" disabled={busy}>
-    <HotkeyInput {keys} optional target="ask" label={t("ask.shortcut")} info={t("ask.shortcut_hint")} onchange={(value) => { keys = value; }} />
+    <HotkeyInput {keys} optional target="ask" label={t("ask.shortcut")} info={t(app.capabilities?.platform === "linux" ? "ask.shortcut_hint_linux" : "ask.shortcut_hint")} onchange={async (value) => {
+      if (app.capabilities?.platform === "linux") await saveConfig((c) => { c.hotkey.ask_keys = value; });
+      keys = value;
+    }} />
     <Select label={t("ask.agent")} info={t("ask.privacy")} value={draft.agent} options={agents} onchange={(value) => { draft.agent = value as AskAgent; result = null; }} />
     <p class="muted" role="status">{!loaded ? t("common.loading") : installed ? t("ask.available") : t("ask.missing")}</p>
     {#if draft.agent === "chat"}
@@ -102,14 +105,7 @@
     <Field label={t("ask.directory")} info={t("ask.directory_hint")}>
       {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} bind:value={draft.working_dir} autocomplete="off" spellcheck="false" />{/snippet}
     </Field>
-    <Field label={t("ask.timeout")}>
-      {#snippet children(id)}<input {id} type="number" min="1" max="3600" step="1" bind:value={draft.timeout_seconds} required />{/snippet}
-    </Field>
-    <Field label={t("ask.continue")} info={t("ask.continue_hint")}>
-      {#snippet children(id, describedBy)}<input {id} aria-describedby={describedBy} type="number" min="0" max="1440" step="1" bind:value={draft.continue_minutes} required />{/snippet}
-    </Field>
     <Select label={t("ask.output")} value={draft.output} options={outputs} onchange={(value) => draft.output = value as AskConfig["output"]} />
-    <Switch label={t("ask.cleanup")} info={t("ask.cleanup_hint")} bind:checked={draft.cleanup_request} />
   </fieldset>
   {#if error}<Banner tone="error">{error}</Banner>{/if}
   {#if result}<p class="answer" role="status">{result}</p>{/if}

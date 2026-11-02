@@ -9,3 +9,9 @@ export const speechDetectionDefaults = {
 export function rmsToDb(level: number): number {
   return Number.isFinite(level) && level > 0.000001 ? 20 * Math.log10(level) : -120;
 }
+
+/** Compare exact saved thresholds so even a small calibration change can be undone. */
+export function speechDetectionCustomized(recording: typeof speechDetectionDefaults): boolean {
+  return (Object.keys(speechDetectionDefaults) as (keyof typeof speechDetectionDefaults)[])
+    .some((field) => recording[field] !== speechDetectionDefaults[field]);
+}

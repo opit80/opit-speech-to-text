@@ -14,6 +14,10 @@ mod input;
 mod local;
 mod profiles;
 mod rules;
+#[cfg(target_os = "linux")]
+mod session;
+#[cfg(target_os = "linux")]
+mod shortcuts;
 mod updates;
 
 use std::sync::Arc;
@@ -40,7 +44,20 @@ where
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        #[cfg(target_os = "linux")]
+        session::pending_results,
+        #[cfg(target_os = "linux")]
+        session::dismiss_pending_result,
+        #[cfg(target_os = "linux")]
+        session::shortcut_test_state,
+        #[cfg(target_os = "linux")]
+        session::set_shortcut_test,
+        #[cfg(target_os = "linux")]
+        shortcuts::linux_shortcut_registry,
+        #[cfg(target_os = "linux")]
+        shortcuts::probe_shortcut_command,
         app::app_info,
+        app::platform_capabilities,
         dictation::get_status,
         dictation::toggle_dictation,
         dictation::cancel_dictation,
@@ -74,7 +91,6 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         rules::save_user_rules,
         rules::rules_preview,
         rules::prompt_budget,
-        rules::rule_packs,
         rules::parse_user_rules,
         rules::render_user_rules,
         rules::correction_draft,

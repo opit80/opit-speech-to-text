@@ -17,19 +17,39 @@ pub struct Request {
 pub enum Command {
     Status,
     Toggle,
+    /// A desktop command press. This preserves hotkey semantics (including paste).
+    Shortcut {
+        action: String,
+    },
     Start,
     Stop,
     Cancel,
     Pause,
     Resume,
     Retry,
-    Ask { text: Option<String> },
-    Record { seconds: u32 },
-    HistoryList { limit: usize, search: Option<String> },
-    HistoryRetry { id: i64 },
-    Transcribe { path: String, format: Format, timestamps: bool, cleanup: bool },
+    Ask {
+        text: Option<String>,
+    },
+    Record {
+        seconds: u32,
+    },
+    HistoryList {
+        limit: usize,
+        search: Option<String>,
+    },
+    HistoryRetry {
+        id: i64,
+    },
+    Transcribe {
+        path: String,
+        format: Format,
+        timestamps: bool,
+        cleanup: bool,
+    },
     ProfilesList,
-    ProfileUse { id: String },
+    ProfileUse {
+        id: String,
+    },
     Version,
 }
 
@@ -89,6 +109,7 @@ impl Request {
             return Err(Error::new("protocol_version", "Unsupported local control protocol version."));
         }
         let valid = match &self.command {
+            Command::Shortcut { action } => valid_shortcut_action(action),
             Command::Ask { text } => {
                 text.as_ref().is_none_or(|s| !s.trim().is_empty() && s.len() <= 12 * 1024 && !s.contains('\0'))
             }
@@ -103,6 +124,16 @@ impl Request {
         };
         if valid { Ok(()) } else { Err(Error::new("invalid_input", "Invalid command arguments.")) }
     }
+}
+
+/// Stable action names shared by the Linux app relay and the local-control server.
+pub fn valid_shortcut_action(action: &str) -> bool {
+    matches!(action, "dictation" | "pause" | "cancel" | "ask" | "edit" | "translate" | "style_cycle" | "probe")
+        || action.strip_prefix("style:").is_some_and(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+        })
 }
 
 pub fn decode_request(bytes: &[u8]) -> Result<Request, Error> {
@@ -141,6 +172,20 @@ pub fn decode_request(bytes: &[u8]) -> Result<Request, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcut_actions_are_bounded_and_roundtrip_without_exposing_invalid_input() {
+        for action in
+            ["dictation", "pause", "cancel", "ask", "edit", "translate", "style_cycle", "style:formal", "probe"]
+        {
+            let request = Request::new(Command::Shortcut { action: action.into() });
+            let decoded = decode_request(&serde_json::to_vec(&request).unwrap()).unwrap();
+            assert!(matches!(decoded.command, Command::Shortcut { action: actual } if actual == action));
+        }
+        for action in ["", "unknown", "style:", "style:../foreign", "style:private text", "dictation\n"] {
+            assert!(!valid_shortcut_action(action));
+        }
+    }
 
     #[test]
     fn roundtrip_and_versions() {

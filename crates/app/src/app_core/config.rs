@@ -10,13 +10,23 @@ use super::{AppCore, CommandError};
 use crate::settings::Settings;
 use crate::startup;
 
-/// Start with Windows only once the first-run wizard was finished or skipped, so a fresh install
+/// Start with Windows only once the first-run wizard was finished, so a fresh install
 /// never registers itself before the user has seen the choice (spec §7, Plan 4 ruling).
 pub fn autostart_wanted(config: &AppConfig) -> bool {
     config.ui.autostart && config.ui.setup_done
 }
 
 impl AppCore {
+    /// The Linux startup worker may run after a UI save. Read current settings
+    /// under the same lock, so its stale startup snapshot cannot replace that save.
+    #[cfg(not(windows))]
+    pub fn apply_startup_settings(&self) {
+        let _guard = self.config_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let config = self.config();
+        self.apply_hotkey(&config);
+        self.apply_autostart(autostart_wanted(&config));
+    }
+
     pub fn config(&self) -> AppConfig {
         self.settings.current().config.clone()
     }
@@ -52,7 +62,7 @@ impl AppCore {
 
     /// Caller holds `config_lock`.
     pub(super) fn save_locked(&self, mut config: AppConfig, notify_style: bool) -> Result<AppConfig, CommandError> {
-        crate::platform::keys::validate_list(&config.shortcuts()).map_err(|err| self.shortcut_error(err))?;
+        super::input::validate_shortcuts(&config).map_err(|err| self.shortcut_error(err))?;
         config.normalize();
         if !config.ask.valid() || crate::ask::resolve_directory(&config.ask.working_dir).is_err() {
             return Err(CommandError::new("invalid_input", self.settings.current().lang.ask_invalid()));
@@ -63,7 +73,13 @@ impl AppCore {
         let old = self.config();
         config.save(&self.paths.config)?;
         self.rebuild(config.clone());
-        if shortcut_mappings_changed(&old, &config) {
+        #[cfg(target_os = "linux")]
+        let retry_failed = self.hotkey_state().error.is_some();
+        #[cfg(not(target_os = "linux"))]
+        let retry_failed = false;
+        if shortcut_mappings_changed(&old, &config) || retry_failed {
+            // Saving the same keys also retries a failed installation (for example,
+            // after the desktop entry was installed while this process stayed alive).
             self.apply_hotkey(&config);
         } else if old.hotkey.enabled != config.hotkey.enabled {
             self.sync_pause(&config);

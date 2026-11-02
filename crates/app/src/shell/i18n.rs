@@ -22,6 +22,12 @@ pub fn system_locale() -> Option<String> {
 }
 
 impl Lang {
+    pub fn linux_updates_unavailable(self) -> &'static str {
+        self.pick(
+            "Linux updates are not available in this build; use your package manager.",
+            "Bu sürümde Linux güncellemeleri kullanılamıyor; paket yöneticinizi kullanın.",
+        )
+    }
     pub fn edit_label(self) -> &'static str {
         self.pick("Edit", "Düzenle")
     }
@@ -240,6 +246,10 @@ impl Lang {
         self.pick("No text came back", "Metin çıkmadı")
     }
 
+    pub fn cancel_action(self) -> &'static str {
+        self.pick("Cancel", "İptal et")
+    }
+
     pub fn cancelled(self) -> &'static str {
         self.pick("Cancelled", "İptal edildi")
     }
@@ -276,6 +286,10 @@ impl Lang {
             PaymentRequired => self.pick(
                 "The provider account has a billing or credit problem",
                 "Sağlayıcı hesabında bakiye veya ödeme sorunu var",
+            ),
+            ModelNotFound => self.pick(
+                "Model not found or unavailable. Choose another model",
+                "Model bulunamadı veya kullanılamıyor. Başka bir model seçin",
             ),
             TooLarge => self.pick("Recording exceeds the provider limit", "Kayıt sağlayıcı sınırını aşıyor"),
             RateLimited => self.pick("Provider is rate limiting", "Sağlayıcı istek sınırına takıldı"),
@@ -356,6 +370,7 @@ mod tests {
         use opit_core::cleanup::CleanupError;
         use opit_core::provider::retry::RetryWait;
         let mut out: Vec<(&'static str, String)> = vec![
+            ("linux_updates_unavailable", lang.linux_updates_unavailable().into()),
             ("loading_local", lang.loading_local().into()),
             ("application_list_failed", lang.application_list_failed().into()),
             ("ask_cleanup_failed", lang.ask_cleanup_failed().into()),
@@ -388,6 +403,7 @@ mod tests {
             ("no_speech", lang.no_speech(-52.0)),
             ("too_short", lang.too_short().into()),
             ("empty", lang.empty().into()),
+            ("cancel_action", lang.cancel_action().into()),
             ("cancelled", lang.cancelled().into()),
             ("retry", lang.retry().into()),
             ("open_settings", lang.open_settings().into()),
@@ -431,6 +447,7 @@ mod tests {
             CleanupError::MissingKey,
             CleanupError::InvalidKey,
             CleanupError::PaymentRequired,
+            CleanupError::ModelNotFound,
             CleanupError::RateLimited,
             CleanupError::Server,
             CleanupError::Network,

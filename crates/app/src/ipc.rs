@@ -38,6 +38,26 @@ async fn blocking<T: Send + 'static>(
 
 pub async fn dispatch(core: Arc<AppCore>, request: Request) -> Result<Value, Error> {
     request.validate()?;
+    #[cfg(target_os = "linux")]
+    if let Command::Shortcut { action } = &request.command {
+        if core.linux_shortcut_capturing() {
+            return Err(Error::new("hotkey_capture", "Shortcut capture is active."));
+        }
+        if !core.config().hotkey.enabled || core.hotkey_state().paused {
+            return Err(Error::new("shortcuts_paused", "Shortcuts are disabled or paused."));
+        }
+        if action == "probe" {
+            return value(core.controller.control(ControlAction::ShortcutProbe).await.map_err(controller_error)?);
+        }
+        let event = crate::platform::linux::shortcuts::event(action)
+            .ok_or_else(|| Error::new("invalid_input", "Unknown shortcut action."))?;
+        if let crate::platform::HotkeyEvent::Style(id) = &event
+            && !core.config().cleanup.styles.iter().any(|style| &style.id == id)
+        {
+            return Err(Error::new("invalid_input", "Unknown cleanup style."));
+        }
+        return value(core.controller.control(ControlAction::Shortcut(event)).await.map_err(controller_error)?);
+    }
     let action = match request.command {
         Command::Toggle => Some(ControlAction::Toggle),
         Command::Start => Some(ControlAction::Start),
@@ -208,4 +228,80 @@ async fn connection_request(
         crate::events::config_changed(app, &core.config());
     }
     result
+}
+
+#[cfg(unix)]
+pub fn spawn(app: tauri::AppHandle, core: Arc<AppCore>) {
+    use opit_ipc::{MAX_REQUEST, MAX_RESPONSE, Response, decode_request, read_frame, write_frame};
+    use tokio::io::BufReader;
+
+    tauri::async_runtime::spawn(async move {
+        let Ok(path) = opit_ipc::unix::socket_path() else {
+            tracing::warn!("local control socket path unavailable");
+            return;
+        };
+        let Ok(listener) = opit_ipc::unix::bind(&path) else {
+            tracing::warn!("local control socket unavailable");
+            return;
+        };
+        struct SocketGuard(std::path::PathBuf);
+        impl Drop for SocketGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _guard = SocketGuard(path);
+        let capacity = Arc::new(tokio::sync::Semaphore::new(8));
+        let file_capacity = Arc::new(tokio::sync::Semaphore::new(1));
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            let Ok(permit) = capacity.clone().try_acquire_owned() else {
+                continue;
+            };
+            let core = core.clone();
+            let app = app.clone();
+            let file_capacity = file_capacity.clone();
+            tokio::spawn(async move {
+                let _permit = permit;
+                let result = async {
+                    let bytes = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        read_frame(&mut BufReader::new(&mut stream), MAX_REQUEST),
+                    )
+                    .await
+                    .map_err(|_| Error::new("timeout", "Local request read timed out."))??;
+                    let request = decode_request(&bytes)?;
+                    let profile_change = matches!(request.command, Command::ProfileUse { .. });
+                    let _file_permit = if matches!(request.command, Command::Transcribe { .. }) {
+                        Some(
+                            file_capacity
+                                .try_acquire_owned()
+                                .map_err(|_| Error::new("file_busy", "A CLI file job is already running."))?,
+                        )
+                    } else {
+                        None
+                    };
+                    let result = dispatch(core.clone(), request).await;
+                    #[cfg(target_os = "linux")]
+                    if result.as_ref().is_err_and(|error| error.code == "hotkey_capture") {
+                        crate::events::emit(&app, crate::events::HOTKEY_CAPTURE_INTERCEPTED, ());
+                    }
+                    if profile_change && result.is_ok() {
+                        crate::events::config_changed(&app, &core.config());
+                    }
+                    result
+                }
+                .await;
+                let response = Response::from_result(result);
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    write_frame(&mut stream, &response, MAX_RESPONSE),
+                )
+                .await;
+            });
+        }
+        tracing::warn!("local control server stopped");
+    });
 }

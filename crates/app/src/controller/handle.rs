@@ -7,6 +7,8 @@ pub struct ControllerHandle {
     pub(super) tx: mpsc::UnboundedSender<Msg>,
     pub(super) status: Arc<Mutex<DictationStatus>>,
     work: Arc<Mutex<WorkState>>,
+    #[cfg(target_os = "linux")]
+    pub(super) session_state: Arc<Mutex<session::SessionState>>,
 }
 
 #[derive(Default)]
@@ -45,8 +47,13 @@ impl Drop for WorkGuard {
 
 pub struct Inbox(pub(super) mpsc::UnboundedReceiver<Msg>);
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
+#[cfg_attr(not(target_os = "linux"), derive(Copy))]
 pub enum ControlAction {
+    #[cfg(target_os = "linux")]
+    Shortcut(crate::platform::HotkeyEvent),
+    #[cfg(target_os = "linux")]
+    ShortcutProbe,
     Toggle,
     Start,
     Stop,
@@ -72,10 +79,41 @@ impl Drop for UpdateHold {
 /// controller that consumes them.
 pub fn channel() -> (ControllerHandle, Inbox) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (ControllerHandle { tx, status: Arc::default(), work: Arc::default() }, Inbox(rx))
+    (
+        ControllerHandle {
+            tx,
+            status: Arc::default(),
+            work: Arc::default(),
+            #[cfg(target_os = "linux")]
+            session_state: Arc::default(),
+        },
+        Inbox(rx),
+    )
 }
 
 impl ControllerHandle {
+    #[cfg(target_os = "linux")]
+    pub fn pending_results(&self) -> PendingResults {
+        self.session_state.lock().unwrap_or_else(PoisonError::into_inner).pending()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn dismiss_pending_result(&self, id: u64) -> PendingResults {
+        self.session_state.lock().unwrap_or_else(PoisonError::into_inner).dismiss(id)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn shortcut_test(&self) -> ShortcutTest {
+        self.session_state.lock().unwrap_or_else(PoisonError::into_inner).shortcut_test()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn set_shortcut_test(&self, active: bool) -> Result<ShortcutTest, ErrorKind> {
+        let (reply, result) = oneshot::channel();
+        self.send(Msg::ShortcutTest { active, reply });
+        result.await.unwrap_or(Err(ErrorKind::Cancelled))
+    }
+
     pub async fn control(&self, action: ControlAction) -> Result<DictationStatus, ErrorKind> {
         let (reply, result) = oneshot::channel();
         self.send(Msg::Control { action, reply });

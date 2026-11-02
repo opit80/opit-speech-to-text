@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { revealFieldErrors } from "../../lib/utils/reveal-field-errors";
+  import { api } from "../../lib/bridge/api";
   import { onMount, tick } from "svelte";
-  import { app, errorText, loadStyleDefaults, saveConfig, setActiveStyle, t } from "../../lib/state/app.svelte";
+  import { app, errorText, loadStyleDefaults, saveConfig, t } from "../../lib/state/app.svelte";
   import { formatCombo } from "../dictation/hotkey";
   import {
     defaultStylePrompt, deleteStyle, isBuiltinStyle, newStyle, newStyleId, prepareStyle, styleDisplayName, styleProblem,
@@ -18,13 +20,6 @@
 
   const uid = $props.id();
   const formId = `${uid}-form`;
-  let list = $state<HTMLElement>();
-  let switching = $state(false);
-  // The latest pick made while a switch was saving; applied once it finishes.
-  let pending: string | null = null;
-  // The style being saved, shown meanwhile so a queued pick does not flash the previous one.
-  let target = $state<string | null>(null);
-  let error = $state<string | null>(null);
   let defaultsError = $state<string | null>(null);
 
   // The edit dialog's form draft; null while it is closed (which also ends any shortcut capture).
@@ -42,8 +37,7 @@
   let disposed = false;
 
   const styles = $derived(app.config?.cleanup.styles ?? []);
-  const active = $derived(app.config?.cleanup.active_style_id ?? "clean");
-  // Like Home, which hides its picker: without AI cleanup the active style has no effect.
+  // Styles can still be edited while cleanup is off.
   const cleanupOff = $derived(app.config?.cleanup.enabled === false);
   const nameOf = (style: Pick<CleanupStyle, "id" | "name">) => styleDisplayName(style, app.styleDefaults, app.lang);
   const draftDefaultPrompt = $derived(draft ? defaultStylePrompt(draft.id, app.styleDefaults, app.lang) : "");
@@ -70,37 +64,6 @@
     defaultsError = null;
     try { await loadStyleDefaults(); }
     catch (e) { if (!disposed) defaultsError = errorText(e); }
-  }
-
-  /** After a failed switch, show the live selection again. */
-  function syncRadios() {
-    for (const input of list?.querySelectorAll<HTMLInputElement>("input[type=radio]") ?? []) {
-      input.checked = input.value === app.config?.cleanup.active_style_id;
-    }
-  }
-
-  // The radios stay enabled while saving (disabling them would drop keyboard focus); a pick made
-  // meanwhile is kept and applied afterwards, so arrow keys through the list end on the last one.
-  async function select(id: string) {
-    if (switching) { pending = id; return; }
-    if (id === active) { target = null; return; }
-    switching = true;
-    target = id;
-    error = null;
-    let failed = false;
-    try {
-      await setActiveStyle(id);
-    } catch (e) {
-      failed = true;
-      if (!disposed) error = errorText(e);
-    } finally {
-      if (!disposed) switching = false;
-    }
-    const next = pending;
-    pending = null;
-    if (disposed) return;
-    if (!failed && next) void select(next);
-    else { target = null; syncRadios(); }
   }
 
   function edit(style: CleanupStyle) {
@@ -134,6 +97,11 @@
     dialogError = null;
     try {
       await saveConfig((c) => { c.cleanup.styles = upsertStyle(c.cleanup.styles, style); });
+      if (app.capabilities?.platform === "linux") {
+        const action = `style:${style.id}` as const;
+        const state = await api.linuxShortcutRegistry(action, style.hotkey, "read");
+        if (state.registered) await api.linuxShortcutRegistry(action, style.hotkey, style.hotkey.length ? "install" : "remove");
+      }
       if (!disposed) { editOpen = false; toast(t("common.saved")); }
     } catch (e) {
       if (!disposed) dialogError = errorText(e);
@@ -154,6 +122,7 @@
     deleteBusy = true;
     deleteError = null;
     try {
+      if (app.capabilities?.platform === "linux") await api.linuxShortcutRegistry(`style:${id}`, [], "remove");
       await saveConfig((c) => { Object.assign(c.cleanup, deleteStyle(c.cleanup, id)); });
       if (disposed) return;
       deleteOpen = false;
@@ -178,19 +147,13 @@
     </Banner>
   {/if}
   {#if cleanupOff}<p class="muted note">{t("styles.cleanup_off")}</p>{/if}
-  <fieldset class="styles" aria-busy={switching}>
-    <legend class="visually-hidden">{t("styles.active")}</legend>
-    <ul bind:this={list}>
+    <ul>
       {#each styles as style (style.id)}
         {@const name = nameOf(style)}
         <li>
-          <label class="choice">
-            <input type="radio" name={`${uid}-active`} value={style.id} checked={style.id === (target ?? active)} disabled={cleanupOff}
-              onchange={() => void select(style.id)} />
-            <span class="name">{name}</span>
-          </label>
+          <span class="name">{name}</span>
           <span class="meta muted">
-            {#if style.hotkey.length}<span>{formatCombo(style.hotkey, app.lang)}</span>{/if}
+            {#if style.hotkey.length}<span>{formatCombo(style.hotkey, app.lang, app.capabilities?.platform)}</span>{/if}
             {#if !style.in_cycle}<span>{t("styles.not_in_cycle")}</span>{/if}
           </span>
           <span class="actions">
@@ -202,15 +165,22 @@
         </li>
       {/each}
     </ul>
-  </fieldset>
-  {#if error}<Banner tone="error">{error}</Banner>{/if}
+  {#if app.capabilities?.platform === "linux"}
+    {#each styles as style (style.id)}
+      <HotkeyInput keys={style.hotkey} optional target={`style:${style.id}`} label={t("settings.style_shortcut_named", { name: nameOf(style) })}
+        info={t("styles.shortcut_hint")} onchange={(keys) => saveConfig((c) => {
+          const current = c.cleanup.styles.find((item) => item.id === style.id);
+          if (current) current.hotkey = keys;
+        }).then(() => {})} />
+    {/each}
+  {/if}
   <div class="row"><Button id={`${uid}-add`} onclick={add}>{t("styles.add")}</Button></div>
 </section>
 
 <!-- Escape while saving would hide the outcome (and a save error): keep the dialog open until it ends. -->
 <Dialog bind:open={editOpen} title={editTitle} onclose={() => { if (saving) editOpen = true; else draft = null; }}>
   {#if draft}
-    <form id={formId} class="stack" novalidate onsubmit={(e) => { e.preventDefault(); void saveStyle(); }}>
+    <form use:revealFieldErrors id={formId} class="stack" novalidate onsubmit={(e) => { e.preventDefault(); void saveStyle(); }}>
       <fieldset class="stack" disabled={saving}>
         <Field label={t("styles.name")} error={problem === "name" ? t("styles.name_required") : null}>
           {#snippet children(id, describedBy)}<input {id} bind:value={draft!.name} aria-describedby={describedBy}
@@ -232,16 +202,23 @@
               {/if}
             </div>
           {/if}
+        {/if}
+        <details>
+          <summary>{t("common.more")}</summary>
+          <div class="stack more-body">
+          {#if draft.id !== "raw"}
           <Field label={t("styles.model")} info={t("styles.model_hint")}>
             {#snippet children(id, describedBy)}<input {id} value={draft!.model ?? ""} aria-describedby={describedBy}
               placeholder={app.config?.cleanup.model ?? ""} autocomplete="off" spellcheck="false"
               oninput={(e) => { if (draft) draft.model = e.currentTarget.value; }} />{/snippet}
           </Field>
-        {/if}
-        <Switch label={t("styles.in_cycle")} bind:checked={draft.in_cycle} />
-        <HotkeyInput keys={draft.hotkey} optional target={`style:${draft.id}`} config={validationConfig}
-          label={t("styles.shortcut")} info={t("styles.shortcut_hint")}
-          onchange={(keys) => { if (draft) draft.hotkey = keys; }} />
+          {/if}
+          <Switch label={t("styles.in_cycle")} bind:checked={draft.in_cycle} />
+          <HotkeyInput keys={draft.hotkey} optional target={`style:${draft.id}`} config={validationConfig}
+            label={t("styles.shortcut")} info={t("styles.shortcut_hint")}
+            onchange={(keys) => { if (draft) draft.hotkey = keys; }} />
+          </div>
+        </details>
       </fieldset>
       {#if dialogError}<Banner tone="error">{dialogError}</Banner>{/if}
     </form>
@@ -270,11 +247,11 @@
   ul { list-style: none; margin: 0; padding: 0; }
   li { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-1) 0; flex-wrap: wrap; }
   li + li { border-top: 1px solid var(--border); }
-  .choice { display: flex; align-items: center; gap: var(--space-2); flex: 1; min-width: 0; cursor: pointer; padding: var(--space-1) 0; }
-  .choice input { margin: 0; min-height: 0; accent-color: var(--accent); }
-  .name { overflow-wrap: anywhere; }
+  .name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  summary { cursor: pointer; font-weight: 600; }
+  .more-body { margin-top: var(--space-3); }
   .note { font-size: var(--text-sm); }
   .meta { display: flex; gap: var(--space-2); font-size: var(--text-sm); }
   .actions { display: flex; gap: var(--space-1); }
-  input:not([type="radio"]), textarea { width: 100%; }
+  input, textarea { width: 100%; }
 </style>

@@ -64,7 +64,7 @@ impl Microphone for CpalMicrophone {
         let host = cpal::default_host();
         let default = host.default_input_device().as_ref().and_then(device_name);
         let all = match host.input_devices() {
-            Ok(devices) => devices.filter_map(|d| device_name(&d)).collect(),
+            Ok(devices) => devices.filter(listed_device).filter_map(|d| device_name(&d)).collect(),
             Err(e) => {
                 tracing::warn!(error = %e, "listing input devices failed");
                 Vec::new()
@@ -265,6 +265,23 @@ fn default_device(host: &Host) -> Option<Device> {
     default.id().ok().and_then(|id| host.device_by_id(&id)).or(Some(default))
 }
 
+/// ALSA also enumerates resamplers, mixers and the null device. Those stay out of the picker,
+/// while a saved name still opens because `open` searches every device.
+#[cfg(target_os = "linux")]
+fn listed_device(device: &Device) -> bool {
+    device.description().is_ok_and(|d| d.driver().is_some_and(is_capture_pcm))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn listed_device(_: &Device) -> bool {
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn is_capture_pcm(pcm: &str) -> bool {
+    matches!(pcm, "default" | "pipewire" | "pulse") || pcm.starts_with("sysdefault:")
+}
+
 fn device_name(device: &Device) -> Option<String> {
     device.description().ok().map(|d| d.name().to_owned()).filter(|n| !n.is_empty())
 }
@@ -407,6 +424,17 @@ impl LevelMeter {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_picker_lists_capture_devices_and_not_alsa_plugins() {
+        for pcm in ["default", "pipewire", "pulse", "sysdefault:CARD=S"] {
+            assert!(super::is_capture_pcm(pcm), "{pcm}");
+        }
+        for pcm in ["null", "lavrate", "samplerate", "speexrate", "jack", "oss", "speex", "upmix", "vdownmix"] {
+            assert!(!super::is_capture_pcm(pcm), "{pcm}");
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -201,8 +201,8 @@ mod tests {
 
     const FULL: &str = r#"
 schema: 1
-id: tr-tech
-name: Turkish – software terms
+id: user
+name: Personal rules
 language: tr
 terms: [Claude Code, GitHub]
 corrections:
@@ -216,7 +216,7 @@ hallucinations: [altyazı m.k]
     #[test]
     fn parses_a_full_pack() {
         let pack = RulePack::from_yaml(FULL).unwrap();
-        assert_eq!(pack.id, "tr-tech");
+        assert_eq!(pack.id, "user");
         assert_eq!(pack.terms, vec!["Claude Code", "GitHub"]);
         assert_eq!(pack.corrections["Claude Code"], vec!["cloud code", "clod code"]);
         assert_eq!(pack.replacements[1].to, "$1 TL");
@@ -266,7 +266,7 @@ hallucinations: [altyazı m.k]
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("user.yaml");
         std::fs::write(&path, FULL).unwrap();
-        assert_eq!(load_pack_file(&path).unwrap().id, "tr-tech");
+        assert_eq!(load_pack_file(&path).unwrap().id, "user");
         let missing = load_pack_file(&dir.path().join("nope.yaml")).unwrap_err();
         assert!(matches!(missing, PackError::Io(_)));
     }

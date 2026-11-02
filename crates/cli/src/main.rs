@@ -8,7 +8,7 @@ use opit_ipc::{Command, Error, Format, Outcome, Request, Response};
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(name = "opit", version, about = "Control Opit Speech to Text in the current Windows user session")]
+#[command(name = "opit", version, about = "Control Opit Speech to Text in the current user session")]
 struct Args {
     /// Print a versioned JSON response (including errors).
     #[arg(long, global = true)]
@@ -143,9 +143,9 @@ async fn call(request: &Request) -> Result<Response, Error> {
     opit_ipc::windows::call(request).await
 }
 
-#[cfg(not(windows))]
-async fn call(_: &Request) -> Result<Response, Error> {
-    Err(Error::new("unsupported_platform", "Local app control is supported on Windows only."))
+#[cfg(unix)]
+async fn call(request: &Request) -> Result<Response, Error> {
+    opit_ipc::unix::call(request).await
 }
 
 fn exit_code(error: &Error) -> u8 {

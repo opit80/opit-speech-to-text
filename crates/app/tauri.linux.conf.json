@@ -1,0 +1,16 @@
+{
+  "bundle": {
+    "targets": ["appimage", "deb"],
+    "shortDescription": "Voice dictation with your own API key",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"],
+    "linux": {
+      "deb": {
+        "depends": ["libayatana-appindicator3-1", "libasound2", "libgtk-layer-shell0", "wl-clipboard", "xclip", "libsecret-tools", "playerctl"],
+        "files": {
+          "/usr/bin/opit": "../../target/cli-bundle/opit",
+          "/usr/share/applications/io.github.opit80.opit-speech-to-text.desktop": "linux/io.github.opit80.opit-speech-to-text.desktop"
+        }
+      }
+    }
+  }
+}

@@ -12,7 +12,6 @@
     status: DictationStatus;
     busy: boolean;
     disabled: boolean;
-    profileName?: string;
     shortcut: string;
     shortcutEnabled: boolean;
     mode: HotkeyMode;
@@ -21,7 +20,7 @@
     feedback?: Snippet;
     feedbackVisible?: boolean;
   }
-  let { status, busy, disabled, profileName, shortcut, shortcutEnabled, mode, ontoggle, oncancel, feedback, feedbackVisible = false }: Props = $props();
+  let { status, busy, disabled, shortcut, shortcutEnabled, mode, ontoggle, oncancel, feedback, feedbackVisible = false }: Props = $props();
   const recording = $derived(status.state === "recording");
   const working = $derived(status.state === "transcribing" || status.state === "cleaning" || status.state === "asking" || status.state === "pasting");
   const titles: Record<DictationState, MessageKey> = {
@@ -51,13 +50,13 @@
       {/if}
       {#if recording}
         <div class="wave" class:paused={status.paused} aria-hidden="true">{#each wave as height, i}<span style:height={`${height}px`} style:animation-delay={`${i * -0.11}s`}></span>{/each}</div>
-      {:else if profileName}<span class="provider"><Icon name="profiles" size={12} />{t("home.control.provider", { name: profileName })}</span>{/if}
+      {/if}
     </div>
     {#if recording || working}<div class="cancel"><Button variant="ghost" disabled={busy || disabled} aria-label={t("home.cancel")} onclick={oncancel}><Icon name="x" /></Button></div>{/if}
   </div>
   {#if feedback && feedbackVisible}<div class="feedback">{@render feedback()}</div>{/if}
   <div class="recorder-bottom">
-    <a class="shortcut" href="#/settings" aria-label={t("guide.change_shortcut")}><Icon name="key" size={14} /><span>{t("home.control.shortcut")}</span>{#if shortcutEnabled}<kbd>{shortcut}</kbd>{:else}<span>{t("home.shortcut_off")}</span>{/if}</a>
+    <a class="shortcut" href="#/settings" aria-label={t("home.control.change_shortcut")}><Icon name="key" size={14} /><span>{t("home.control.shortcut")}</span>{#if shortcutEnabled}<kbd>{shortcut}</kbd>{:else}<span>{t("home.shortcut_off")}</span>{/if}</a>
     <span class="mode">{t(mode === "push_to_talk" ? "home.control.mode_ptt" : "home.control.mode_toggle")}</span>
   </div>
 </section>
@@ -80,7 +79,6 @@
   .control-label { color: var(--text-muted); font-size: var(--text-sm); text-align: center; }
   h2 { font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.5px; margin-bottom: var(--space-2); }
   .copy p { max-width: 46ch; color: var(--text-muted); }
-  .provider { display: inline-flex; align-items: center; gap: var(--space-1); margin-top: var(--space-3); color: var(--text-muted); font-size: var(--text-sm); }
   .wave { display: flex; align-items: center; gap: var(--space-1); height: 34px; margin-top: var(--space-2); }
   .wave span { width: 3px; background: var(--danger); border-radius: var(--radius-sm); animation: level 700ms ease-in-out infinite alternate; }
   .wave.paused span { animation-play-state: paused; }

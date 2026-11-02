@@ -1,5 +1,4 @@
 use opit_core::learning::{LearningItem, TermChange};
-use opit_core::rules::builtin::PackInfo;
 use opit_core::rules::prompt::BuiltPrompt;
 use opit_core::rules::{RulePack, RuleWarning};
 use tauri::AppHandle;
@@ -29,11 +28,6 @@ pub(super) async fn rules_preview(core: Core<'_>, text: String, draft_yaml: Opti
 #[tauri::command]
 pub(super) fn prompt_budget(core: Core<'_>) -> BuiltPrompt {
     core.prompt_budget()
-}
-
-#[tauri::command]
-pub(super) fn rule_packs() -> Vec<PackInfo> {
-    opit_core::rules::builtin::pack_infos()
 }
 
 #[tauri::command]

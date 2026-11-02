@@ -80,3 +80,19 @@ test("a bogus signature never produces a manifest or copies an installer", () =>
     rmSync(dir, { recursive: true });
   }
 });
+
+test("Linux names and manifest extend rather than replace the Windows contract", () => {
+  const version = "0.1.0";
+  assert.equal(assetName(version, "linux-x86_64"), "opit-speech-to-text_0.1.0_amd64.AppImage");
+  assert.equal(downloadUrl(version, "linux-x86_64"), "https://github.com/opit80/opit-speech-to-text/releases/download/v0.1.0/opit-speech-to-text_0.1.0_amd64.AppImage");
+  const json = manifest({ version, signature: "windows", linuxSignature: "linux\n", pubDate: "2026-10-01T12:00:00Z" });
+  assert.deepEqual(Object.keys(json.platforms), ["windows-x86_64", "linux-x86_64"]);
+  assert.equal(json.platforms["linux-x86_64"].signature, "linux");
+  assert.equal(json.platforms["windows-x86_64"].url, downloadUrl(version));
+  assert.deepEqual(releaseFiles(version, ["linux-x86_64"]), [
+    "opit-speech-to-text_0.1.0_amd64.AppImage", "opit-speech-to-text_0.1.0_amd64.AppImage.sig",
+    "opit-speech-to-text_0.1.0_amd64.deb", "latest.json", "SHA256SUMS",
+  ]);
+  assert.throws(() => manifest({ version, pubDate: "x" }), /signature/i);
+  assert.throws(() => assetName(version, "unknown"), /platform/i);
+});

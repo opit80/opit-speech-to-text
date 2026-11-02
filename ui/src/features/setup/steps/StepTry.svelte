@@ -107,7 +107,7 @@
 </script>
 
 {#if app.config}
-  <p>{t("setup.try.body", { combo: formatCombo(app.config.hotkey.keys, app.lang) })}</p>
+  <p>{t("setup.try.body", { combo: formatCombo(app.config.hotkey.keys, app.lang, app.capabilities?.platform) })}</p>
   {#if !app.config.hotkey.enabled}<p class="muted">{t("home.shortcut_off")}</p>{/if}
 {/if}
 

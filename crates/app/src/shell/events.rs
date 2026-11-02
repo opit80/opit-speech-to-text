@@ -8,6 +8,9 @@ use crate::app_core::HotkeyState;
 use crate::controller::{DictationStatus, UiEvents};
 use crate::{tray, window};
 
+/// Payload: null. Reload the Linux recovery snapshot; never broadcast transcript text.
+#[cfg(target_os = "linux")]
+pub const PENDING_RESULTS_CHANGED: &str = "pending-results-changed";
 /// Payload: `DictationStatus`.
 pub const STATUS: &str = "dictation-status";
 /// Payload: the new history row id (`number`).
@@ -20,6 +23,9 @@ pub const RULES_CHANGED: &str = "rules-changed";
 pub const CONFIG_CHANGED: &str = "config-changed";
 /// Payload: `HotkeyState`. Sent when the shortcut is paused/resumed or re-registered.
 pub const HOTKEY_STATE: &str = "hotkey-state";
+/// Payload: null. A desktop shortcut relay was ignored during in-window capture.
+#[cfg(target_os = "linux")]
+pub const HOTKEY_CAPTURE_INTERCEPTED: &str = "hotkey-capture-intercepted";
 /// Payload: `MicTestEvent` (`{ kind: "level", value }` or `{ kind: "failed", message }`).
 pub const MIC_TEST: &str = "mic-test";
 /// Payload: a route name such as `"settings"`.
@@ -56,6 +62,11 @@ impl UiEvents for TauriEvents {
     fn status_changed(&self, status: &DictationStatus) {
         emit(&self.app, STATUS, status);
         tray::refresh(&self.app);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn pending_results_changed(&self) {
+        emit(&self.app, PENDING_RESULTS_CHANGED, ());
     }
 
     fn history_added(&self, id: i64) {

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { app, errorText, initApp, t } from "./lib/state/app.svelte";
+  import { app, errorText, hotkeyErrorText, initApp, t } from "./lib/state/app.svelte";
   import { navigate, router } from "./lib/navigation/router.svelte";
   import type { Route } from "./lib/navigation/route";
   import type { MessageKey } from "./lib/i18n";
@@ -17,26 +17,23 @@
   import Profiles from "./features/profiles/Profiles.svelte";
   import Settings from "./features/settings/Settings.svelte";
   import Setup from "./features/setup/Setup.svelte";
-  import Guide from "./features/guide/Guide.svelte";
   import Usage from "./features/usage/Usage.svelte";
   import Files from "./features/files/Files.svelte";
   import { watchTheme } from "./lib/utils/theme";
 
 
-  const NAV: { route: Route; icon: "home" | "history" | "files" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [
+  const NAV: { route: Route; icon: "home" | "history" | "files" | "rules" | "profiles" | "settings" }[] = [
     { route: "home", icon: "home" },
     { route: "history", icon: "history" },
     { route: "files", icon: "files" },
     { route: "rules", icon: "rules" },
     { route: "profiles", icon: "profiles" },
     { route: "settings", icon: "settings" },
-    { route: "usage", icon: "usage" },
-    { route: "guide", icon: "guide" },
   ];
 
   const navKeys: Record<Route, MessageKey> = {
     home: "nav.home", history: "nav.history", files: "nav.files", rules: "nav.rules",
-    profiles: "nav.profiles", settings: "nav.settings", usage: "nav.usage", guide: "nav.guide", setup: "nav.setup",
+    profiles: "nav.profiles", settings: "nav.settings", usage: "nav.usage", setup: "nav.setup",
   };
 
   function navKey(route: Route): MessageKey {
@@ -73,7 +70,7 @@
     };
   });
 
-  // The wizard runs until it is finished or skipped.
+  // The wizard runs until it is finished.
   $effect(() => {
     if (app.ready && app.config && !app.config.ui.setup_done && router.route !== "setup") navigate("setup");
   });
@@ -101,7 +98,7 @@
       <div class="version muted">v{app.info?.version}</div>
     </nav>
     <main>
-      {#if app.notices.length || app.hotkey.error || app.hotkey.paused || resumeError || updateVersion || installing}
+      {#if app.notices.length || app.hotkey.pending || app.hotkey.error || app.hotkey.paused || resumeError || updateVersion || installing}
         <div class="notices">
           {#each app.notices as notice, i (i)}
             <Banner tone="warning" ondismiss={() => dismissNotice(i)}>
@@ -112,9 +109,12 @@
               {/if}
             </Banner>
           {/each}
-          {#if app.hotkey.error}
-            <Banner tone="warning">{t("notice.hotkey_failed", { reason: app.hotkey.error })}</Banner>
-          {:else if app.hotkey.paused}
+          {#if app.hotkey.pending}
+            <Banner tone="info">{t("notice.hotkey_pending")}</Banner>
+          {:else if app.hotkey.error}
+            <Banner tone="warning">{hotkeyErrorText(app.hotkey.error)}</Banner>
+          {/if}
+          {#if app.hotkey.paused}
             <Banner tone="info">
               {t("notice.hotkey_paused")}
               {#snippet action()}
@@ -142,7 +142,6 @@
       {:else if router.route === "rules"}<Rules />
       {:else if router.route === "profiles"}<Profiles />
       {:else if router.route === "settings"}<Settings />
-      {:else if router.route === "guide"}<Guide />
       {:else if router.route === "usage"}<Usage />{/if}
     </main>
   </div>

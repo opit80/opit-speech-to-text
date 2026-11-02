@@ -7,7 +7,6 @@
   import Button from "../../lib/components/Button.svelte";
   import InfoTip from "../../lib/components/InfoTip.svelte";
   import StepLanguage from "./steps/StepLanguage.svelte";
-  import StepCleanup from "./steps/StepCleanup.svelte";
   import StepProvider from "./steps/StepProvider.svelte";
   import StepMicrophone from "./steps/StepMicrophone.svelte";
   import StepShortcut from "./steps/StepShortcut.svelte";
@@ -15,21 +14,21 @@
   import StepTry from "./steps/StepTry.svelte";
 
   /**
-   * Every step saves its own choices as they are made. The footer's Next button submits the
-   * step's (empty) form `form`; the step does its Next work there and then calls `onnext`.
+   * Steps save choices immediately or on Next. Skip preserves saved configuration and discards
+   * unsaved drafts. Next submits the step's form `form`, which saves and calls `onnext`.
    * `canNext` enables Next; on the last step it means "the user has tried it" (Finish label).
    */
   interface StepProps {
     onnext: () => void;
     canNext?: boolean;
     form: string;
+    onsavingchange?: (saving: boolean) => void;
   }
 
   /** `info` is shown in a tooltip on the step heading. */
   const STEPS: { title: MessageKey; info?: MessageKey; component: Component<StepProps, object, "canNext"> }[] = [
     { title: "setup.language.title", info: "setup.language.body", component: StepLanguage },
     { title: "setup.provider.title", info: "setup.provider.body", component: StepProvider },
-    { title: "cleanup.title", component: StepCleanup },
     { title: "setup.mic.title", component: StepMicrophone },
     { title: "setup.shortcut.title", component: StepShortcut },
     { title: "setup.rules.title", info: "setup.rules.body", component: StepRules },
@@ -41,6 +40,7 @@
   let step = $state(0);
   let canNext = $state(false);
   let finishBusy = $state(false);
+  let providerSaving = $state(false);
   let finishError = $state<string | null>(null);
   let heading = $state<HTMLHeadingElement>();
   let disposed = false;
@@ -53,7 +53,9 @@
   });
 
   async function go(next: number) {
+    if (finishBusy || disposed) return;
     canNext = false;
+    providerSaving = false;
     step = next;
     await tick();
     if (!disposed) heading?.focus();
@@ -68,7 +70,7 @@
     };
   }
 
-  /** Finish and Skip: setup_done stays false until here, so a closed window brings the wizard back. */
+  /** setup_done stays false until here, so a closed window brings the wizard back. */
   async function finish() {
     if (finishBusy || disposed) return;
     finishBusy = true;
@@ -103,13 +105,19 @@
 
   <section class="card stack step" aria-labelledby="setup-step-title">
     <h2 tabindex="-1" bind:this={heading}><InfoTip text={stepInfo ? t(stepInfo) : undefined}><span id="setup-step-title">{t(STEPS[step].title)}</span></InfoTip></h2>
-    <Current onnext={advanceFrom(step)} bind:canNext form={FORM} />
+    <Current onnext={advanceFrom(step)} bind:canNext form={FORM}
+      onsavingchange={(saving) => { providerSaving = saving; }} />
   </section>
 
   {#if finishError}<Banner tone="error">{finishError}</Banner>{/if}
 
   <footer>
-    <Button variant="ghost" disabled={finishBusy} onclick={() => void finish()}>{t("setup.skip")}</Button>
+    {#if step < LAST}
+      <Button variant="ghost" disabled={finishBusy || providerSaving}
+        onclick={() => { if (!providerSaving) void go(step + 1); }}>{t("common.skip")}</Button>
+    {:else}
+      <span aria-hidden="true"></span>
+    {/if}
     <div class="row">
       <Button disabled={step === 0 || finishBusy} onclick={() => void go(step - 1)}>{t("common.back")}</Button>
       <Button type="submit" form={FORM} variant="primary" busy={finishBusy} disabled={step < LAST && !canNext}>

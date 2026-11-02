@@ -62,11 +62,16 @@ pub struct LoadedConfig {
     pub notice: Option<StartupNotice>,
 }
 
+fn platform_default_config() -> AppConfig {
+    AppConfig::default()
+}
+
 pub fn load_config(path: &Path, now_ms: i64) -> LoadedConfig {
     let existed = path.exists();
     match AppConfig::load(path) {
         Ok(config) if existed => LoadedConfig { config, created: false, notice: None },
-        Ok(config) => {
+        Ok(_) => {
+            let config = platform_default_config();
             if let Err(err) = config.save(path) {
                 warn!(error = %err, "could not write the default config");
             }
@@ -76,7 +81,7 @@ pub fn load_config(path: &Path, now_ms: i64) -> LoadedConfig {
         Err(err) => {
             warn!(error = %err, "config.json is unusable; starting from defaults");
             let backup = move_config_aside(path, now_ms).ok();
-            let config = AppConfig::default();
+            let config = platform_default_config();
             // Never overwrite a file we could not move aside: it may be fine, just locked.
             if backup.is_some()
                 && let Err(err) = config.save(path)
@@ -119,6 +124,60 @@ mod tests {
         (dir, paths)
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_first_run_uses_a_portal_compatible_hotkey_default() {
+        let (_dir, paths) = paths();
+        let loaded = load_config(&paths.config, 1);
+        assert_eq!(loaded.config.hotkey.keys, ["LeftCtrl", "LeftShift", "F9"]);
+        assert_eq!(loaded.config.media.mode, opit_core::config::MediaMode::Duck);
+        assert_eq!(AppConfig::load(&paths.config).unwrap(), loaded.config);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_saved_hotkey_is_not_rewritten_on_load() {
+        let (_dir, paths) = paths();
+        for keys in [vec!["A".into()], vec!["RightCtrl".into(), "RightShift".into()]] {
+            let mut config = AppConfig::default();
+            config.hotkey.keys = keys;
+            config.save(&paths.config).unwrap();
+            let before = std::fs::read(&paths.config).unwrap();
+            let loaded = load_config(&paths.config, 1);
+            assert_eq!(loaded.config.hotkey.keys, config.hotkey.keys);
+            assert!(!loaded.created && loaded.notice.is_none());
+            assert_eq!(std::fs::read(&paths.config).unwrap(), before);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_first_run_media_defaults_to_duck() {
+        let (_dir, paths) = paths();
+        let loaded = load_config(&paths.config, 1);
+        assert_eq!(loaded.config.media.mode, opit_core::config::MediaMode::Duck);
+        assert_eq!(loaded.config.media.duck_volume_percent, 50);
+        assert_eq!(AppConfig::load(&paths.config).unwrap(), loaded.config);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn media_defaults_do_not_rewrite_saved_configs() {
+        let (_dir, paths) = paths();
+        for mode in [opit_core::config::MediaMode::Pause, opit_core::config::MediaMode::Duck] {
+            let mut config = AppConfig::default();
+            config.media.mode = mode;
+            config.media.duck_volume_percent = 37;
+            config.save(&paths.config).unwrap();
+            let before = std::fs::read(&paths.config).unwrap();
+            let loaded = load_config(&paths.config, 1);
+            assert_eq!(loaded.config.media.mode, mode);
+            assert_eq!(loaded.config.media.duck_volume_percent, 37);
+            assert!(!loaded.created && loaded.notice.is_none());
+            assert_eq!(std::fs::read(&paths.config).unwrap(), before);
+        }
+    }
+
     #[test]
     fn layout_matches_the_brief() {
         let paths = Paths::under(PathBuf::from("R"));
@@ -134,7 +193,7 @@ mod tests {
         let (_dir, paths) = paths();
         let loaded = load_config(&paths.config, 1);
         assert!(loaded.created && loaded.notice.is_none());
-        assert_eq!(AppConfig::load(&paths.config).unwrap(), AppConfig::default());
+        assert_eq!(AppConfig::load(&paths.config).unwrap(), platform_default_config());
     }
 
     #[test]
@@ -155,7 +214,7 @@ mod tests {
         std::fs::write(&paths.config, r#"{"profiles":[{"id":"x"}]}"#).unwrap();
         let loaded = load_config(&paths.config, 42);
 
-        assert_eq!(loaded.config, AppConfig::default());
+        assert_eq!(loaded.config, platform_default_config());
         let backup = paths.root.join("config.json.bad-42");
         match loaded.notice {
             Some(StartupNotice::ConfigReset { backup: Some(path), reason }) => {
@@ -165,7 +224,7 @@ mod tests {
             other => panic!("unexpected notice: {other:?}"),
         }
         assert_eq!(std::fs::read_to_string(&backup).unwrap(), r#"{"profiles":[{"id":"x"}]}"#);
-        assert_eq!(AppConfig::load(&paths.config).unwrap(), AppConfig::default());
+        assert_eq!(AppConfig::load(&paths.config).unwrap(), platform_default_config());
     }
 
     #[test]

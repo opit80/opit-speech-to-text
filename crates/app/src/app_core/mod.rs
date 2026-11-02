@@ -47,6 +47,9 @@ pub struct AppCore {
     /// The UI is recording a new shortcut; the hook is paused meanwhile.
     hotkey_capturing: AtomicBool,
     hotkey_capture_generation: AtomicU64,
+    /// Linux command relays also check a deadline if the expiry worker is delayed.
+    #[cfg(target_os = "linux")]
+    linux_capture_deadline: Mutex<Option<std::time::Instant>>,
     notices: Mutex<Vec<StartupNotice>>,
     /// Serializes read-modify-write of config.json.
     config_lock: Mutex<()>,
@@ -83,6 +86,8 @@ impl AppCore {
             mic_test_generation: AtomicU64::new(0),
             hotkey_capturing: AtomicBool::new(false),
             hotkey_capture_generation: AtomicU64::new(0),
+            #[cfg(target_os = "linux")]
+            linux_capture_deadline: Mutex::default(),
             notices: Mutex::new(notices),
             config_lock: Mutex::default(),
             bad_config_kept: AtomicBool::new(bad_config_kept),

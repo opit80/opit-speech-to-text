@@ -1,10 +1,10 @@
 // Typed wrappers for every Rust command. Argument names are camelCase (Tauri maps them).
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState, PackInfo,
+  AskConfig, AgentStatus, CleanupConfig, CleanupPreset, CleanupTestResult, AppConfig, AppInfo, PlatformCapabilities, PendingResults, ShortcutTest, BuiltPrompt, CorrectionDraft, Dictation, DictationStatus, HotkeyState,
   Profile, RulePack, RulesPreview, RuleWarning, StartupNotice, UpdateState, UsageStats,
   FileOptions, FileState, FileOutputFormat, HotkeyTarget, LocalState, RunningApp, StyleDefaults, TranslateLanguage,
-  HistoryUpdate, LearningItem, TermChange,
+  HistoryUpdate, LearningItem, TermChange, LinuxShortcutState,
 } from "./types";
 
 export const api = {
@@ -25,6 +25,11 @@ export const api = {
   fileHandled: (revision: number) => invoke<FileState>("file_handled", { revision }),
   fileDiscard: (revision: number) => invoke<FileState>("file_discard", { revision }),
   appInfo: () => invoke<AppInfo>("app_info"),
+  pendingResults: () => invoke<PendingResults>("pending_results"),
+  dismissPendingResult: (id: number) => invoke<PendingResults>("dismiss_pending_result", { id }),
+  shortcutTestState: () => invoke<ShortcutTest>("shortcut_test_state"),
+  setShortcutTest: (active: boolean) => invoke<ShortcutTest>("set_shortcut_test", { active }),
+  platformCapabilities: () => invoke<PlatformCapabilities>("platform_capabilities"),
   getStatus: () => invoke<DictationStatus>("get_status"),
   toggleDictation: () => invoke<void>("toggle_dictation"),
   cancelDictation: () => invoke<void>("cancel_dictation"),
@@ -62,7 +67,6 @@ export const api = {
   rulesPreview: (text: string, draftYaml: string | null) =>
     invoke<RulesPreview>("rules_preview", { text, draftYaml }),
   promptBudget: () => invoke<BuiltPrompt>("prompt_budget"),
-  rulePacks: () => invoke<PackInfo[]>("rule_packs"),
   parseUserRules: (yaml: string) => invoke<RulePack>("parse_user_rules", { yaml }),
   renderUserRules: (pack: RulePack, previousYaml: string) =>
     invoke<string>("render_user_rules", { pack, previousYaml }),
@@ -85,6 +89,9 @@ export const api = {
   learningDismiss: (items: TermChange[]) => invoke<void>("learning_dismiss", { items }),
 
   getHotkeyState: () => invoke<HotkeyState>("get_hotkey_state"),
+  linuxShortcutRegistry: (action: HotkeyTarget, keys: string[], operation: "read" | "install" | "remove") =>
+    invoke<LinuxShortcutState>("linux_shortcut_registry", { action, keys, operation }),
+  probeShortcutCommand: () => invoke<void>("probe_shortcut_command"),
   setHotkeyPaused: (paused: boolean) => invoke<HotkeyState>("set_hotkey_paused", { paused }),
   setHotkeyCapture: (active: boolean) => invoke<void>("set_hotkey_capture", { active }),
   /** Without a target: syntax only. With one: also conflicts, checked against `config` or the saved settings. */

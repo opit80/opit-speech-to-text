@@ -12,13 +12,15 @@
   import Icon from "../../../lib/components/Icon.svelte";
   import Switch from "../../../lib/components/Switch.svelte";
   import LocalSettings from "../../profiles/LocalSettings.svelte";
+  import { restoreSavedGroqChoice } from "../provider-choice";
 
   interface Props {
     onnext: () => void;
     canNext?: boolean;
     form: string;
+    onsavingchange?: (saving: boolean) => void;
   }
-  let { onnext, canNext = $bindable(false), form }: Props = $props();
+  let { onnext, canNext = $bindable(false), form, onsavingchange }: Props = $props();
 
   type Choice = "groq" | "openai" | "elevenlabs" | "deepgram" | "local" | "custom";
   type FieldProblem = "name" | "base_url" | "model";
@@ -31,9 +33,9 @@
     deepgram: "https://console.deepgram.com",
   };
   const CHOICES: { value: Choice; title: MessageKey }[] = [
+    { value: "elevenlabs", title: "profiles.preset.elevenlabs" },
     { value: "groq", title: "profiles.preset.groq" },
     { value: "openai", title: "profiles.preset.openai" },
-    { value: "elevenlabs", title: "profiles.preset.elevenlabs" },
     { value: "deepgram", title: "profiles.preset.deepgram" },
     { value: "local", title: "profiles.preset.local" },
     { value: "custom", title: "profiles.preset.custom" },
@@ -59,7 +61,7 @@
     if (startProfile?.id === "elevenlabs") return "elevenlabs";
     if (startProfile?.id === "deepgram") return "deepgram";
     if (startProfile?.id === "openai") return "openai";
-    return "groq";
+    return "elevenlabs";
   }
 
   let choice = $state<Choice>(initialChoice());
@@ -84,6 +86,7 @@
   let copyError = $state<string | null>(null);
   let testRequest = 0;
   let disposed = false;
+  let cancelChoiceRestore = () => {};
 
   /** The profile this step would store; null until the presets are loaded. */
   const profile = $derived.by((): Profile | null => {
@@ -179,7 +182,19 @@
     return touched[field] && problems.includes(field) ? t(PROBLEM_KEYS[field]) : null;
   }
 
+  // A new config's active profile is Groq, so only a stored key shows that it was chosen here.
+  $effect(() => {
+    // The snapshot has no reactive dependencies: one lookup per mounted visit.
+    cancelChoiceRestore = restoreSavedGroqChoice(
+      startProfile?.id === "groq" ? startProfile.api_key_ref : null,
+      api.hasApiKey,
+      () => { choice = "groq"; choose(); },
+    );
+    return () => cancelChoiceRestore();
+  });
+
   function choose() {
+    cancelChoiceRestore();
     keyInput = "";
     saveError = null;
   }
@@ -191,6 +206,7 @@
 
   async function testConnection() {
     if (!profile || testBusy || saving || disposed) return;
+    cancelChoiceRestore();
     if (problems.length) {
       // Show what is missing instead of a disabled button that does not say why.
       touched = { name: true, base_url: true, model: true };
@@ -226,11 +242,13 @@
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (!canNext || !profile || saving || disposed) return;
+    cancelChoiceRestore();
     const chosen: Profile = $state.snapshot(profile);
     const key = chosen.api_key_ref !== null && keyInput ? keyInput : null;
     // Only the custom form edits a profile; a chosen Groq/OpenAI profile that exists stays untouched.
     const edited = choice === "custom" || choice === "local";
     saving = true;
+    onsavingchange?.(true);
     saveError = null;
     try {
       if (key !== null && chosen.api_key_ref !== null) {
@@ -249,7 +267,10 @@
     } catch (error) {
       if (!disposed) saveError = errorText(error);
     } finally {
-      if (!disposed) saving = false;
+      if (!disposed) {
+        saving = false;
+        onsavingchange?.(false);
+      }
     }
   }
 </script>
@@ -264,10 +285,12 @@
 <fieldset class="choices" disabled={saving} aria-busy={presetsBusy}>
   <legend class="visually-hidden">{t("setup.provider.title")}</legend>
   {#each CHOICES as item (item.value)}
+    {#if item.value !== "local" || app.capabilities?.local_models !== false}
     <label class="choice">
       <input type="radio" name="setup-provider" value={item.value} bind:group={choice} onchange={choose} />
       <span class="choice-text"><span class="choice-title">{t(item.title)}</span></span>
     </label>
+    {/if}
   {/each}
 </fieldset>
 
@@ -314,6 +337,7 @@
   <Field label={t("profiles.key")} error={keyError}>
     {#snippet children(id, describedBy)}
       <input {id} type="password" autocomplete="off" spellcheck="false" bind:value={keyInput} disabled={saving}
+        oninput={() => cancelChoiceRestore()}
         placeholder={storedKey ? t("profiles.key_stored") : t("profiles.key_paste")}
         aria-invalid={!!keyError} aria-describedby={describedBy} />
     {/snippet}

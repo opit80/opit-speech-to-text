@@ -7,11 +7,10 @@
   import { budgetLevel, hasInlineComments } from "./rules";
   import { createSerialQueue } from "../../lib/utils/serial";
   import { toast } from "../../lib/state/toast.svelte";
-  import { PROMPT_TOKEN_BUDGET, type BuiltPrompt, type PackInfo, type RuleKind, type RulePack, type RulesPreview, type RuleWarning } from "../../lib/bridge/types";
+  import { PROMPT_TOKEN_BUDGET, type BuiltPrompt, type RuleKind, type RulePack, type RulesPreview, type RuleWarning } from "../../lib/bridge/types";
   import Banner from "../../lib/components/Banner.svelte";
   import Button from "../../lib/components/Button.svelte";
   import Field from "../../lib/components/Field.svelte";
-  import InfoTip from "../../lib/components/InfoTip.svelte";
   import PageHeader from "../../lib/components/PageHeader.svelte";
   import Switch from "../../lib/components/Switch.svelte";
   import RulesTable from "./RulesTable.svelte";
@@ -24,11 +23,7 @@
   let budgetRequest = 0;
   let renderPending = 0;
   let sourceContext = "";
-  let packs = $state<PackInfo[]>([]);
-  let packsBusy = $state(true);
-  let packsError = $state<string | null>(null);
   let configBusy = $state(false);
-  let packsSaveError = $state<string | null>(null);
   let numbersError = $state<string | null>(null);
   let numbersRevision = $state(0);
   let contextText = $state("");
@@ -73,19 +68,6 @@
     } catch (error) {
       if (!disposed) { numbersError = errorText(error); numbersRevision++; }
     } finally { if (!disposed) configBusy = false; }
-  }
-
-  async function loadPacks() {
-    packsBusy = true;
-    packsError = null;
-    try {
-      const loaded = await api.rulePacks();
-      if (!disposed) packs = loaded;
-    } catch (error) {
-      if (!disposed) packsError = errorText(error);
-    } finally {
-      if (!disposed) packsBusy = false;
-    }
   }
 
   async function loadEditor() {
@@ -164,7 +146,7 @@
   }
 
   $effect(() => {
-    untrack(() => { void loadPacks(); void loadEditor(); });
+    untrack(() => { void loadEditor(); });
     let stopRules: (() => void) | undefined;
     onRulesChanged(rulesChanged).then((stop) => {
       if (disposed) stop();
@@ -200,31 +182,6 @@
       if (config) void refreshBudget();
     });
   });
-
-  function packChecked(id: string) {
-    // Reconcile a Switch's local state after a failed save.
-    void configBusy;
-    return app.config?.rules.enabled_packs.includes(id) ?? false;
-  }
-
-  async function togglePack(id: string, checked: boolean) {
-    if (configBusy || disposed) return;
-    configBusy = true;
-    packsSaveError = null;
-    try {
-      const order = packs.map((pack) => pack.id);
-      await saveConfig((draft) => {
-        const enabled = new Set(draft.rules.enabled_packs);
-        if (checked) enabled.add(id); else enabled.delete(id);
-        draft.rules.enabled_packs = order.filter((packId) => enabled.has(packId));
-      });
-      if (!disposed) toast(t("common.saved"));
-    } catch (error) {
-      if (!disposed) packsSaveError = errorText(error);
-    } finally {
-      if (!disposed) configBusy = false;
-    }
-  }
 
   async function saveContext() {
     if (configBusy || disposed || contextText === app.config?.rules.prompt_context) return;
@@ -372,73 +329,8 @@
         disabled={configBusy || !app.config} onchange={(checked) => void setNumbers(checked)} />
       {#if numbersError}<Banner tone="error">{numbersError}</Banner>{/if}
     </section>
-    <section class="card stack" aria-labelledby="rules-packs" aria-busy={packsBusy || configBusy}>
-      <h2 id="rules-packs">{t("rules.packs")}</h2>
-      <p class="personal-row"><InfoTip text={t("rules.personal_hint")}>{t("rules.personal")}</InfoTip></p>
-      {#if packsError}
-        <Banner tone="error">{packsError}{#snippet action()}<Button busy={packsBusy} onclick={() => void loadPacks()}>{t("common.reload")}</Button>{/snippet}</Banner>
-      {/if}
-      {#if packsBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
-      {#each packs as pack (pack.id)}
-        <Switch label={pack.name} info={t("rules.pack_counts", { terms: pack.terms, corrections: pack.corrections, replacements: pack.replacements })}
-          bind:checked={() => packChecked(pack.id), (checked) => void togglePack(pack.id, checked)}
-          disabled={packsBusy || configBusy || !app.config} />
-      {/each}
-      {#if packsSaveError}<Banner tone="error">{packsSaveError}</Banner>{/if}
-    </section>
-
-    <section class="card stack" aria-labelledby="rules-try">
-      <h2 id="rules-try">{t("rules.try")}</h2>
-      <Field label={t("rules.try_input")} error={previewError}>
-        {#snippet children(id, describedBy)}
-          <textarea {id} rows="3" bind:value={tryText} aria-invalid={!!previewError}
-            aria-describedby={describedBy}></textarea>
-        {/snippet}
-      </Field>
-      <div class="stack" aria-live="polite" aria-busy={previewBusy}>
-        {#if previewBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
-        {#if preview}
-          <h3>{t("rules.try_result")}</h3><p class="result-text">{preview.text}</p>
-          {#if preview.hallucination}<Banner tone="warning">{t("rules.try_hallucination")}</Banner>{/if}
-          {#if preview.hits.length}
-            <h3>{t("rules.try_hits")}</h3>
-            <ul>{#each preview.hits as hit, index (index)}<li><code>{hit.from}</code> → <code>{hit.to}</code> <span class="muted">({hit.rule.pack_id} · {t(kindKeys[hit.rule.kind])})</span></li>{/each}</ul>
-          {/if}
-          {#if preview.warnings.length}
-            <Banner tone="warning"><p>{t("rules.skipped")}</p><ul>{#each preview.warnings as warning, index (index)}<li>{warning.pack_id}: {warning.message}</li>{/each}</ul></Banner>
-          {/if}
-        {/if}
-      </div>
-    </section>
-
-    <details class="card advanced" open={!!contextError || !!budgetError}>
-      <summary>{t("rules.advanced_prompt")}</summary>
-      <div class="stack advanced-body">
-      <Field label={t("rules.context")} info={t("rules.context_hint")} error={contextError}>
-        {#snippet children(id, describedBy)}
-          <textarea {id} rows="2" bind:value={contextText} disabled={configBusy || !app.config} onchange={() => void saveContext()}
-            aria-invalid={!!contextError} aria-describedby={describedBy}></textarea>
-        {/snippet}
-      </Field>
-      <div class="stack" aria-busy={budgetBusy}>
-        {#if budgetBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
-        {#if budgetError}
-          <Banner tone="error">{budgetError}{#snippet action()}<Button busy={budgetBusy} onclick={() => void refreshBudget()}>{t("common.retry")}</Button>{/snippet}</Banner>
-        {/if}
-        {#if budget}
-          <label class="hint" for="rules-budget">{t("rules.budget", { used: budget.estimated_tokens, max: PROMPT_TOKEN_BUDGET })}</label>
-          <progress id="rules-budget" class={budgetLevel(budget.estimated_tokens)} max={PROMPT_TOKEN_BUDGET}
-            value={Math.min(budget.estimated_tokens, PROMPT_TOKEN_BUDGET)}
-            aria-valuetext={t("rules.budget", { used: budget.estimated_tokens, max: PROMPT_TOKEN_BUDGET })}></progress>
-          <p class="prompt-text mono muted">{budget.prompt ?? t("rules.no_prompt")}</p>
-          {#if budget.dropped_terms.length}<Banner tone="warning">{t("rules.dropped", { terms: budget.dropped_terms.join(", ") })}</Banner>{/if}
-        {/if}
-      </div>
-    </div>
-    </details>
-
-    <details class="card advanced" open={!!editorError || dirty || changedElsewhere}>
-      <summary>{t("rules.advanced_editor")}</summary>
+    <details class="card advanced" open>
+      <summary>{t("rules.personal")}</summary>
       <div class="stack advanced-body">
       {#if changedElsewhere}
         <Banner tone="warning">{t("rules.changed_elsewhere")}
@@ -483,6 +375,57 @@
     </div>
     </details>
 
+    <details class="card advanced" open={!!previewError}>
+      <summary>{t("rules.try")}</summary>
+      <div class="stack advanced-body">
+      <Field label={t("rules.try_input")} error={previewError}>
+        {#snippet children(id, describedBy)}
+          <textarea {id} rows="3" bind:value={tryText} aria-invalid={!!previewError}
+            aria-describedby={describedBy}></textarea>
+        {/snippet}
+      </Field>
+      <div class="stack" aria-live="polite" aria-busy={previewBusy}>
+        {#if previewBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
+        {#if preview}
+          <h3>{t("rules.try_result")}</h3><p class="result-text">{preview.text}</p>
+          {#if preview.hallucination}<Banner tone="warning">{t("rules.try_hallucination")}</Banner>{/if}
+          {#if preview.hits.length}
+            <h3>{t("rules.try_hits")}</h3>
+            <ul>{#each preview.hits as hit, index (index)}<li><code>{hit.from}</code> → <code>{hit.to}</code> <span class="muted">({hit.rule.pack_id} · {t(kindKeys[hit.rule.kind])})</span></li>{/each}</ul>
+          {/if}
+          {#if preview.warnings.length}
+            <Banner tone="warning"><p>{t("rules.skipped")}</p><ul>{#each preview.warnings as warning, index (index)}<li>{warning.pack_id}: {warning.message}</li>{/each}</ul></Banner>
+          {/if}
+        {/if}
+      </div>
+      </div>
+    </details>
+
+    <details class="card advanced" open={!!contextError || !!budgetError}>
+      <summary>{t("rules.advanced_prompt")}</summary>
+      <div class="stack advanced-body">
+      <Field label={t("rules.context")} info={t("rules.context_hint")} error={contextError}>
+        {#snippet children(id, describedBy)}
+          <textarea {id} rows="2" bind:value={contextText} disabled={configBusy || !app.config} onchange={() => void saveContext()}
+            aria-invalid={!!contextError} aria-describedby={describedBy}></textarea>
+        {/snippet}
+      </Field>
+      <div class="stack" aria-busy={budgetBusy}>
+        {#if budgetBusy}<p class="muted" role="status">{t("common.loading")}</p>{/if}
+        {#if budgetError}
+          <Banner tone="error">{budgetError}{#snippet action()}<Button busy={budgetBusy} onclick={() => void refreshBudget()}>{t("common.retry")}</Button>{/snippet}</Banner>
+        {/if}
+        {#if budget}
+          <label class="hint" for="rules-budget">{t("rules.budget", { used: budget.estimated_tokens, max: PROMPT_TOKEN_BUDGET })}</label>
+          <progress id="rules-budget" class={budgetLevel(budget.estimated_tokens)} max={PROMPT_TOKEN_BUDGET}
+            value={Math.min(budget.estimated_tokens, PROMPT_TOKEN_BUDGET)}
+            aria-valuetext={t("rules.budget", { used: budget.estimated_tokens, max: PROMPT_TOKEN_BUDGET })}></progress>
+          <p class="prompt-text mono muted">{budget.prompt ?? t("rules.no_prompt")}</p>
+          {#if budget.dropped_terms.length}<Banner tone="warning">{t("rules.dropped", { terms: budget.dropped_terms.join(", ") })}</Banner>{/if}
+        {/if}
+      </div>
+    </div>
+    </details>
 
   </div>
 </div>
@@ -491,7 +434,6 @@
   summary { cursor: pointer; font-weight: 600; }
   .advanced-body { margin-top: var(--space-4); }
   .rules-sections { display: flex; flex-direction: column; gap: var(--space-4); }
-  .personal-row { border-bottom: 1px solid var(--border); padding-bottom: var(--space-3); }
   .hint { font-size: var(--text-sm); }
   textarea { width: 100%; }
   progress { width: 100%; height: var(--space-2); border: 0; border-radius: var(--radius-sm); overflow: hidden; }

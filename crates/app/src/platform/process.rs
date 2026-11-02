@@ -33,6 +33,11 @@ pub fn run(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x00000004 | 0x08000000); // CREATE_SUSPENDED | CREATE_NO_WINDOW
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let mut tree = Tree::new()?;
     let mut child = command.spawn().map_err(|_| ErrorKind::Rejected)?;
     if let Err(error) = tree.attach(&child) {
@@ -103,17 +108,25 @@ fn build_command(executable: PathBuf, args: Vec<String>) -> Result<Command, Erro
 #[cfg(windows)]
 pub(crate) use super::windows::process::Tree;
 
-#[cfg(not(windows))]
-pub(crate) struct Tree;
-#[cfg(not(windows))]
+#[cfg(unix)]
+pub(crate) struct Tree(Option<u32>);
+#[cfg(unix)]
 impl Tree {
     pub(crate) fn new() -> Result<Self, ErrorKind> {
-        Err(ErrorKind::Rejected)
+        Ok(Self(None))
     }
-    pub(crate) fn attach(&mut self, _: &std::process::Child) -> Result<(), ErrorKind> {
-        Err(ErrorKind::Rejected)
+    pub(crate) fn attach(&mut self, child: &std::process::Child) -> Result<(), ErrorKind> {
+        self.0 = Some(child.id());
+        Ok(())
     }
-    pub(crate) fn stop(&mut self) {}
+    pub(crate) fn stop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            // Child was started as its own process-group leader. Kill descendants too.
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+        }
+    }
 }
 
 #[cfg(all(test, windows))]

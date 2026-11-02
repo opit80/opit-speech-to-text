@@ -10,6 +10,7 @@
 </script>
 
 <script lang="ts">
+  import { revealFieldErrors } from "../../lib/utils/reveal-field-errors";
   import { tick, untrack } from "svelte";
   import { api } from "../../lib/bridge/api";
   import { app, errorText, t } from "../../lib/state/app.svelte";
@@ -228,7 +229,7 @@
   }
 </script>
 
-<form class="card stack" novalidate aria-labelledby="profile-form-title" aria-busy={saveBusy}
+<form use:revealFieldErrors class="card stack" novalidate aria-labelledby="profile-form-title" aria-busy={saveBusy}
   onsubmit={(event) => { event.preventDefault(); void save(); }}>
   <h2 id="profile-form-title">{isNew ? t("profiles.add") : original.name}</h2>
 
@@ -266,35 +267,39 @@
     {/snippet}
   </Field>{/if}
 
-  <div class="grid">
-    <Select label={t("profiles.language")} options={languageOptions}
-      bind:value={() => draft.language, (value) => { draft.language = value; }} />
-    <Select label={t("profiles.audio_format")} disabled={fixedAudioFormat(draft.provider)}
-      options={[{ value: "flac", label: "FLAC" }, { value: "wav", label: "WAV" }]}
-      bind:value={() => storedAudioFormat(draft.provider, draft.audio_format), (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
-  </div>
-  <Field label={t("profiles.provider")} info={scribe ? t("profiles.scribe_hint") : deepgram ? t("profiles.deepgram_hint") : undefined}>
-    {#snippet children(id, describedBy)}
-      <input {id} type="text" readonly aria-describedby={describedBy} value={t(PROVIDER_KEYS[draft.provider])} />
-    {/snippet}
-  </Field>
-  <Select label={t("profiles.response_format")} info={t("profiles.response_format_hint")} disabled={native}
-    options={[{ value: "verbose_json", label: "verbose_json" }, { value: "json", label: "json" }]}
-    bind:value={() => draft.response_format, (value) => { draft.response_format = value === "verbose_json" ? "verbose_json" : "json"; }} />
+  <Select label={t("profiles.language")} options={languageOptions}
+    bind:value={() => draft.language, (value) => { draft.language = value; }} />
+  <details open={!!problemFor("fallback_self", "fallback_missing")}>
+    <summary>{t("common.more")}</summary>
+    <div class="stack more-body">
+      <Select label={t("profiles.audio_format")} disabled={fixedAudioFormat(draft.provider)}
+        options={[{ value: "flac", label: "FLAC" }, { value: "wav", label: "WAV" }]}
+        bind:value={() => storedAudioFormat(draft.provider, draft.audio_format), (value) => { draft.audio_format = value === "wav" ? "wav" : "flac"; }} />
+      <Field label={t("profiles.provider")} info={scribe ? t("profiles.scribe_hint") : deepgram ? t("profiles.deepgram_hint") : undefined}>
+        {#snippet children(id, describedBy)}
+          <input {id} type="text" readonly aria-describedby={describedBy} value={t(PROVIDER_KEYS[draft.provider])} />
+        {/snippet}
+      </Field>
+      <Select label={t("profiles.response_format")} info={t("profiles.response_format_hint")} disabled={native}
+        options={[{ value: "verbose_json", label: "verbose_json" }, { value: "json", label: "json" }]}
+        bind:value={() => draft.response_format, (value) => { draft.response_format = value === "verbose_json" ? "verbose_json" : "json"; }} />
 
-  {#if !native}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
-  {#if !local}<Switch label={t("profiles.send_keywords")} info={t(scribe ? "profiles.scribe_keywords_hint" : deepgram ? "profiles.deepgram_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
-  <Switch label={t("cleanup.profile")} bind:checked={draft.apply_cleanup} />
-  <Switch label={t("profiles.apply_rules")} bind:checked={draft.apply_rules} />
+      {#if !native}<Switch label={t("profiles.send_prompt")} bind:checked={draft.send_prompt} />{/if}
+      {#if !local}<Switch label={t("profiles.send_keywords")} info={t(scribe ? "profiles.scribe_keywords_hint" : deepgram ? "profiles.deepgram_keywords_hint" : "profiles.send_keywords_hint")} bind:checked={draft.send_keywords} />{/if}
+      <Switch label={t("cleanup.profile")} bind:checked={draft.apply_cleanup} />
+      <Switch label={t("profiles.apply_rules")} bind:checked={draft.apply_rules} />
 
-  <Field label={t("profiles.fallback")} info={t("profiles.fallback_hint")} error={problemFor("fallback_self", "fallback_missing")}>
-    {#snippet children(id, describedBy)}
-      <select {id} aria-describedby={describedBy} aria-invalid={!!problemFor("fallback_self", "fallback_missing")}
-        bind:value={() => draft.fallback_profile_id ?? "", (value) => { draft.fallback_profile_id = value || null; }}>
-        {#each fallbackOptions as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
-      </select>
-    {/snippet}
-  </Field>
+      <Field label={t("profiles.fallback")} info={t("profiles.fallback_hint")} error={problemFor("fallback_self", "fallback_missing")}>
+        {#snippet children(id, describedBy)}
+          <select {id} aria-describedby={describedBy} aria-invalid={!!problemFor("fallback_self", "fallback_missing")}
+            bind:value={() => draft.fallback_profile_id ?? "", (value) => { draft.fallback_profile_id = value || null; }}>
+            {#each fallbackOptions as option (option.value)}<option value={option.value}>{option.label}</option>{/each}
+          </select>
+        {/snippet}
+      </Field>
+
+    </div>
+  </details>
 
   {#if !local}<section class="key stack" aria-labelledby="profile-key-title">
     <h3 id="profile-key-title" class="visually-hidden">{t("profiles.key")}</h3>
@@ -337,7 +342,8 @@
 
 <style>
   input, select { width: 100%; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
+  summary { cursor: pointer; font-weight: 600; }
+  .more-body { margin-top: var(--space-3); }
   .warning { display: flex; align-items: center; gap: var(--space-2); color: var(--warning); font-size: var(--text-sm); }
   .key { padding-top: var(--space-3); border-top: 1px solid var(--border); }
   .link { padding: 0; border: 0; background: transparent; color: var(--accent); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }

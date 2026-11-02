@@ -24,6 +24,10 @@ describe("rule ids", () => {
 });
 
 describe("exeProblem", () => {
+  it("accepts Linux executable names without an exe suffix", () => {
+    expect(exeProblem("code", "linux")).toBeNull();
+    expect(exeProblem("bin/code", "linux")).toBe("invalid");
+  });
   it("requires a file name", () => {
     expect(exeProblem("")).toBe("required");
     expect(exeProblem("   ")).toBe("required");

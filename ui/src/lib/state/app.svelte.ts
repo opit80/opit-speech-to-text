@@ -1,17 +1,18 @@
 // The one place the UI keeps live app state. Filled by commands at start-up, then by events.
 import { api } from "../bridge/api";
 import { describeError } from "../bridge/errors";
-import { onConfigChanged, onFileProgress, onHotkeyState, onNavigate, onStatus, onUpdateState, type UnlistenFn } from "../bridge/events";
+import { onConfigChanged, onPlatformCapabilitiesChanged, onFileProgress, onHotkeyState, onNavigate, onStatus, onUpdateState, type UnlistenFn } from "../bridge/events";
 import { mergeFileWork } from "../../features/files/files";
 import { resolveLang, translate, type MessageKey, type Params } from "../i18n";
 import { parseRoute } from "../navigation/route";
 import { navigate } from "../navigation/router.svelte";
 import { createSerialQueue } from "../utils/serial";
 import { checkUpdateState, keepInstallError } from "../../features/updates/update";
-import type { AppConfig, AppInfo, DictationStatus, FileWork, HotkeyState, Lang, StartupNotice, StyleDefaults, UpdateState } from "../bridge/types";
+import type { AppConfig, AppInfo, PlatformCapabilities, DictationStatus, FileWork, HotkeyState, Lang, StartupNotice, StyleDefaults, UpdateState } from "../bridge/types";
 
 interface AppState {
   info: AppInfo | null;
+  capabilities: PlatformCapabilities | null;
   config: AppConfig | null;
   status: DictationStatus;
   hotkey: HotkeyState;
@@ -31,9 +32,10 @@ interface AppState {
 
 export const app = $state<AppState>({
   info: null,
+  capabilities: null,
   config: null,
   status: { state: "idle", can_retry: false, waiting: 0, paused: false },
-  hotkey: { paused: false, error: null },
+  hotkey: { paused: false, pending: false, error: null },
   lang: resolveLang(null, navigator.language),
   notices: [],
   ready: false,
@@ -95,7 +97,20 @@ export async function initApp(): Promise<() => void> {
   let hotkeySeen = false;
   let updateSeen = false;
   const stops: UnlistenFn[] = [];
-  const stop = () => stops.splice(0).forEach((unlisten) => unlisten());
+  let disposed = false;
+  let capabilityRequest = 0;
+  const stop = () => {
+    disposed = true;
+    capabilityRequest++;
+    stops.splice(0).forEach((unlisten) => unlisten());
+  };
+  // A host may appear/disappear after startup. A slow earlier read must not replace
+  // a newer host state, or update reactive state after this WebView is disposed.
+  async function refreshCapabilities() {
+    const request = ++capabilityRequest;
+    const capabilities = await api.platformCapabilities();
+    if (!disposed && request === capabilityRequest) app.capabilities = capabilities;
+  }
   try {
     const subscriptions = await Promise.allSettled([
       onStatus((s) => {
@@ -116,6 +131,9 @@ export async function initApp(): Promise<() => void> {
         setUpdate(u);
       }),
       onFileProgress(setFileWork),
+      onPlatformCapabilitiesChanged(() => {
+        void refreshCapabilities().catch(() => {});
+      }),
     ]);
     for (const result of subscriptions) {
       if (result.status === "fulfilled") stops.push(result.value);
@@ -131,6 +149,7 @@ export async function initApp(): Promise<() => void> {
       api.takeStartupNotices(),
       api.getUpdateState(),
       api.fileState(),
+      refreshCapabilities(),
     ]);
     setFileWork(file);
     app.info = info;
@@ -168,4 +187,10 @@ export function setActiveStyle(id: string): Promise<AppConfig> {
     setConfig(saved);
     return saved;
   });
+}
+
+/** The Linux portal's reasons are technical English, so that platform gets one translated text. */
+export function hotkeyErrorText(reason: string): string {
+  if (app.capabilities?.platform === "linux") return translate(app.lang, "notice.hotkey_failed_linux");
+  return translate(app.lang, "notice.hotkey_failed", { reason });
 }

@@ -2,6 +2,10 @@
 
 use super::*;
 
+fn effective_hotkey_mode(mode: HotkeyMode, supports_release: bool) -> HotkeyMode {
+    if supports_release { mode } else { HotkeyMode::Toggle }
+}
+
 /// Read from the private snapshot, after any per-app overrides at recording start.
 pub(super) fn effective_paste(settings: &Settings) -> PasteConfig {
     settings.config.paste.clone()
@@ -73,13 +77,17 @@ impl<P: Providers> Controller<P> {
     }
 
     fn voice_shortcut(&mut self, mode: VoiceMode, up: bool) {
-        let hotkey_mode = self.recording.as_ref().map_or_else(
-            || {
-                self.preparing
-                    .as_ref()
-                    .map_or_else(|| self.env.settings.current().config.hotkey.mode, |p| p.settings.config.hotkey.mode)
-            },
-            |r| r.settings.config.hotkey.mode,
+        let hotkey_mode = effective_hotkey_mode(
+            self.recording.as_ref().map_or_else(
+                || {
+                    self.preparing.as_ref().map_or_else(
+                        || self.env.settings.current().config.hotkey.mode,
+                        |p| p.settings.config.hotkey.mode,
+                    )
+                },
+                |r| r.settings.config.hotkey.mode,
+            ),
+            self.env.hotkey.supports_release(),
         );
         if let Some(preparing) = &mut self.preparing {
             if preparing.mode == mode && (!up || hotkey_mode == HotkeyMode::PushToTalk) {
@@ -204,10 +212,12 @@ impl<P: Providers> Controller<P> {
             HotkeyEvent::TranslateUp => return self.voice_shortcut(VoiceMode::Translate, true),
             _ => {}
         }
-        let mode = self
-            .recording
-            .as_ref()
-            .map_or_else(|| self.env.settings.current().config.hotkey.mode, |r| r.settings.config.hotkey.mode);
+        let mode = effective_hotkey_mode(
+            self.recording
+                .as_ref()
+                .map_or_else(|| self.env.settings.current().config.hotkey.mode, |r| r.settings.config.hotkey.mode),
+            self.env.hotkey.supports_release(),
+        );
         let recording = self.recording.is_some();
         match (event, mode) {
             (HotkeyEvent::Escape, _) => self.cancel(true),

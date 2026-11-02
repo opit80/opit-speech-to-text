@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { REPO, releaseFiles, verifyAssets, versionFromTag } from "./latest-json.mjs";
 
-export function draftCommands(release, tag, dir) {
-  const files = releaseFiles(versionFromTag(tag)).map((name) => join(dir, name));
+export function draftCommands(release, tag, dir, platforms = ["windows-x86_64"]) {
+  const files = releaseFiles(versionFromTag(tag), platforms).map((name) => join(dir, name));
   const title = `Opit Speech to Text ${tag}`;
   if (release === null) {
     return [["release", "create", tag, ...files, "--repo", REPO, "--draft", "--latest=false",
@@ -42,10 +42,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (extra.length || !["check", "upload"].includes(command) || (command === "upload") !== Boolean(dir)) {
       throw new Error("usage: draft-release.mjs check <tag> | upload <tag> <assets-dir>");
     }
-    if (command === "upload") verifyAssets(tag, dir);
+    const manifest = command === "upload" ? verifyAssets(tag, dir) : null;
     const release = await findRelease(tag);
     if (command === "upload") {
-      for (const args of draftCommands(release, tag, dir)) {
+      for (const args of draftCommands(release, tag, dir, Object.keys(manifest.platforms))) {
         const result = spawnSync("gh", args, { stdio: "inherit" });
         if (result.error || result.status !== 0) throw new Error("draft release upload failed");
       }

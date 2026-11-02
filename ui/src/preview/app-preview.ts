@@ -7,7 +7,7 @@ import { mockIPC } from "@tauri-apps/api/mocks";
 import type { AppConfig, CleanupStyle, Dictation, DictationStatus, FileOptions, FileState, LocalState, Profile, StyleDefaults, TranslateLanguage } from "../lib/bridge/types";
 import { speechDetectionDefaults } from "../features/dictation/speech-detection";
 
-if (!import.meta.env.DEV) throw new Error("Guide preview is only available in the development server");
+if (!import.meta.env.DEV) throw new Error("App preview is only available in the development server");
 
 const params = new URLSearchParams(location.search);
 // Synthetic local installation state for browser review; no download or process is started.
@@ -43,7 +43,7 @@ const config: AppConfig = {
     api_key_ref: null, language: "tr", audio_format: "flac", response_format: "verbose_json",
     send_prompt: true, send_keywords: false, apply_rules: true, apply_cleanup: true, fallback_profile_id: null,
   }],
-  hotkey: { ask_keys: [], pause_keys: [], style_cycle_keys: [], edit_keys: params.get("voice") === "true" ? ["F18"] : [], translate_keys: params.get("voice") === "true" ? ["F19"] : [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
+  hotkey: { cancel_keys: [], ask_keys: [], pause_keys: [], style_cycle_keys: [], edit_keys: params.get("voice") === "true" ? ["F18"] : [], translate_keys: params.get("voice") === "true" ? ["F19"] : [], keys: ["RightCtrl", "RightShift"], mode: params.get("mode") === "ptt" ? "push_to_talk" : "toggle", enabled: true },
   recording: { microphone: null, max_seconds: 180, ...speechDetectionDefaults, live_text: params.get("live") === "true" },
   paste: { method: "ctrl_v", after: "none", restore_clipboard: false, trailing_space: true },
   translate: { target_language: "en", model: null },
@@ -54,17 +54,30 @@ const config: AppConfig = {
   ] : [] },
   learning: { enabled: params.get("learning") !== "false" },
   history: { enabled: true, save_audio: false, audio_retention_days: 7, max_entries: 1000 },
-  rules: { enabled_packs: ["tr-core", "tr-tech"], prompt_context: "", numbers_as_words: false },
+  rules: { prompt_context: "", numbers_as_words: false },
   ui: { theme: "system", start_in_tray: false, autostart: false, overlay_position: "right_center", sound_feedback: true, setup_done: params.get("setup") !== "true", check_updates: false },
 };
 
 const now = Date.now();
+// The first sentence stays fixed (voice/cleanup scenarios refer to it); the rest vary so lists read naturally.
+const samples = params.get("lang") === "en"
+  ? ["Let's check the GitHub changes before the meeting.", "Can you send me the draft by Friday afternoon?",
+    "The build passed on both Windows and Linux.", "Remind me to book the train tickets tonight.",
+    "Thanks for the quick review, merging it now.", "Let's move the design sync to Thursday at ten.",
+    "The new shortcut works on KDE without logging out.", "Please add the release notes to the draft.",
+    "Lunch at one sounds good to me."]
+  : ["Toplantıdan önce GitHub değişikliklerini kontrol edelim.", "Taslağı cuma öğleden sonraya kadar gönderebilir misin?",
+    "Derleme hem Windows'ta hem Linux'ta geçti.", "Bu akşam tren biletlerini almamı hatırlat.",
+    "Hızlı inceleme için teşekkürler, şimdi birleştiriyorum.", "Tasarım toplantısını perşembe saat ona alalım.",
+    "Yeni kısayol KDE'de oturumu kapatmadan çalışıyor.", "Sürüm notlarını taslağa ekler misin?",
+    "Saat birde öğle yemeği bana uyar."];
 let rows: Dictation[] = Array.from({ length: params.get("empty") === "true" ? 0 : 9 }, (_, i) => ({
   id: 9 - i, created_at_ms: now - i * 3_600_000, profile_id: "preview",
   mode: "dictation", agent: null, cleanup_status: null, cleanup_model: null, cleanup_style_id: "clean",
-  raw_text: "Toplantıdan önce github değişikliklerini kontrol edelim.",
-  text: "Toplantıdan önce GitHub değişikliklerini kontrol edelim.",
-  status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null, error_code: null, language: "tr",
+  raw_text: samples[i].toLowerCase(),
+  text: samples[i],
+  status: "ok", audio_ms: 12_000 + i * 1_000, latency_ms: 800 + i * 50, audio_path: null, error_code: null,
+  language: params.get("lang") === "en" ? "en" : "tr",
   source_text: null, instruction: null,
 }));
 // Translation targets with the same codes and order as crates/core/src/voice_modes.rs (names are preview stand-ins).
@@ -145,7 +158,8 @@ mockIPC(async (command, payload) => {
         fileState = { ...fileState, revision: fileState.revision + 1, phase: "idle", progress: null, result: null, unsaved: false };
       await emit("file-progress", fileEvent());
       return structuredClone(fileState);
-    case "app_info": return { version: "0.1.1", data_dir: "", log_dir: "", system_locale: "tr-TR", debug_build: true };
+    case "app_info": return { version: "0.2.0", data_dir: "", log_dir: "", system_locale: "tr-TR", debug_build: true };
+    case "platform_capabilities": return { platform: "windows", local_models: true, per_app_rules: true, overlay: true, media_duck: true, updates: true, tray: true, shortcut_release: true, shortcut_capture: true, shortcut_backend: "windows" };
     case "get_config": return structuredClone(config);
     case "get_status": return structuredClone(status);
     // These responses exercise rendering only; Rust HTTP tests cover the real API.
@@ -180,8 +194,8 @@ mockIPC(async (command, payload) => {
       return;
     }
     case "cancel_dictation": clearTimeout(completion); await changeStatus("cancelled"); return;
-    case "get_hotkey_state": return { paused, error: null };
-    case "set_hotkey_paused": paused = !!(payload as { paused: boolean }).paused; return { paused, error: null };
+    case "get_hotkey_state": return { paused, pending: false, error: null };
+    case "set_hotkey_paused": paused = !!(payload as { paused: boolean }).paused; return { paused, pending: false, error: null };
     case "save_config": {
       Object.assign(config, structuredClone((payload as { config: AppConfig }).config));
       return structuredClone(config);
@@ -234,11 +248,6 @@ mockIPC(async (command, payload) => {
       const text = config.rules.numbers_as_words ? source.replace(/\b12\b/g, "on iki") : source;
       return { text, hits: [], warnings: [], hallucination: false };
     }
-    case "rule_packs": return [
-      { id: "tr-core", name: "Türkçe imla", language: "tr", terms: 24, corrections: 8, replacements: 4, hallucinations: 6 },
-      { id: "tr-tech", name: "Yazılım terimleri", language: "tr", terms: 48, corrections: 16, replacements: 3, hallucinations: 0 },
-      { id: "fivem", name: "FiveM", language: "tr", terms: 32, corrections: 9, replacements: 2, hallucinations: 0 },
-    ];
     case "get_update_state": return { kind: "idle" };
     // Synthetic window list for the rule picker; no real windows are enumerated.
     case "list_running_apps": return [
@@ -286,6 +295,6 @@ mockIPC(async (command, payload) => {
   }
 }, { shouldMockEvents: true });
 
-if (!location.hash) location.hash = "#/guide";
+if (!location.hash) location.hash = "#/home";
 const target = document.getElementById("app");
 if (target) mount(BrowserPreview, { target });

@@ -72,7 +72,7 @@ pub fn presets() -> Vec<CleanupPreset> {
             "google",
             "Google AI Studio",
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            "gemini-2.5-flash-lite",
+            "gemini-3.5-flash-lite",
             "https://aistudio.google.com/apikey",
         ),
         (
@@ -140,6 +140,8 @@ pub enum CleanupError {
     InvalidKey,
     #[error("the provider account has a billing or credit problem")]
     PaymentRequired,
+    #[error("cleanup model was not found or is unavailable; choose another model")]
+    ModelNotFound,
     #[error("cleanup provider is rate limiting")]
     RateLimited,
     #[error("cleanup provider server error")]

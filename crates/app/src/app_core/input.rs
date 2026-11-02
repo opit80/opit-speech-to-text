@@ -18,8 +18,28 @@ fn auxiliary_shortcuts(config: &AppConfig) -> Vec<(HotkeyEvent, Vec<String>)> {
         (HotkeyEvent::StyleCycle, config.hotkey.style_cycle_keys.clone()),
     ]
     .into_iter()
+    .chain(cfg!(target_os = "linux").then(|| (HotkeyEvent::Escape, config.hotkey.cancel_keys.clone())))
     .chain(config.cleanup.styles.iter().map(|s| (HotkeyEvent::Style(s.id.clone()), s.hotkey.clone())))
     .collect()
+}
+
+pub(super) fn validate_shortcuts(config: &AppConfig) -> Result<(), HotkeyError> {
+    crate::platform::keys::validate_list(&config.shortcuts())?;
+    #[cfg(target_os = "linux")]
+    {
+        use crate::platform::linux::shortcut_combo::{Combo, validate_list};
+        let mut valid = config
+            .shortcuts()
+            .into_iter()
+            .filter(|keys| !keys.is_empty() && Combo::new(keys).is_ok())
+            .collect::<Vec<_>>();
+        if !config.hotkey.cancel_keys.is_empty() {
+            Combo::new(&config.hotkey.cancel_keys)?;
+            valid.push(&config.hotkey.cancel_keys);
+        }
+        validate_list(&valid)?;
+    }
+    Ok(())
 }
 
 pub(super) fn shortcut_mappings_changed(old: &AppConfig, new: &AppConfig) -> bool {
@@ -59,6 +79,7 @@ impl AppCore {
         let slot = match target {
             "dictation" => &mut config.hotkey.keys,
             "pause" => &mut config.hotkey.pause_keys,
+            "cancel" => &mut config.hotkey.cancel_keys,
             "ask" => &mut config.hotkey.ask_keys,
             "edit" => &mut config.hotkey.edit_keys,
             "translate" => &mut config.hotkey.translate_keys,
@@ -77,13 +98,13 @@ impl AppCore {
             }
         };
         *slot = keys;
-        crate::platform::keys::validate_list(&config.shortcuts()).map_err(|err| self.shortcut_error(err))
+        validate_shortcuts(&config).map_err(|err| self.shortcut_error(err))
     }
 
     /// (Re-)installs the global hook for the configured keys.
     pub fn apply_hotkey(&self, config: &AppConfig) {
         let shortcuts = auxiliary_shortcuts(config);
-        let result = crate::platform::keys::validate_list(&config.shortcuts())
+        let result = validate_shortcuts(config)
             .and_then(|()| self.platform.hotkey.register(&config.hotkey.keys, self.controller.hotkey_sink()))
             .and_then(|()| self.platform.hotkey.register_shortcuts(&shortcuts));
         let error = result.err().map(|err: HotkeyError| {
@@ -109,7 +130,13 @@ impl AppCore {
     pub fn hotkey_state(&self) -> HotkeyState {
         HotkeyState {
             paused: self.hotkey_paused.load(Ordering::SeqCst),
-            error: self.hotkey_error.lock().unwrap_or_else(PoisonError::into_inner).clone(),
+            pending: self.platform.hotkey.registration_pending(),
+            error: self
+                .hotkey_error
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .or_else(|| self.platform.hotkey.runtime_error()),
         }
     }
 
@@ -192,6 +219,12 @@ impl AppCore {
     }
 
     pub(crate) fn set_hotkey_capture_for(self: &Arc<Self>, active: bool, limit: Duration) {
+        #[cfg(target_os = "linux")]
+        let mut deadline = self.linux_capture_deadline.lock().unwrap_or_else(PoisonError::into_inner);
+        #[cfg(target_os = "linux")]
+        {
+            *deadline = active.then(|| std::time::Instant::now() + limit);
+        }
         let generation = self.hotkey_capture_generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.hotkey_capturing.store(active, Ordering::SeqCst);
         self.sync_pause(&self.config());
@@ -199,14 +232,28 @@ impl AppCore {
             let core = Arc::downgrade(self);
             std::thread::spawn(move || {
                 std::thread::sleep(limit);
-                if let Some(core) = core.upgrade()
-                    && core.hotkey_capture_generation.load(Ordering::SeqCst) == generation
-                {
-                    core.hotkey_capturing.store(false, Ordering::SeqCst);
-                    core.sync_pause(&core.config());
+                if let Some(core) = core.upgrade() {
+                    // Serialize Linux expiry with start/cancel so an old timer cannot
+                    // clear a new capture between the generation check and the store.
+                    #[cfg(target_os = "linux")]
+                    let _deadline = core.linux_capture_deadline.lock().unwrap_or_else(PoisonError::into_inner);
+                    if core.hotkey_capture_generation.load(Ordering::SeqCst) == generation {
+                        core.hotkey_capturing.store(false, Ordering::SeqCst);
+                        core.sync_pause(&core.config());
+                    }
                 }
             });
         }
+    }
+
+    /// The relay must not start dictation while the focused WebView records keys.
+    /// A monotonic deadline also releases it after a crashed or disconnected page.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn linux_shortcut_capturing(&self) -> bool {
+        self.linux_capture_deadline
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some_and(|deadline| std::time::Instant::now() < deadline)
     }
 
     pub fn validate_hotkey(keys: &[String]) -> Result<(), CommandError> {
@@ -217,5 +264,28 @@ impl AppCore {
 
     pub fn microphones(&self) -> Vec<String> {
         self.platform.mic.devices()
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod shortcut_tests {
+    use super::*;
+    #[test]
+    fn cancel_is_opt_in_and_can_use_escape_without_implicitly_grabbing_it() {
+        let mut config = AppConfig::default();
+        assert!(config.hotkey.cancel_keys.is_empty());
+        config.hotkey.cancel_keys = vec!["LeftCtrl".into(), "Escape".into()];
+        assert!(validate_shortcuts(&config).is_ok());
+        config.hotkey.cancel_keys = config.hotkey.keys.clone();
+        assert_eq!(validate_shortcuts(&config), Err(HotkeyError::Collision));
+    }
+    #[test]
+    fn saved_modifier_only_shortcuts_are_not_migrated_by_validation() {
+        let mut config = AppConfig::default();
+        config.hotkey.keys = vec!["RightCtrl".into(), "RightShift".into()];
+        config.hotkey.mode = opit_core::config::HotkeyMode::PushToTalk;
+        let saved = config.clone();
+        assert!(validate_shortcuts(&config).is_ok());
+        assert_eq!(config, saved);
     }
 }

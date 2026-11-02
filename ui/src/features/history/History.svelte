@@ -361,6 +361,7 @@
 <div>
   <PageHeader title={t("history.title")}>
     {#snippet actions()}
+      <a href="#/usage">{t("nav.usage")}</a>
       <Button variant="danger" disabled={mutationBusy || listBusy} onclick={() => {
         clearCount = rows.length; mutationError = null; clearOpen = true;
       }}>{t("history.clear")}</Button>

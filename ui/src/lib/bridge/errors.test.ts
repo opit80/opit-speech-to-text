@@ -6,6 +6,11 @@ describe("describeError", () => {
     const err = { code: "provider", message: "HTTP 401: nope", kind: "invalid_key" };
     expect(describeError(err, "tr")).toBe("API anahtarı geçersiz");
   });
+  it("explains unavailable cleanup models without displaying the provider message", () => {
+    const err = { code: "cleanup", kind: "model_not_found", message: "private provider response" };
+    expect(describeError(err, "en")).toBe("Model not found or unavailable. Choose another model");
+    expect(describeError(err, "tr")).toBe("Model bulunamadı veya kullanılamıyor. Başka bir model seçin");
+  });
   it("uses a localized prefix per code with the Rust message", () => {
     expect(describeError({ code: "rules", message: "bad yaml", kind: null }, "en")).toBe("Rules error: bad yaml");
   });

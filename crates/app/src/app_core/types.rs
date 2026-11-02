@@ -91,6 +91,7 @@ pub const MAX_HISTORY_TEXT_BYTES: usize = 100_000;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HotkeyState {
     pub paused: bool,
+    pub pending: bool,
     /// Why the global hook is not working, if it is not.
     pub error: Option<String>,
 }

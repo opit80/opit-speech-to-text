@@ -5,7 +5,11 @@ mod delivery;
 mod handle;
 mod live;
 mod recording;
+#[cfg(target_os = "linux")]
+mod session;
 mod status;
+#[cfg(target_os = "linux")]
+pub use session::{PendingResults, ShortcutTest};
 #[cfg(test)]
 mod tests;
 mod transcription;
@@ -110,6 +114,8 @@ pub trait UiEvents: Send + Sync {
     fn status_changed(&self, status: &DictationStatus);
     fn history_added(&self, id: i64);
     fn open_settings(&self);
+    #[cfg(target_os = "linux")]
+    fn pending_results_changed(&self) {}
     /// Called on a blocking worker by the ordered style writer, independently of controller input.
     fn save_style(&self, id: &str) -> Option<CleanupStyle>;
 }
@@ -173,6 +179,11 @@ pub enum Msg {
     },
     /// Tray left click or UI button: start or stop, keeping stopped items clipboard-only.
     Toggle,
+    #[cfg(target_os = "linux")]
+    ShortcutTest {
+        active: bool,
+        reply: oneshot::Sender<Result<ShortcutTest, ErrorKind>>,
+    },
     Stop,
     PauseResume,
     Cancel,
@@ -269,6 +280,8 @@ pub fn run<P: Providers>(
         style_generation: 0,
         pending_style: None,
         style_fallback: None,
+        #[cfg(target_os = "linux")]
+        session_state: handle.session_state.clone(),
     };
     controller.serve(inbox, style_requests)
 }
@@ -413,6 +426,8 @@ struct PendingStyle {
 }
 
 struct Controller<P: Providers> {
+    #[cfg(target_os = "linux")]
+    session_state: Arc<Mutex<session::SessionState>>,
     env: Env<P>,
     tx: mpsc::UnboundedSender<Msg>,
     status: Arc<Mutex<DictationStatus>>,
@@ -459,6 +474,16 @@ impl<P: Providers> Controller<P> {
                 self.set_state(DictationState::Idle);
                 break;
             }
+            #[cfg(target_os = "linux")]
+            if let Msg::Hotkey(ref event) = msg
+                && self
+                    .session_state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .probe_input(matches!(event, HotkeyEvent::ComboDown))
+            {
+                continue;
+            }
             match msg {
                 Msg::VoiceReady(session) => self.voice_ready(session).await,
                 Msg::Hotkey(HotkeyEvent::StyleCycle) => self.select_style(None),
@@ -471,6 +496,22 @@ impl<P: Providers> Controller<P> {
 
     fn handle(&mut self, msg: Msg) {
         match msg {
+            #[cfg(target_os = "linux")]
+            Msg::ShortcutTest { active, reply } => {
+                if active
+                    && (self.recording.is_some()
+                        || self.preparing.is_some()
+                        || !self.waiting.is_empty()
+                        || !matches!(self.phase, Phase::Idle)
+                        || self.update_holds != 0)
+                {
+                    let _ = reply.send(Err(ErrorKind::Rejected));
+                } else {
+                    let test =
+                        self.session_state.lock().unwrap_or_else(PoisonError::into_inner).set_shortcut_test(active);
+                    let _ = reply.send(Ok(test));
+                }
+            }
             Msg::LiveText { session, text } => {
                 if let Some(recording) = self.recording.as_mut().filter(|r| r.session == session && !r.paused) {
                     recording.live_text = live::tail(&text);
@@ -544,6 +585,16 @@ impl<P: Providers> Controller<P> {
                 }
             }
             Msg::Control { action, reply } => {
+                #[cfg(target_os = "linux")]
+                if matches!(action, ControlAction::Toggle | ControlAction::Shortcut(_))
+                    && self.session_state.lock().unwrap_or_else(PoisonError::into_inner).probe_input(matches!(
+                        action,
+                        ControlAction::Toggle | ControlAction::Shortcut(HotkeyEvent::ComboDown)
+                    ))
+                {
+                    let _ = reply.send(Ok(self.status.lock().unwrap_or_else(PoisonError::into_inner).clone()));
+                    return;
+                }
                 let result = self.control(action);
                 self.pump();
                 let status = self.status.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -577,6 +628,8 @@ impl<P: Providers> Controller<P> {
             Msg::Stop => self.stop(false),
             Msg::PauseResume => self.pause_resume(),
             Msg::Cancel => self.cancel(true),
+            #[cfg(target_os = "linux")]
+            Msg::Overlay(OverlayAction::Cancel) => self.cancel(true),
             Msg::Retry | Msg::Overlay(OverlayAction::Retry) => self.retry(),
             Msg::RetryHistory { id, audio, reply } => self.retry_history(id, audio, reply),
             Msg::Cleaning { session } => {
@@ -638,6 +691,17 @@ impl<P: Providers> Controller<P> {
 
     fn control(&mut self, action: ControlAction) -> Result<(), ErrorKind> {
         match action {
+            #[cfg(target_os = "linux")]
+            ControlAction::ShortcutProbe => {
+                // A late child process is harmless after probe cancellation or window close.
+                self.session_state.lock().unwrap_or_else(PoisonError::into_inner).probe_input(true);
+            }
+            #[cfg(target_os = "linux")]
+            ControlAction::Shortcut(event) => match event {
+                HotkeyEvent::StyleCycle => self.select_style(None),
+                HotkeyEvent::Style(id) => self.select_style(Some(id)),
+                event => self.on_hotkey(event),
+            },
             ControlAction::Start if self.recording.is_some() => return Err(ErrorKind::Rejected),
             ControlAction::Start => {
                 self.start();

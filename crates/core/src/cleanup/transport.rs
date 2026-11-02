@@ -40,6 +40,17 @@ fn network_error(error: reqwest::Error) -> CleanupError {
     if error.is_timeout() { CleanupError::Timeout } else { CleanupError::Network }
 }
 
+fn status_error(status: u16) -> CleanupError {
+    match status {
+        401 | 403 => CleanupError::InvalidKey,
+        402 => CleanupError::PaymentRequired,
+        404 => CleanupError::ModelNotFound,
+        429 => CleanupError::RateLimited,
+        500..=599 => CleanupError::Server,
+        _ => CleanupError::Rejected,
+    }
+}
+
 impl CleanupClient {
     pub fn new(config: CleanupConfig, key: Option<String>) -> Result<Self, CleanupError> {
         let config = config.for_style(&effective_style(&config));
@@ -312,11 +323,7 @@ impl CleanupClient {
                 }
                 return Err(CleanupError::Rejected);
             }
-            401 | 403 => return Err(CleanupError::InvalidKey),
-            402 => return Err(CleanupError::PaymentRequired),
-            429 => return Err(CleanupError::RateLimited),
-            500..=599 => return Err(CleanupError::Server),
-            _ => return Err(CleanupError::Rejected),
+            status => return Err(status_error(status)),
         }
         #[derive(Deserialize)]
         struct Reply {
@@ -352,5 +359,19 @@ impl CleanupClient {
             return Err(CleanupError::BadResponse);
         }
         Ok(answer.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_404_reports_an_unavailable_model() {
+        assert_eq!(status_error(404), CleanupError::ModelNotFound);
+        assert_eq!(
+            status_error(404).to_string(),
+            "cleanup model was not found or is unavailable; choose another model"
+        );
     }
 }
