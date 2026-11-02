@@ -2,7 +2,7 @@
 
 Opit Speech to Text includes a new console tool, `opit.exe`, installed next to
 `opit-speech-to-text.exe`. Start the tray app and finish profile setup first.
-Settings → About shows the CLI path with a copy button. The default install path is
+Settings → Advanced → Folders shows the CLI path with a copy button. The default install path is
 `%LOCALAPPDATA%\Opit Speech to Text\opit.exe`. Call the full path, or add its folder
 to your own user PATH manually. The installer does not change PATH.
 
@@ -49,7 +49,7 @@ the existing history clipboard policy.
 and returns that recording's final text. It **never pastes or changes the
 clipboard**, including when stopped from the hotkey or overlay. `--no-paste`
 explicitly selects the same default. Normal history and cleanup settings still
-apply. Pause/resume, stop, cancel and Escape also control this recording. A busy
+apply. Pause/resume, stop and cancel also control this recording. Windows additionally reserves Escape while recording. A busy
 microphone/queue or missing credentials produces an error. Cancellation or app
 shutdown terminates the waiting command.
 
@@ -102,3 +102,24 @@ available on Windows. Run the ignored private-pipe round trip explicitly with:
 ```powershell
 cargo test -p opit-ipc --offline private_pipe_roundtrip -- --ignored
 ```
+
+
+## Linux desktop command entry
+
+Every Linux app executable accepts `--shortcut <action>` and relays a press over the existing
+Unix socket before GTK or single-instance startup. Desktop bindings use the absolute app executable,
+or the persistent AppImage path from `APPIMAGE`; a sibling `opit` binary is not required.
+If the app is not running, this entry exits quietly with status 0 and does not start it.
+A malformed action exits 2; other relay errors exit 1 with a generic message.
+
+```sh
+'/absolute/path/opit-speech-to-text' --shortcut dictation
+'/absolute/path/Opit Speech to Text.AppImage' --shortcut cancel
+```
+
+Actions are `dictation`, `pause` (pause/resume), `cancel`, `ask`, `edit`, `translate`,
+`style_cycle` and `style:<id>`. The internal `probe` action is harmless outside an armed setup
+probe. Shortcut dictation uses normal hotkey paste semantics; `opit toggle` keeps the console
+CLI's existing clipboard-only semantics. Shortcuts respect the enabled/paused state.
+See [Linux shortcuts](linux-shortcuts.md) for desktop registration, defaults and acceptance limits.
+The AppImage's existing `--cli <opit arguments>` entry remains available for full console CLI access.

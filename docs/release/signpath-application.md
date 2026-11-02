@@ -32,7 +32,7 @@ maintained project with releases and documented functionality.
 - Uninstall instructions: README → Uninstall.
 - Privacy statement (required). Proposed text for the policy page:
   "Opit Speech to Text sends your recorded audio only to the transcription provider you configure,
-  and asks GitHub for the latest version (Settings → Updates; can be turned off). It sends nothing
+  and asks GitHub for the latest version (Settings → Updates and about; can be turned off). It sends nothing
   else and has no telemetry."
 
 ## Code signing policy page (publish only once accepted)

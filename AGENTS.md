@@ -1,6 +1,6 @@
 # AGENTS.md — Opit Speech to Text
 
-Windows voice-dictation tray app: press a hotkey, speak, the transcript is pasted at the cursor.
+Voice-dictation tray app: press a hotkey, speak, the transcript is delivered at the cursor or kept on the clipboard.
 Transcription uses the user's own API key (Groq / OpenAI / any OpenAI-compatible server).
 Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/design/2026-09-30-opit-speech-to-text-design.md`.
 
@@ -22,19 +22,19 @@ Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/design/2026-09-30-opit-s
 |---|---|
 | `crates/core` | `opit-core`: audio, providers, config, pipeline, rules, history, cleanup, file transcription and domain logic. **No Tauri or Windows crates**; builds and tests on Linux. |
 | `crates/eval` | `opit-eval`: real-provider WER/term accuracy CLI; see `docs/guides/eval.md`. |
-| `crates/ipc` | `opit-ipc`: protocol types in `src/protocol.rs`, framing in `src/framing.rs`, Windows named-pipe transport in `src/transport/windows.rs`. |
+| `crates/ipc` | `opit-ipc`: protocol types in `src/protocol.rs`, framing in `src/framing.rs`, Windows named-pipe transport in `src/transport/windows.rs`, Unix socket transport in `src/transport/unix.rs`. |
 | `crates/cli` | `opit-cli`: standalone `opit` console tool; see `docs/guides/cli.md`. |
-| `crates/app` | Tauri app (`opit_app`): `src/app_core/mod.rs`, `commands/`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/factory.rs`, `platform/microphone.rs`; `src/shell/` owns startup/logging/events/i18n/tray/window/updates and the Tauri lifecycle, with root compatibility re-exports. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
-| `ui/` | Svelte 5 + Vite + Vitest: `src/features/` owns home, dictation, history, profiles, rules, settings, setup (including `steps/`), files, guide, usage and updates. Shared `src/lib/` owns `bridge/` (API, events, types, errors), `state/`, `navigation/`, `utils/`, `i18n/` and primitive `components/`. Dev-only preview: `src/preview/guide-preview.ts`, `src/preview/BrowserPreview.svelte`, `guide-preview.html`. |
-| `rules/` | Built-in rule packs: `tr-core`, `tr-tech`, `fivem`. |
+| `crates/app` | Tauri app (`opit_app`): `src/app_core/mod.rs`, `commands/`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/linux/`, `platform/factory.rs`, `platform/microphone.rs`; `src/shell/` owns startup/logging/events/i18n/tray/window/updates and the Tauri lifecycle, with root compatibility re-exports. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
+| `ui/` | Svelte 5 + Vite + Vitest: `src/features/` owns home, dictation, history, profiles, rules, settings, setup (including `steps/`), files, usage and updates. Shared `src/lib/` owns `bridge/` (API, events, types, errors), `state/`, `navigation/`, `utils/`, `i18n/` and primitive `components/`. Dev-only preview: `src/preview/app-preview.ts`, `src/preview/BrowserPreview.svelte`, `app-preview.html`. |
 | `scripts/` | CLI staging and release asset/signature/draft helpers; release tests in `scripts/release/`. |
-| `.github/workflows/` | `ci.yml`: Windows full workspace, Linux portable crates and UI; `release.yml`: verified signed NSIS assets to a draft. |
+| `.github/workflows/` | `ci.yml`: Windows/Linux full workspace and UI, plus Linux app build; `release.yml`: verified NSIS/AppImage/deb assets aggregated into one draft. Workflow execution remains separate acceptance evidence. |
 | `docs/` | `README.md` index; `guides/`, `reference/`, `development/`, `release/`, `design/`, dated `archive/` (including the layout plan), `releases/`. |
 
 ## Commands
 
 Run from the repo root unless noted. Run builds/tests sequentially. Windows CI must pass
-full-workspace clippy/tests; Linux cannot compile the app in the layout phase. Before every
+full-workspace clippy/tests. Linux app status and unverified desktop paths are recorded in
+`docs/development/linux-status.md`. Before every
 commit touching the relevant files:
 
 ```sh
@@ -42,7 +42,7 @@ cargo fmt --all --check
 # Windows CI / suitable Windows runner:
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-# Linux portable gate (socket-binding tests need an unrestricted runner):
+# Linux portable fallback gate (socket-binding tests need an unrestricted runner):
 cargo clippy --workspace --exclude opit-speech-to-text --all-targets -- -D warnings
 cargo test --workspace --exclude opit-speech-to-text
 node --test scripts/release/*.test.mjs                # when scripts/release changes

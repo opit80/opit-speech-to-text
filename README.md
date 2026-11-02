@@ -1,221 +1,152 @@
-# Opit Speech to Text
+<p align="center">
+  <img src="docs/assets/readme/hero.svg" width="100%" alt="Opit Speech to Text: press a shortcut, speak, and your words land at the cursor. Windows and Linux, your own API key, MIT licensed.">
+</p>
 
-Open-source voice dictation for Windows. Press a hotkey, speak, and the text is pasted where your
-cursor is. Transcription runs on **your own API key** (Groq, OpenAI, or any OpenAI-compatible
-server); nothing goes through a third-party server of ours.
+<p align="center">
+  <a href="https://github.com/opit80/opit-speech-to-text/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/opit80/opit-speech-to-text?style=flat-square&color=4cc2ff&labelColor=1e1f24"></a>
+  <a href="https://github.com/opit80/opit-speech-to-text/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/opit80/opit-speech-to-text/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1e1f24"></a>
+  <img alt="Platforms: Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-4cc2ff?style=flat-square&labelColor=1e1f24">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4cc2ff?style=flat-square&labelColor=1e1f24"></a>
+</p>
 
-> Download stable installers from the
-> [Releases page](https://github.com/opit80/opit-speech-to-text/releases). The design lives in
-> [`docs/design/2026-09-30-opit-speech-to-text-design.md`](docs/design/2026-09-30-opit-speech-to-text-design.md).
+<p align="center">
+  <a href="https://github.com/opit80/opit-speech-to-text/releases/latest"><b>Download</b></a> ·
+  <a href="docs/guides/using-the-app.md">User guide</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="docs/releases/0.2.0.md">What's new in 0.2.0</a>
+</p>
 
-## Install
+---
 
-Requirements: Windows 10 or 11, x64.
+**Opit Speech to Text** is an open-source voice dictation app for Windows and Linux. It sits in
+the tray: press a shortcut, speak, and the text is typed where your cursor is, in any app.
+Transcription runs on **your own API key** (ElevenLabs, Groq, OpenAI, Deepgram or any
+OpenAI-compatible server), so there is no account, no subscription and no server of ours in
+between.
 
-Download `opit-speech-to-text_<version>_x64-setup.exe` from the
-[Releases page](https://github.com/opit80/opit-speech-to-text/releases) and run it. It installs
-for your user only, in `%LOCALAPPDATA%\Opit Speech to Text`, without an admin prompt. If the
-WebView2 runtime is missing, the installer downloads and adds it (this needs internet).
+<p align="center">
+  <img src="docs/assets/readme/recording.webp" width="88%" alt="The app's Home page while it listens: a red stop button, a live waveform and the latest dictations below.">
+</p>
 
-**SmartScreen.** v1 installers are not code-signed yet, so Windows may show "Windows protected
-your PC". Click **More info → Run anyway**. Code-signing certificates are paid, so the project plans
-to apply for free open-source signing through SignPath Foundation. Updates are signed regardless:
-the app installs only an update whose signature matches the key built into it.
+## How it works
 
-The last installer page can start the app (and create a desktop shortcut). The setup wizard
-follows on the first start.
+1. **Press** your shortcut. A small panel shows the waveform, the elapsed time and, if you
+   turn it on, a live preview of what you are saying.
+2. **Speak**. Music and videos playing in other apps are turned down until you finish.
+3. **Press again**. The audio goes to the provider you chose and the text is pasted at your
+   cursor. It also stays on the clipboard and in your local history.
 
-## Using the app
+## Download
 
-Install it (see [Install](#install)), or, for development, build it as described in
-[Development](#development). The app puts an icon in the tray and opens its window.
+| Platform | File | Notes |
+|---|---|---|
+| Windows 10 / 11 (x64) | `opit-speech-to-text_<version>_x64-setup.exe` | Per-user install, no admin prompt. Not code-signed yet, so SmartScreen may ask you to confirm. |
+| Linux (x86_64), any distro | `opit-speech-to-text_<version>_amd64.AppImage` | `chmod +x` and run. |
+| Debian / Ubuntu (amd64) | `opit-speech-to-text_<version>_amd64.deb` | `sudo apt install ./opit-speech-to-text_<version>_amd64.deb` pulls in the dependencies. |
 
-**First run.** A setup wizard opens on the first start:
+All files are on the [latest release](https://github.com/opit80/opit-speech-to-text/releases/latest),
+together with `SHA256SUMS`. The Windows installer and the AppImage update themselves from inside
+the app, and only accept an update whose signature matches the key built into it; the deb is
+updated by installing the newer package. A setup wizard opens on the first start and walks you
+through language, provider, microphone and shortcut.
 
-1. **Language**: the language of the app's menus and messages (English or Turkish). The language
-   you dictate in is set per profile.
-2. **Provider**: Groq (recommended), OpenAI or your own OpenAI-compatible server. Paste your API
-   key and test the connection.
-3. **Microphone**: pick a device and check that the level meter moves.
-4. **Shortcut**: the default is **Right Ctrl + Right Shift**; you can change it and the mode here.
-5. **Rules and startup**: turn on the built-in rule packs you want, and choose whether the app
-   starts with Windows.
-6. **Try it**: dictate one sentence into Notepad, or start a test from the wizard itself.
+> [!NOTE]
+> **Your key, your provider, your data.** Audio goes only to the transcription provider you
+> pick (and its fallback, if you set one). Text goes to an AI service only when you turn on AI
+> cleanup, Ask or translation. API keys live in the system credential store (Windows Credential
+> Manager, or the Secret Service on Linux), never in a file. History stays on your computer.
+> There is no telemetry, and the update check can be turned off.
 
-**Skip setup** keeps the defaults. Until the wizard is finished or skipped, it opens again
-whenever the window opens.
+## Features
 
-**Dictating.** Press the shortcut, speak, then press it again (or tap **Ctrl** alone). The text is
-pasted where your cursor is. **Esc** cancels. In push-to-talk mode you hold the shortcut while you
-speak. A dictation started from the app's own window goes to the clipboard instead of being
-pasted.
+- **Dictate anywhere.** One global shortcut, toggle or push-to-talk on Windows; the text is
+  pasted at the cursor or kept on the clipboard.
+- **Pick your engine.** Presets for ElevenLabs Scribe v2, Groq Whisper, OpenAI, Deepgram Nova-3
+  and any OpenAI-compatible server, with an optional fallback profile. Offline local models are
+  available on Windows.
+- **AI cleanup.** Optional punctuation and wording cleanup with styles, through Google AI Studio,
+  OpenRouter, Groq, OpenAI, DeepSeek, Baseten, a local server (for example Ollama) or your own
+  endpoint. It turns itself on once a saved key passes its connection test.
+- **Voice commands.** Separate shortcuts to ask a question, dictate straight into another
+  language, or (on Windows) rewrite the selected text by voice.
+- **Quiet media.** Playing audio is lowered while you record (or paused, if you prefer) and
+  restored afterwards.
+- **History you can search.** Every dictation is stored locally with loose Turkish matching
+  (`ı`/`i`, `ş`/`s`), copy, retry and optional audio, plus usage statistics.
+- **Files too.** Transcribe audio or video files to text or SRT from the Files page or the
+  `opit` command line.
+- **Your words, your rules.** Personal corrections and terminology in a simple `user.yaml`, and
+  number spelling for Turkish and English.
+- **English and Turkish** interface, light and dark themes, and signed in-app updates.
 
-The latest dictation stays on the clipboard by default, and each new dictation replaces it.
-To bring back the previous clipboard after automatic pasting, enable **Restore the clipboard
-after pasting** in Settings.
+<p align="center">
+  <img src="docs/assets/readme/history.webp" width="49%" alt="History page with searchable dictations and copy, edit, AI rewrite and delete actions.">
+  <img src="docs/assets/readme/settings.webp" width="49%" alt="Settings page with the shortcut, mode, microphone and text insertion options.">
+</p>
 
-**Pages** (left sidebar):
+## Providers
 
-| Page | What it does |
-|---|---|
-| Home | Dictation status, a start/stop button, a quick profile switch and up to five latest dictations. Warns when the active profile has no API key. |
-| History | Search every dictation (Turkish letters match loosely: `ı`/`i`, `ş`/`s` …), copy, delete, clear, and play the audio when audio saving is on. Select a misrecognised word and use **Add correction rule** to fix it in future dictations, with a before/after preview. |
-| Rules | Turn the built-in rule packs (`tr-core`, `tr-tech`, `fivem`) on or off, set the context sentence, and watch the prompt budget gauge. Edit your personal rules (`user.yaml`) as a table or as raw YAML, and try them on any text before saving. |
-| Profiles | Transcription providers from presets (Groq, OpenAI, custom server): base URL, model, language, prompt options and a fallback profile. Store or remove the API key and test the connection. |
-| Settings | Interface language, start with Windows, start in the tray, sound feedback, the shortcut (capture a new one, mode, pause), microphone with a level test, maximum recording length, paste options, overlay position, history, audio saving and retention. **Updates** checks for and installs new versions. **About** shows the version and the data and log folders. |
-| Usage guide | An interactive illustration of cursor placement, speech, transcription and pasting, with your current shortcut and mode, first-dictation steps and answers about the clipboard, corrections, tray and privacy. The illustration does not record audio, call a provider or change the clipboard. |
-| Usage | Dictation count, total recording time, written characters and average processing time for today, the last seven local calendar days or all retained history. Deleted records disappear from the totals; dictations made with history off are not counted. This is local activity, not provider billing or quota. |
+| Transcription | Default model | AI cleanup | Default model |
+|---|---|---|---|
+| ElevenLabs Scribe v2 (recommended) | `scribe_v2` | Google AI Studio | `gemini-3.5-flash-lite` |
+| Groq | `whisper-large-v3` | OpenRouter | `google/gemini-2.5-flash-lite` |
+| OpenAI | `gpt-transcribe` | Groq | `llama-3.1-8b-instant` |
+| Deepgram | `nova-3` | OpenAI | `gpt-4.1-mini` |
+| Local, offline (Windows) | `ggml-large-v3-turbo-q5_0` | DeepSeek, Baseten, local server | see [AI cleanup](docs/guides/ai-cleanup.md) |
+| Any OpenAI-compatible server | your choice | Any OpenAI-compatible server | your choice |
 
-Settings are saved as soon as you change them. Profiles and the rules editor have a **Save**
-button. Closing the window keeps the app running in the tray; open it again from the tray icon.
+## Platform notes
 
-**Simplified controls.** Settings keeps shortcut and microphone controls visible; general,
-pasting, history, update and about options expand on demand. Rules keeps number spelling,
-pack toggles and text preview visible; context/prompt details and the personal editor expand.
+**Windows.** Any key or combination can be the shortcut, captured by pressing it; push-to-talk
+and Esc-to-cancel work everywhere. The app starts with Windows once setup is finished.
 
-**Number spelling.** Rules → **Write numbers as words** spells standalone integers in Turkish
-or English, following the profile that produced the transcript (including fallback). It defaults
-off, needs the profile's **Apply rules** option, preserves the raw transcript, and leaves dates,
-times, decimals, leading-zero identifiers and unsupported languages unchanged. For example,
-`12 kişi` becomes `On iki kişi`; turning the switch off preserves the provider's output.
+**Linux.** Shortcuts are registered with the desktop itself, so they work on Wayland without
+reading your keyboard: KDE Plasma and GNOME are set up automatically from Settings, other X11
+desktops use a native grab, and on other Wayland desktops you bind the shown command yourself.
+Linux shortcuts toggle (there is no push-to-talk). Text is typed through the desktop's Remote
+Desktop portal, with `ydotool` and the clipboard as fallbacks. Media ducking uses `pactl`.
+Tested on KDE Plasma 6 (Wayland); GNOME and X11 are implemented but not yet verified on a real
+desktop. See [Linux shortcuts](docs/guides/linux-shortcuts.md).
 
-**Flexible shortcuts.** Single letters and modifiers, navigation, punctuation, numpad, media,
-Windows keys and combinations can be selected. Capture by pressing the keys, or build a chord
-with **Choose a key from the list** → **Add key** → **Apply shortcut**. The keys retain their
-normal function in other apps; system shortcuts can be intercepted by Windows. Hardware-only
-keys such as Fn are unavailable, and Num Lock affects numpad keys. If Escape is part of the
-configured shortcut, cancel a dictation from Home instead. Capture ends after 30 seconds or
-when focus leaves the capture field.
+## Command line
 
-**Where settings live.** Everything is under `%APPDATA%\opit-speech-to-text\`: `config.json`
-(settings and profiles), `rules\user.yaml` (your personal rules), `history.db`, `audio\` (only
-when audio saving is on) and `logs\` (7 days). API keys are kept only in Windows Credential
-Manager. The logs never contain what you said or your keys.
-
-**Start with Windows** (on by default) is applied when the setup wizard is finished or skipped,
-never before. It writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value
-`Opit Speech to Text`, and turning the switch off removes it.
-
-## Updates
-
-The installed app asks GitHub for a newer version 20 seconds after it starts and then once a day
-while it runs. Settings → Updates → **Check for updates automatically** controls this; turn it
-off and the app never contacts GitHub on its own (**Check now** still works).
-
-When a newer version exists, a banner and Settings → Updates offer **Install and restart**. The
-app downloads the update, checks its signature, closes, runs the installer with a small progress
-window and starts again. Your settings, history, rules, API keys and the "Start with Windows"
-entry are kept. The button is disabled while a dictation is recording, transcribing or pasting:
-finish the dictation first.
-
-You can also update by hand: download the newer installer and run it over the old one.
-
-## Uninstall
-
-Windows Settings → Apps → Installed apps → *Opit Speech to Text* → Uninstall.
-
-The uninstaller always removes the program, its shortcuts and the "Start with Windows" entry. Tick
-**Delete the application data** to also remove:
-
-- `%APPDATA%\opit-speech-to-text\` (settings, `rules\user.yaml`, history, audio, logs),
-- the WebView data in `%LOCALAPPDATA%\io.github.opit80.opit-speech-to-text`,
-- the preset and current profile API keys in Windows Credential Manager. Keys orphaned by an
-  earlier configuration reset may remain; remove these manually as described below.
-
-**Back up `rules\user.yaml` first if you want to keep your rules.**
-
-If you uninstalled without ticking the box, the data stays for a reinstall. To remove it by hand,
-delete the two folders above and the Credential Manager entries whose names end in
-`.opit-speech-to-text`: list them with `cmdkey /list`, then delete each one, for example
-`cmdkey /delete:groq.opit-speech-to-text`.
-
-## Privacy
-
-Your recorded audio goes only to the provider of the active profile (or to its fallback profile,
-if you set one). The only other network request the app makes is the update check to GitHub,
-which you can turn off (see [Updates](#updates)). There is no telemetry. The logs never contain
-what you said or your API keys.
-
-## Repository layout
-
-| Path | What |
-|---|---|
-| `crates/core` | `opit-core`: audio prep, provider client, rule engine, history — no UI, no OS code |
-| `crates/eval` | `opit-eval`: WER / term accuracy of a provider profile on your own recordings |
-| `crates/app` | `opit-speech-to-text`: the Windows tray app (Tauri 2) — hotkey, microphone, paste, overlay, tray |
-| `ui/` | Svelte 5 front end of the app window |
-| `rules/` | Built-in rule packs (`tr-core`, `tr-tech`, `fivem`) |
-| `scripts/release/` | `latest-json.mjs`: release assets and the updater manifest |
-| `docs/` | Design brief, implementation plans and the [release checklist](docs/release/RELEASE-CHECKLIST.md) |
-
-## Development
-
-Requirements: Windows 10/11, Rust 1.90+, Node 24, and the Tauri CLI
-(`cargo install tauri-cli --version 2.12.0 --locked`).
+The `opit` tool controls the running app and works with your stored settings:
 
 ```sh
-cargo test --workspace          # all Rust tests
-cd ui && npm install && cd ..   # once
-cargo tauri dev                 # run the app with the Vite dev server
-cargo tauri build --no-bundle   # release exe in target/release/
+opit toggle                                   # start or stop a dictation
+opit transcribe meeting.mp3 --srt -o meeting.srt
+opit history list --limit 5
 ```
 
-`cargo tauri build` (with bundling) builds the installer and signs the updater artifacts, so it
-needs `TAURI_SIGNING_PRIVATE_KEY` (the private key, or the path to its file) and
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Without the key, use `cargo tauri build --no-bundle` (exe
-only) or `cargo tauri build --no-sign` (an unsigned installer, which cannot serve as an update).
+It ships with the app (`/usr/bin/opit` in the deb). See the [CLI guide](docs/guides/cli.md).
 
-Developer notes:
+## Documentation
 
-- To review the usage guide without a microphone, credentials or a Tauri process, run
-  `cd ui` then `npm run dev -- --port 5199 --strictPort` and open
-  `http://127.0.0.1:5199/guide-preview.html#/guide`. This dev-only entry uses synthetic history
-  and configuration and is excluded from the application build. Its switches and shortcut
-  editor affect only in-memory demo state, reset on reload, and never access real devices or
-  credentials. Number preview demonstrates the fixed `12` example; Rust tests verify the actual
-  converter. Query parameters: `lang=en`, `mode=ptt`, `paused=true`, `recording=true`, `empty=true`
-  (before the hash). Other pages: `#/usage`, `#/settings`, `#/rules`, `#/home`.
-- Set `OPIT_DATA_DIR` to run against a scratch data folder instead of
-  `%APPDATA%\opit-speech-to-text`. An empty folder starts like a fresh install, wizard included.
-- API keys live in Windows Credential Manager. The Profiles page and the wizard store them there,
-  but you can also store one by hand. The command prompts for the key, so it does not land in
-  your shell history. `groq` is the profile's `api_key_ref`:
-  ```
-  cmdkey /generic:groq.opit-speech-to-text /user:groq /pass
-  ```
-- Debug builds never register autostart, so the "Start with Windows" switch is disabled there.
-- Debug builds never check for updates and cannot install one; Settings → Updates says
-  "Updates work only in the installed app".
+- [User guide](docs/guides/using-the-app.md): setup, pages, settings, data folders, updates and uninstalling
+- [AI cleanup](docs/guides/ai-cleanup.md) · [Voice modes](docs/reference/voice-modes.md) · [File transcription](docs/guides/file-transcription.md) · [Local transcription](docs/guides/local-transcription.md)
+- [Linux status](docs/development/linux-status.md) and [known issues](docs/development/known-issues.md)
+- [All documentation](docs/README.md)
 
-## Releasing
+## Building from source
 
-For maintainers:
+Rust 1.90+, Node 24 and Tauri CLI 2.12.0. On Linux you also need the GTK/WebKit development
+packages listed in the guide.
 
-1. Bump `version` under `[workspace.package]` in `Cargo.toml` and keep `Cargo.lock`,
-   `ui/package.json` and `ui/package-lock.json` in sync. Review and commit the changes on `main`.
-2. `git tag vX.Y.Z` (exactly `v` plus that version) and push the tag. The *Release* workflow
-   (`.github/workflows/release.yml`) checks the tag against `Cargo.toml`, builds the signed
-   installer, `.sig`, `latest.json` and `SHA256SUMS`, verifies the installer signature and signed
-   version against the app's public key, and attaches them to a **draft** release. A rerun
-   refreshes a draft; it refuses to overwrite an already published release.
-3. Run [`docs/release/RELEASE-CHECKLIST.md`](docs/release/RELEASE-CHECKLIST.md) on a clean Windows with the
-   draft's installer, then publish the draft with **Pre-release off** and **Set as latest release
-   on**. Publishing is what makes
-   `https://github.com/opit80/opit-speech-to-text/releases/latest/download/latest.json` visible
-   to the installed apps; drafts are ignored.
+```sh
+cd ui && npm ci && cd ..
+cargo tauri dev        # run with the Vite dev server
+cargo test --workspace
+```
 
-Repository secrets: `TAURI_SIGNING_PRIVATE_KEY` (the content of the private key file) and
-`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Never regenerate the key: installed apps accept only updates
-signed with it, so a new key strands every installed copy.
+Full instructions, the browser preview and the Linux gate are in
+[Building](docs/development/building.md); maintainers release with
+[Releasing](docs/release/RELEASING.md).
 
-For the first publication, follow [docs/archive/FIRST-RELEASE.md](docs/archive/FIRST-RELEASE.md).
-Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Private vulnerability reporting:
-[SECURITY.md](SECURITY.md).
+## Contributing
 
-## Measuring accuracy
-
-See [`docs/guides/eval.md`](docs/guides/eval.md) for building a personal dataset and running `opit-eval`.
+Issues and pull requests are welcome; read [CONTRIBUTING.md](CONTRIBUTING.md) first. Report
+security problems privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © opit80

@@ -2,6 +2,7 @@
 
 Documentation extraction: 2026-10-30, source commit `3b920bba7761eedfe505df354c53e28c35d20cd0`.
 This is an inventory, not evidence that old findings reproduce on current code or that desktop acceptance passed.
+For current Linux compile evidence and pending desktop acceptance, see [Linux status](linux-status.md).
 Retained candidates require the stated check; superseded rows identify replacement code/tests, not a new test run.
 All paths in code spans are repository-root paths. See the [documentation index](../README.md),
 [release checklist](../release/RELEASE-CHECKLIST.md), [archived layout plan](../archive/2026-10-30-layout-cleanup.md)
@@ -107,11 +108,11 @@ recording time limit to stop it: the global hook cannot see elevated-window keys
 
 ### Plan 1 — Task 16 Step 15
 
-- [ ] **M1-15 — real-provider baseline.** Prerequisites: personal WAV/TXT dataset and provider keys; follow [eval guide](../guides/eval.md). Compare Groq default, turbo and OpenAI gpt-transcribe with rules on/off, tr-core/tr-tech/fivem and personal rules. Record WER, term accuracy and median latency in metrics-only output for the future baseline (historical requested destination: `docs/eval-baseline.md`, not yet produced). Never commit personal recordings/transcripts. Default-model selection remains evidence-dependent.
+- [ ] **M1-15 — real-provider baseline.** Prerequisites: personal WAV/TXT dataset and provider keys; follow [eval guide](../guides/eval.md). Compare Groq default, turbo and OpenAI gpt-transcribe with rules on/off and personal rules. Record WER, term accuracy and median latency in metrics-only output for the future baseline (historical requested destination: `docs/eval-baseline.md`, not yet produced). Never commit personal recordings/transcripts. Default-model selection remains evidence-dependent.
 
 ### Plan 2 — Task 15 Steps 2–8
 
-- [ ] **M2-02 — build/start/recovery.** Build a release exe in a separate target directory; store a disposable key securely. Start with valid scratch config and personal rules: tray/window appear, config is preserved, metadata logs reach ready without unexpected warnings; prompt context and enabled packs are picked up after restart.
+- [ ] **M2-02 — build/start/recovery.** Build a release exe in a separate target directory; store a disposable key securely. Start with valid scratch config and personal rules: tray/window appear, config is preserved, metadata logs reach ready without unexpected warnings; prompt context and personal rules are picked up after restart; a legacy pack selection is ignored without losing other settings.
 - [ ] **M2-03a — toggle.** In Notepad, Right Ctrl + Right Shift starts sound/level overlay; speaking and pressing it again inserts rule-corrected text and configured trailing space, with completion sound/timing.
 - [ ] **M2-03b — latency.** Record five five-second dictations using a release build and real Groq; report the five timings and median. Original acceptance target: median < 1.5 s, not a measured result.
 - [ ] **M2-03c — lone Ctrl/Escape.** After releasing the combo, a lone Ctrl tap stops; Escape during recording/transcription cancels without later paste and is swallowed where supported. Idle Ctrl+C/Ctrl+V never triggers dictation.
@@ -125,15 +126,15 @@ recording time limit to stop it: the global hook cannot see elevated-window keys
 - [ ] **M2-05b — window/RAM/single instance.** Close WebView, wait about ten seconds, require no WebView2 children and record private working set (original target < 40 MB). Open restores window; a second instance focuses the existing window without another tray icon. Double-Open race remains P2-06.
 - [ ] **M2-06a — history/privacy.** History writes rows; Save audio creates WAVs; History disabled writes no new dictation/audio. Inspect logs privately for a distinctive dictated word and key fragment: neither appears. Do not paste search results into reports.
 - [ ] **M2-06b — damaged data.** Corrupt scratch config: backup .bad-* and defaults plus notice. Broken personal rules: notice and built-in dictation still works; repair files and confirm recovery. Locked valid config is P2-09.
-- [ ] **M2-07 — autostart.** Release build only: Run value exists only after Finish/Skip with autostart enabled, points to quoted installed exe plus --autostart, sign-in starts tray-only; disabling removes it. Debug builds must not register it.
+- [ ] **M2-07 — autostart.** Release build only: Run value exists only after Finish (including Finish without trying) with autostart enabled, never after skipping an intermediate step; it points to quoted installed exe plus --autostart, sign-in starts tray-only; disabling removes it. Debug builds must not register it.
 - [ ] **M2-08 — ignored probes.** Discover the current ignored tests and run applicable native credential/sound/mic/hotkey/clipboard/overlay probes serially on a suitable Windows desktop. Record actual names/counts and prerequisites; the old plan's “8 passed” is not a current discovery count.
 
 ### Plan 3 — Task 12 Step 2 and page-level passes
 
-- [ ] **M3-01 — wizard.** Fresh data → language/provider/key test/mic/shortcut/rules/real Notepad dictation → Finish in < 2 minutes (measure); wrong key blocks until Continue anyway, Back permits correction; close/reopen midway resumes safe persisted configuration; Finish and Skip prevent wizard on restart. Sources: Task 11 Step 4, Task 12 Step 2.1.
+- [ ] **M3-01 — wizard.** Fresh data → language/provider/key test/mic/shortcut/context and startup/real Notepad dictation → Finish in < 2 minutes (measure); ElevenLabs is initially recommended, while Back restores an active Groq profile with a saved key; wrong key blocks Next until Continue anyway, Back permits correction; close/reopen midway resumes safe persisted configuration. Skip advances only one step, preserves saved settings and never marks setup done; it is disabled during provider saves. Skipping Shortcut ends its active test. Only Finish or Finish without trying on the last step prevents the wizard on restart. Sources: Task 11 Step 4, Task 12 Step 2.1.
 - [ ] **M3-02 — Home.** Hotkey/button status and recent list update live, tray profile changes follow, missing key warning appears after reopen, History off is clear. Source: Task 6 Step 4 / Task 12 Step 2.2.
 - [ ] **M3-03 — History.** Turkish search finds İstanbul, load-more has no duplicates and new dictations update live; delete/clear confirmations support Escape; saved audio plays and switches cleanly. Select a partial misrecognition (expands to words), add correction, preserve user.yaml header and confirm next real dictation uses it; identical correct/wrong is rejected. Source: Task 7 Step 5 / Task 12 Step 2.3.
-- [ ] **M3-04 — Rules.** Pack toggle changes budget; broken YAML remains editable and cannot enter Table view; table/YAML round trip keeps header; invalid regex saves with skipped-rule warning, text preview shows corrected output/hit, dirty banner tracks changes. Source: Task 8 Step 5 / Task 12 Step 2.4.
+- [ ] **M3-04 — Rules.** Personal terms and context change the budget; broken YAML remains editable and cannot enter Table view; table/YAML round trip keeps header; invalid regex saves with skipped-rule warning, text preview shows corrected output/hit, dirty banner tracks changes. Source: Task 8 Step 5 / Task 12 Step 2.4.
 - [ ] **M3-05 — Profiles.** Wrong/correct key Test reports safe error/Connected; save stores key and clears warning/input. Keyless HTTP custom profile warns; unreachable endpoint reports safe network error. Real fallback works, deleting fallback clears references; tray active-profile change does not spuriously mark another draft changed; active profile cannot be deleted. Verify credential deletion only for the appropriate refs. Source: Task 9 Step 4 / Task 12 Step 2.5.
 - [ ] **M3-06 — Settings.** Language changes UI and next native tray/overlay status. Capturing current combo never dictates; typing-only A is rejected; a valid alternate combo works in Notepad; close mid-capture restores hook within 30 seconds. Mic test shows moving level/silence verdict, rejects during dictation; numeric max 5 normalizes to 10; History off disables audio switches; debug autostart is disabled. Test clipboard options. Source: Task 10 Step 4 / Task 12 Step 2.6.
 - [ ] **M3-07 — reopen.** Close during active dictation then reopen from tray: current state/queue appear, listeners neither disappear nor duplicate. Source: Task 12 Step 2.7.
@@ -143,7 +144,7 @@ recording time limit to stop it: the global hook cannot see elevated-window keys
 
 ### Plan 4 — release and signing
 
-- [ ] **M4-01 — install.** Follow the [release checklist](../release/RELEASE-CHECKLIST.md) using the real CI-produced installer in clean Windows 10/11 x64 as a standard user. Confirm internet-mark SmartScreen, <15 MB installer, no UAC, localized pages, install directory/shortcuts, setup timing and no autostart before Finish/Skip. Sources: Task 6 checklist, Task 7 acceptance and archived reports.
+- [ ] **M4-01 — install.** Follow the [release checklist](../release/RELEASE-CHECKLIST.md) using the real CI-produced installer in clean Windows 10/11 x64 as a standard user. Confirm internet-mark SmartScreen, <15 MB installer, no UAC, localized pages, install directory/shortcuts, setup timing and no autostart before Finish (including Finish without trying). Sources: Task 6 checklist, Task 7 acceptance and archived reports.
 - [ ] **M4-02 — update/restart.** Use a real lower installed version; verify offer, busy guard, install/restart/new version, settings/history/rules/keys/Run value preservation. Updater fixture/live download tests never prove execution/restart. Do not create fake public versions merely to test.
 - [ ] **M4-03 — uninstall/reinstall.** Verify keep-data uninstall and reinstall, opt-in delete-data removal including configured local folders, cancel-while-running preservation, and update/silent-reinstall guards. Preset/current refs are covered; orphaned credentials may need manual removal. Back up disposable data first.
 - [ ] **M4-04 — signing/security.** Confirm independent updater key/password backup securely, then pursue SignPath application/integration separately; preserve updater trust and immutable published assets. Neither snapshot proves Authenticode signing or backup completion.
@@ -436,14 +437,19 @@ mock/bootstrap strings. Portable Rust discovery is unchanged (299 tests); format
 portable clippy and the three release-helper test files pass. These local results
 establish neither Windows compilation nor mounted UI/desktop acceptance.
 
-Browser preview (`ui/guide-preview.html`, synthetic data): all eight pages, setup
+Historical browser preview (synthetic data, before the Guide removal): all eight pages, setup
 steps one and two, `?lang=en`, light and dark, recording and stop, and the profile
 editor rendered with no failed module request or console error. All seven setup step
 modules load. Not exercised in the browser: setup steps three to seven (the read-only
 preview cannot pass the provider step's connection test), the rule dialogs and file
 preview results.
 
-- [ ] Windows owner: walk setup steps three to seven and open the rule dialogs in the
+The current preview entry is `ui/app-preview.html` and defaults to Home. Guide and built-in
+pack controls have been removed; the earlier eight-page preview result above is historical.
+
+- [ ] Windows owner: confirm six sidebar entries, History’s link to the retained Usage route,
+  the stale `#/guide` fallback to Home and the Settings/shortcut links in both languages. Walk setup steps three to
+  six (including context and startup without pack controls) and open the rule dialogs in the
   real app.
 - [ ] Windows owner: use disposable `OPIT_DATA_DIR`, a real microphone and an already
   configured provider. While dictation is recording, close the real app window

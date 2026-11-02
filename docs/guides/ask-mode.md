@@ -1,11 +1,11 @@
-﻿# Ask mode in Opit Speech to Text
+# Ask mode in Opit Speech to Text
 
 Ask is an optional feature of Opit Speech to Text that records a request, asks an AI agent,
 and pastes its answer at the cursor or leaves it on the clipboard.
 
 ## Setup
 
-Open **Settings → Ask**. Select one agent:
+Expand **Settings → Advanced → Ask**. Select one agent:
 
 - **OpenAI-compatible chat:** set the chat endpoint and model. Save an API key if your service
   requires one. The Ask key uses its own `ask` reference in Windows Credential Manager and is
@@ -21,7 +21,9 @@ Restart Opit after changing PATH. Only install CLI tools from a source you trust
 UNC working directories are rejected because cmd.exe cannot retain them.
 
 The working directory defaults to your user home. A configured directory must exist and have an
-absolute path. The timeout defaults to 180 seconds and accepts 1–3600 seconds.
+absolute path. The timeout defaults to 180 seconds (valid range: 1–3600 seconds).
+Timeout, conversation continuation minutes and request cleanup are no longer shown
+in Settings; their saved values remain unchanged when the Ask form is saved.
 
 Assign an optional Ask shortcut, or leave it empty and use **Ask…** in the tray menu. Shortcuts
 cannot overlap recording or pause shortcuts; Escape is reserved for cancellation. Ask uses a
@@ -76,8 +78,8 @@ on Windows only.
 Requests completed less than ten minutes ago continue by default. Chat retains at most four
 request/answer pairs within a bounded byte budget, in RAM only. Claude resumes its explicit
 session id; Codex uses `exec resume` with its explicit thread id. Expiration, configuration
-changes and **New conversation** in the tray start a fresh conversation. Set the continue window
-to zero to start fresh each time. Resetting does not delete CLI-owned session files.
+changes and **New conversation** in the tray start a fresh conversation. A saved continue
+window of zero starts fresh each time. Resetting does not delete CLI-owned session files.
 
 Spoken audio first goes to your active transcription service, following its normal retry and
 fallback policy. With optional request cleanup enabled, the request and glossary also go to

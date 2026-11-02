@@ -12,8 +12,8 @@ The complete default object added at the top level of `config.json` is:
 {
   "media": {
     "enabled": true,
-    "mode": "pause",
-    "duck_volume_percent": 20
+    "mode": "duck",
+    "duck_volume_percent": 50
   }
 }
 ```
@@ -21,8 +21,8 @@ The complete default object added at the top level of `config.json` is:
 | Field | JSON type | Default | Accepted values |
 | --- | --- | --- | --- |
 | `media.enabled` | boolean | `true` | `true`, `false` |
-| `media.mode` | string | `"pause"` | `"pause"`, `"duck"` |
-| `media.duck_volume_percent` | integer (Rust `u8`) | `20` | Decode: 0–255; normalize/save: clamp to 0–100 |
+| `media.mode` | string | `"duck"` | `"pause"`, `"duck"` |
+| `media.duck_volume_percent` | integer (Rust `u8`) | `50` | Decode: 0–255; normalize/save: clamp to 0–100 |
 
 Both `AppConfig` and `MediaConfig` use serde defaults: missing objects and missing
 individual fields load with the values above. The schema version remains 1.

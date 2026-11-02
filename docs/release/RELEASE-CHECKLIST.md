@@ -24,15 +24,39 @@ release notes draft.
 - [ ] Installs to `%LOCALAPPDATA%\Opit Speech to Text`; Start menu shortcut works; "Create desktop
       shortcut" on the last page works.
 - [ ] `reg query HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v "Opit Speech to Text"` →
-      not found before the wizard is finished or skipped.
+      not found before the wizard is finished.
 
 ## First run (spec §1: under 2 minutes)
-- [ ] The wizard opens; language → provider + key + **Test** → microphone + level → shortcut →
-      rule packs + "Start with Windows" (checked) → try. Time from first window to the first
+- [ ] The six-step wizard opens (no AI cleanup step; saved cleanup settings stay unchanged):
+      language → provider + key + **Test** → microphone + level → shortcut → optional context + "Start with Windows" (checked) → try. Time from first window to the first
       pasted dictation: ____ (must be < 2 min).
 - [ ] After Finish, the Run value exists and points at the installed exe with `--autostart`.
+- [ ] ElevenLabs Scribe v2 is selected and recommended on fresh setup. Back restores a saved
+      Groq account. In both languages, Skip advances only the current step, retains saved settings
+      and leaves setup unfinished; it is disabled during provider saves. Skipping Shortcut stops
+      its active test. Only Finish / Finish without trying on the last step completes setup.
 
 ## Daily use
+- [ ] Rules shows only personal rules, context, number spelling and preview. Existing `user.yaml`
+      and legacy config settings load unchanged except for the removed pack selection; saving
+      removes that obsolete selection. Check YAML/table editing, correction learning and prompt budget.
+- [ ] The sidebar has six entries, without Guide or Usage; an old `#/guide` URL opens Home.
+      History links to Usage, and `#/usage` still opens it. Dictation's shortcut link and
+      Usage's Settings/Home links still work in English and Turkish.
+- [ ] Settings has six sections: Dictation, General, History and privacy, AI cleanup,
+      Updates and about, Advanced. AI cleanup and Advanced start collapsed; errors reveal
+      their fields. Disabled shortcuts and shortcut conflicts reveal Advanced. Extra shortcuts
+      and style editor shortcuts remain reachable. With no tray, the App banner resumes a
+      paused shortcut even alongside a shortcut error. Check both languages/themes.
+- [ ] Saving visible settings preserves hidden cleanup tuning, Ask timeout/continuation/cleanup
+      and customized speech thresholds. Only customized speech thresholds show a reset.
+      On Linux, General offers Duck (default) and Pause with the duck volume;
+      tray startup and per-app rules follow capabilities.
+- [ ] Personal rules start open; Try on text starts collapsed; broken YAML remains editable.
+      Profile editors put format, processing and fallback in More, opening it on field errors.
+      Home hides its profile selector with fewer than two profiles and has no provider chip.
+- [ ] With no personal rules, a whole-output stock phrase from audio of at most six seconds is
+      still dropped with Apply rules enabled; longer audio and Apply rules disabled preserve it.
 - [ ] Shortcut (Right Ctrl + Right Shift): dictation pastes into Notepad, a browser text field and
       an Office/Electron app; Esc cancels; Ctrl alone stops.
 - [ ] Paste failure path: an admin window gets the text on the clipboard with the overlay hint
@@ -40,7 +64,7 @@ release notes draft.
 - [ ] Tray: left click starts/stops; menu Open / Profile ▸ / Pause shortcut / Quit work.
 - [ ] Close the window → app stays in the tray; Task Manager RAM in the tray < 40 MB: ____ MB.
 - [ ] Sign out and in: the app starts in the tray (autostart), shortcut works.
-- [ ] Settings → About shows version X.Y.Z. Settings → Updates: "Check for updates automatically"
+- [ ] Settings → Updates and about shows version X.Y.Z. Settings → Updates and about: "Check for updates automatically"
       is on; **Check now** says "You have the latest version." For the very first release (no
       published release yet) it says "Could not check for updates: Could not fetch a valid
       release JSON from the remote" instead, and no banner appears.
@@ -56,7 +80,7 @@ release solely to increment the version. Complete a real update before broad dis
 - [ ] Publish the new draft. In the old app: banner "Version … is available" appears within a
       minute of start (or use **Check now**); **Install and restart** is disabled during a
       dictation.
-- [ ] Install: passive installer window, app restarts on its own, Settings → About shows the new
+- [ ] Install: passive installer window, app restarts on its own, Settings → Updates and about shows the new
       version.
 - [ ] Data kept: settings, history, `rules\user.yaml`, API key, Run value (still pointing at the
       exe), no "Delete the application data" side effects.
