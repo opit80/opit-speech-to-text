@@ -1,7 +1,8 @@
 //! History storage for the app: SQLite rows plus optional 16 kHz WAV files.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use opit_core::audio::TARGET_RATE;
 use opit_core::audio::encode::{encode_wav, to_pcm16};
@@ -16,6 +17,19 @@ const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 pub struct HistoryService {
     store: Mutex<HistoryStore>,
     audio: AudioStore,
+    audio_dir: PathBuf,
+    retrying: Mutex<HashSet<i64>>,
+}
+
+pub struct RetryClaim {
+    history: Arc<HistoryService>,
+    id: i64,
+}
+
+impl Drop for RetryClaim {
+    fn drop(&mut self) {
+        self.history.retrying.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.id);
+    }
 }
 
 impl HistoryService {
@@ -24,7 +38,12 @@ impl HistoryService {
     }
 
     pub fn with_store(store: HistoryStore, audio_dir: PathBuf) -> Self {
-        Self { store: Mutex::new(store), audio: AudioStore::new(audio_dir) }
+        Self {
+            store: Mutex::new(store),
+            audio: AudioStore::new(audio_dir.clone()),
+            audio_dir,
+            retrying: Mutex::default(),
+        }
     }
 
     /// Direct access for the read-only history commands.
@@ -32,45 +51,81 @@ impl HistoryService {
         self.store.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    pub fn claim_retry(self: &Arc<Self>, id: i64) -> Option<RetryClaim> {
+        self.retrying
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id)
+            .then(|| RetryClaim { history: self.clone(), id })
+    }
+
     /// Deletes a row and its audio file.
     pub fn delete(&self, id: i64) -> Result<(), HistoryError> {
         let path = self.store().delete(id)?;
-        remove_files(path.iter());
+        self.remove_files(path.iter());
         Ok(())
     }
 
     pub fn clear(&self) -> Result<(), HistoryError> {
         let paths = self.store().clear()?;
-        remove_files(paths.iter());
+        self.remove_files(paths.iter());
         Ok(())
     }
 
     /// Removes audio files older than `retention_days`; returns how many were removed.
     pub fn purge_expired_audio(&self, now_ms: i64, retention_days: u32) -> Result<usize, HistoryError> {
         let paths = self.store().take_expired_audio(now_ms - i64::from(retention_days) * DAY_MS)?;
-        remove_files(paths.iter());
+        self.remove_files(paths.iter());
         Ok(paths.len())
     }
-}
 
-fn remove_files<'a>(paths: impl Iterator<Item = &'a String>) {
-    for path in paths {
-        if let Err(err) = AudioStore::remove(Path::new(path)) {
-            warn!(error = %err, "could not delete a history audio file");
+    fn attach_audio(&self, store: &HistoryStore, id: i64, audio: &PreparedAudio) -> Result<(), String> {
+        let wav = encode_wav(&to_pcm16(&audio.samples), TARGET_RATE).map_err(|e| e.to_string())?;
+        let path = self.audio.save(id, &wav).map_err(|e| e.to_string())?;
+        let path = path.to_string_lossy().into_owned();
+        if let Err(error) = store.set_audio_path(id, &path) {
+            self.remove_files(std::iter::once(&path));
+            return Err(error.to_string());
+        }
+        Ok(())
+    }
+
+    fn remove_files<'a>(&self, paths: impl Iterator<Item = &'a String>) {
+        let Ok(dir) = self.audio_dir.canonicalize() else { return };
+        for path in paths {
+            let Ok(file) = Path::new(path).canonicalize() else { continue };
+            if !file.starts_with(&dir) {
+                continue;
+            }
+            if AudioStore::remove(&file).is_err() {
+                warn!("could not delete a history audio file");
+            }
         }
     }
 }
 
 impl HistorySink for HistoryService {
-    fn record(&self, entry: &NewDictation<'_>, audio: Option<&PreparedAudio>) -> Result<i64, String> {
-        let store = self.store();
+    fn record(&self, entry: &NewDictation<'_>, audio: Option<&PreparedAudio>, max_entries: u32) -> Result<i64, String> {
+        let mut store = self.store();
         let id = store.insert(entry).map_err(|e| e.to_string())?;
-        if let Some(audio) = audio {
-            let wav = encode_wav(&to_pcm16(&audio.samples), TARGET_RATE).map_err(|e| e.to_string())?;
-            let path = self.audio.save(id, &wav).map_err(|e| e.to_string())?;
-            store.set_audio_path(id, &path.to_string_lossy()).map_err(|e| e.to_string())?;
-        }
+        let save_audio = audio.map_or(Ok(()), |audio| self.attach_audio(&store, id, audio));
+        // Enforce the cap even if audio encoding or saving failed after the row insert.
+        let paths = store.trim_to_max_entries(max_entries).map_err(|e| e.to_string())?;
+        self.remove_files(paths.iter());
+        save_audio?;
         Ok(id)
+    }
+
+    fn replace(&self, id: i64, entry: &NewDictation<'_>, keep_audio: bool) -> Result<(), String> {
+        let store = self.store();
+        let path = store.get(id).map_err(|_| "history unavailable")?.and_then(|row| row.audio_path);
+        if !store.replace(id, entry, keep_audio).map_err(|_| "history unavailable")? {
+            return Err("history row was deleted".into());
+        }
+        if !keep_audio {
+            self.remove_files(path.iter());
+        }
+        Ok(())
     }
 }
 
@@ -78,7 +133,16 @@ impl HistorySink for HistoryService {
 pub struct DisabledHistory;
 
 impl HistorySink for DisabledHistory {
-    fn record(&self, _entry: &NewDictation<'_>, _audio: Option<&PreparedAudio>) -> Result<i64, String> {
+    fn record(
+        &self,
+        _entry: &NewDictation<'_>,
+        _audio: Option<&PreparedAudio>,
+        _max_entries: u32,
+    ) -> Result<i64, String> {
+        Err("history is unavailable".into())
+    }
+
+    fn replace(&self, _id: i64, _entry: &NewDictation<'_>, _keep_audio: bool) -> Result<(), String> {
         Err("history is unavailable".into())
     }
 }
@@ -91,6 +155,10 @@ mod tests {
 
     fn entry(created_at_ms: i64) -> NewDictation<'static> {
         NewDictation {
+            source_text: None,
+            instruction: None,
+            mode: "dictation",
+            agent: None,
             created_at_ms,
             profile_id: "groq",
             raw_text: "merhaba",
@@ -98,6 +166,11 @@ mod tests {
             status: TranscriptStatus::Ok,
             audio_ms: 1_000,
             latency_ms: 900,
+            error_code: None,
+            language: None,
+            cleanup_status: None,
+            cleanup_model: None,
+            cleanup_style_id: None,
         }
     }
 
@@ -113,21 +186,58 @@ mod tests {
     fn records_rows_with_and_without_audio() {
         let dir = tempfile::tempdir().unwrap();
         let history = service(dir.path());
-        let plain = history.record(&entry(1), None).unwrap();
+        let plain = history.record(&entry(1), None, 1000).unwrap();
         assert_eq!(history.store().get(plain).unwrap().unwrap().audio_path, None);
 
-        let with_audio = history.record(&entry(2), Some(&audio())).unwrap();
+        let with_audio = history.record(&entry(2), Some(&audio()), 1000).unwrap();
         let path = history.store().get(with_audio).unwrap().unwrap().audio_path.unwrap();
         let wav = hound::WavReader::open(&path).unwrap();
         assert_eq!((wav.spec().sample_rate, wav.spec().channels, wav.len()), (16_000, 1, 16_000));
     }
 
     #[test]
+    fn cap_deletes_failed_and_successful_wavs_and_unlimited_retains_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = service(dir.path());
+        let mut failed = entry(1);
+        failed.status = TranscriptStatus::Failed;
+        let a = history.record(&failed, Some(&audio()), 0).unwrap();
+        let a_path = history.store().get(a).unwrap().unwrap().audio_path.unwrap();
+        let b = history.record(&entry(2), Some(&audio()), 0).unwrap();
+        let b_path = history.store().get(b).unwrap().unwrap().audio_path.unwrap();
+        assert!(Path::new(&a_path).exists() && Path::new(&b_path).exists());
+        let c = history.record(&entry(3), Some(&audio()), 1).unwrap();
+        assert!(history.store().get(a).unwrap().is_none());
+        assert!(history.store().get(b).unwrap().is_none());
+        assert!(!Path::new(&a_path).exists() && !Path::new(&b_path).exists());
+        assert_eq!(history.store().recent(10, None).unwrap().len(), 1);
+        assert!(history.store().get(c).unwrap().unwrap().audio_path.is_some());
+    }
+
+    #[test]
+    fn cap_still_applies_when_audio_cannot_be_saved_and_protects_external_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = service(dir.path());
+        // A file where the audio directory should be makes audio saving fail.
+        let blocked = dir.path().join("audio");
+        std::fs::write(&blocked, "keep").unwrap();
+        let outside = dir.path().join("outside.wav");
+        std::fs::write(&outside, "keep").unwrap();
+        let a = history.record(&entry(1), None, 0).unwrap();
+        history.store().set_audio_path(a, &outside.to_string_lossy()).unwrap();
+        assert!(history.record(&entry(2), Some(&audio()), 1).is_err());
+        assert!(history.store().get(a).unwrap().is_none());
+        assert_eq!(history.store().recent(10, None).unwrap().len(), 1);
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(blocked).unwrap(), "keep");
+    }
+
+    #[test]
     fn delete_and_clear_remove_audio_files() {
         let dir = tempfile::tempdir().unwrap();
         let history = service(dir.path());
-        let a = history.record(&entry(1), Some(&audio())).unwrap();
-        history.record(&entry(2), Some(&audio())).unwrap();
+        let a = history.record(&entry(1), Some(&audio()), 1000).unwrap();
+        history.record(&entry(2), Some(&audio()), 1000).unwrap();
         let path_a = history.store().get(a).unwrap().unwrap().audio_path.unwrap();
         history.delete(a).unwrap();
         assert!(!Path::new(&path_a).exists());
@@ -141,10 +251,49 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let history = service(dir.path());
         let now = 100 * DAY_MS;
-        let old = history.record(&entry(now - 31 * DAY_MS), Some(&audio())).unwrap();
-        let fresh = history.record(&entry(now - DAY_MS), Some(&audio())).unwrap();
+        let old = history.record(&entry(now - 31 * DAY_MS), Some(&audio()), 1000).unwrap();
+        let fresh = history.record(&entry(now - DAY_MS), Some(&audio()), 1000).unwrap();
         assert_eq!(history.purge_expired_audio(now, 30).unwrap(), 1);
         assert_eq!(history.store().get(old).unwrap().unwrap().audio_path, None);
         assert!(history.store().get(fresh).unwrap().unwrap().audio_path.is_some());
+    }
+
+    #[test]
+    fn failure_audio_survives_retention_and_retry_controls_its_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = service(dir.path());
+        for keep in [false, true] {
+            let mut failed = entry(123);
+            failed.status = TranscriptStatus::Failed;
+            failed.error_code = Some("network");
+            let id = history.record(&failed, Some(&audio()), 1000).unwrap();
+            let path = history.store().get(id).unwrap().unwrap().audio_path.unwrap();
+            assert_eq!(history.purge_expired_audio(100 * DAY_MS, 1).unwrap(), 0);
+            assert!(Path::new(&path).exists());
+            // A further failed attempt keeps the same row and WAV.
+            failed.error_code = Some("timeout");
+            history.replace(id, &failed, true).unwrap();
+            assert_eq!(history.store().get(id).unwrap().unwrap().error_code.as_deref(), Some("timeout"));
+            history.replace(id, &entry(999), keep).unwrap();
+            let row = history.store().get(id).unwrap().unwrap();
+            assert_eq!(row.created_at_ms, 123);
+            assert_eq!(row.audio_path.is_some(), keep);
+            assert_eq!(Path::new(&path).exists(), keep);
+            history.delete(id).unwrap();
+        }
+    }
+
+    #[test]
+    fn delete_never_removes_a_path_outside_the_audio_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = service(dir.path());
+        std::fs::create_dir_all(dir.path().join("audio")).unwrap();
+        let outside = dir.path().join("keep.txt");
+        std::fs::write(&outside, "keep").unwrap();
+        let id = history.record(&entry(1), None, 1000).unwrap();
+        let traversal = dir.path().join("audio").join("..").join("keep.txt");
+        history.store().set_audio_path(id, &traversal.to_string_lossy()).unwrap();
+        history.delete(id).unwrap();
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "keep");
     }
 }

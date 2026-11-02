@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use clap::ValueEnum;
 use opit_core::pipeline::{self, PipelineContext, PreparedAudio};
-use opit_core::provider::{OpenAiCompatible, Profile, ProviderError};
+use opit_core::provider::{Profile, ProviderClient, ProviderError};
 use opit_core::rules::RuleSet;
 
 use crate::dataset::Sample;
@@ -43,12 +43,12 @@ pub struct SampleResult {
 }
 
 pub async fn run_eval(samples: &[Sample], config: &EvalConfig) -> Result<Vec<SampleResult>, ProviderError> {
-    let on_client = OpenAiCompatible::new(config.profile.clone(), config.api_key.clone())?;
+    let on_client = ProviderClient::new(config.profile.clone(), config.api_key.clone())?;
     let mut off_profile = config.profile.clone();
     off_profile.send_prompt = false;
     off_profile.send_keywords = false;
     off_profile.apply_rules = false;
-    let off_client = OpenAiCompatible::new(off_profile, config.api_key.clone())?;
+    let off_client = ProviderClient::new(off_profile, config.api_key.clone())?;
     let no_rules = RuleSet::empty();
     let terms = config.rules.terms();
     let wants_off = config.mode != RulesMode::On;
@@ -92,7 +92,7 @@ pub async fn run_eval(samples: &[Sample], config: &EvalConfig) -> Result<Vec<Sam
 }
 
 async fn evaluate(
-    client: &OpenAiCompatible,
+    client: &ProviderClient,
     rules: &RuleSet,
     prompt_context: &str,
     audio: &PreparedAudio,

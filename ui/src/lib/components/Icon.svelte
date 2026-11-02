@@ -1,12 +1,12 @@
 <script lang="ts">
   interface Props {
-    name: "mic" | "stop" | "x" | "retry" | "copy" | "trash" | "play" | "pause" | "search" | "home" | "history" | "rules" | "profiles" | "settings" | "guide" | "usage" | "check" | "warning" | "plus" | "key" | "wand";
+    name: "mic" | "stop" | "x" | "retry" | "copy" | "trash" | "play" | "pause" | "search" | "home" | "history" | "files" | "rules" | "profiles" | "settings" | "usage" | "check" | "warning" | "plus" | "key" | "wand" | "pencil" | "info" | "up" | "down";
     size?: number;
   }
   let { name, size = 16 }: Props = $props();
   const paths: Record<Props["name"], string> = {
+    files: "M5 3h9l5 5v13H5ZM14 3v6h5M8 13h8M8 17h8",
     usage: "M4 3v17h17M8 16v-5M13 16V6M18 16V9",
-    guide: "M12 5C8 2 4 3 2 4v16c3-2 7-2 10 0 3-2 7-2 10 0V4c-2-1-6-2-10 1ZM12 5v15",
     mic: "M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0ZM5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8",
     stop: "M5 5h14v14H5Z",
     x: "m6 6 12 12M6 18 18 6",
@@ -26,6 +26,10 @@
     plus: "M12 4v16M4 12h16",
     key: "M11 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm-1 3 10 10M16 17l3-3M19 20l3-3",
     wand: "m4 20 13-13 3 3L7 23ZM14 10l3 3M5 3v6M2 6h6M19 1v4M17 3h4",
+    pencil: "M4 20h4L19 9l-4-4L4 16ZM13 7l4 4",
+    info: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM12 11v6M12 7.5v.01",
+    up: "m6 15 6-6 6 6",
+    down: "m6 9 6 6 6-6",
   };
 </script>
 

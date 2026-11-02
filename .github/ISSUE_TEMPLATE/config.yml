@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/opit80/opit-speech-to-text/security/advisories/new
+    about: Report vulnerabilities privately as described in SECURITY.md. Never in a public issue.
+  - name: Documentation
+    url: https://github.com/opit80/opit-speech-to-text/blob/main/docs/README.md
+    about: Guides for setup, shortcuts, AI cleanup and Linux.

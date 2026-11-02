@@ -1,39 +1,39 @@
 <script lang="ts">
-  import { app, errorText, initApp, t } from "./lib/app.svelte";
-  import { navigate, router } from "./lib/router.svelte";
-  import type { Route } from "./lib/route";
+  import { app, errorText, hotkeyErrorText, initApp, t } from "./lib/state/app.svelte";
+  import { navigate, router } from "./lib/navigation/router.svelte";
+  import type { Route } from "./lib/navigation/route";
   import type { MessageKey } from "./lib/i18n";
-  import { api } from "./lib/api";
+  import { api } from "./lib/bridge/api";
   import Banner from "./lib/components/Banner.svelte";
   import Button from "./lib/components/Button.svelte";
   import Icon from "./lib/components/Icon.svelte";
   import Toasts from "./lib/components/Toasts.svelte";
-  import { bannerVersion } from "./lib/update";
-  import UpdateInstallButton from "./lib/components/UpdateInstallButton.svelte";
-  import UpdateProgress from "./lib/components/UpdateProgress.svelte";
-  import Home from "./pages/Home.svelte";
-  import History from "./pages/History.svelte";
-  import Rules from "./pages/Rules.svelte";
-  import Profiles from "./pages/Profiles.svelte";
-  import Settings from "./pages/Settings.svelte";
-  import Setup from "./pages/Setup.svelte";
-  import Guide from "./pages/Guide.svelte";
-  import Usage from "./pages/Usage.svelte";
+  import { bannerVersion } from "./features/updates/update";
+  import UpdateInstallButton from "./features/updates/UpdateInstallButton.svelte";
+  import UpdateProgress from "./features/updates/UpdateProgress.svelte";
+  import Home from "./features/home/Home.svelte";
+  import History from "./features/history/History.svelte";
+  import Rules from "./features/rules/Rules.svelte";
+  import Profiles from "./features/profiles/Profiles.svelte";
+  import Settings from "./features/settings/Settings.svelte";
+  import Setup from "./features/setup/Setup.svelte";
+  import Usage from "./features/usage/Usage.svelte";
+  import Files from "./features/files/Files.svelte";
+  import { watchTheme } from "./lib/utils/theme";
 
 
-  const NAV: { route: Route; icon: "home" | "history" | "rules" | "profiles" | "settings" | "usage" | "guide" }[] = [
+  const NAV: { route: Route; icon: "home" | "history" | "files" | "rules" | "profiles" | "settings" }[] = [
     { route: "home", icon: "home" },
     { route: "history", icon: "history" },
+    { route: "files", icon: "files" },
     { route: "rules", icon: "rules" },
     { route: "profiles", icon: "profiles" },
     { route: "settings", icon: "settings" },
-    { route: "usage", icon: "usage" },
-    { route: "guide", icon: "guide" },
   ];
 
   const navKeys: Record<Route, MessageKey> = {
-    home: "nav.home", history: "nav.history", rules: "nav.rules",
-    profiles: "nav.profiles", settings: "nav.settings", usage: "nav.usage", guide: "nav.guide", setup: "nav.setup",
+    home: "nav.home", history: "nav.history", files: "nav.files", rules: "nav.rules",
+    profiles: "nav.profiles", settings: "nav.settings", usage: "nav.usage", setup: "nav.setup",
   };
 
   function navKey(route: Route): MessageKey {
@@ -45,6 +45,8 @@
 
   let resumeBusy = $state(false);
   let resumeError = $state<string | null>(null);
+
+  $effect(() => watchTheme(app.config?.ui.theme ?? "system"));
 
   async function resumeHotkey() {
     resumeBusy = true;
@@ -68,7 +70,7 @@
     };
   });
 
-  // The wizard runs until it is finished or skipped.
+  // The wizard runs until it is finished.
   $effect(() => {
     if (app.ready && app.config && !app.config.ui.setup_done && router.route !== "setup") navigate("setup");
   });
@@ -96,7 +98,7 @@
       <div class="version muted">v{app.info?.version}</div>
     </nav>
     <main>
-      {#if app.notices.length || app.hotkey.error || app.hotkey.paused || resumeError || updateVersion || installing}
+      {#if app.notices.length || app.hotkey.pending || app.hotkey.error || app.hotkey.paused || resumeError || updateVersion || installing}
         <div class="notices">
           {#each app.notices as notice, i (i)}
             <Banner tone="warning" ondismiss={() => dismissNotice(i)}>
@@ -107,9 +109,12 @@
               {/if}
             </Banner>
           {/each}
-          {#if app.hotkey.error}
-            <Banner tone="warning">{t("notice.hotkey_failed", { reason: app.hotkey.error })}</Banner>
-          {:else if app.hotkey.paused}
+          {#if app.hotkey.pending}
+            <Banner tone="info">{t("notice.hotkey_pending")}</Banner>
+          {:else if app.hotkey.error}
+            <Banner tone="warning">{hotkeyErrorText(app.hotkey.error)}</Banner>
+          {/if}
+          {#if app.hotkey.paused}
             <Banner tone="info">
               {t("notice.hotkey_paused")}
               {#snippet action()}
@@ -133,10 +138,10 @@
       {/if}
       {#if router.route === "home"}<Home />
       {:else if router.route === "history"}<History />
+      {:else if router.route === "files"}<Files />
       {:else if router.route === "rules"}<Rules />
       {:else if router.route === "profiles"}<Profiles />
       {:else if router.route === "settings"}<Settings />
-      {:else if router.route === "guide"}<Guide />
       {:else if router.route === "usage"}<Usage />{/if}
     </main>
   </div>

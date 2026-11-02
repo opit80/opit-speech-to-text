@@ -1,123 +1,8 @@
 //! Key names, virtual-key codes and the hotkey state machine. Pure and cross-platform so it
 //! can be unit-tested anywhere; the Windows keyboard hook only feeds it (vk, down) pairs.
 
-use super::{HotkeyError, HotkeyEvent};
-
-/// VK_ESCAPE.
-pub const VK_ESCAPE: u32 = 0x1B;
-/// Generic VK_CONTROL. Low-level hooks normally deliver the left/right codes instead.
-pub const VK_CONTROL: u32 = 0x11;
-/// VK_LCONTROL.
-pub const VK_LCONTROL: u32 = 0xA2;
-/// VK_RCONTROL.
-pub const VK_RCONTROL: u32 = 0xA3;
-
-/// Maps a key name (case-insensitive, e.g. "RightCtrl", "f13", "a", "0") to the virtual-key
-/// code a `WH_KEYBOARD_LL` hook delivers for it. Modifiers are side-specific.
-pub fn vk_for(name: &str) -> Option<u32> {
-    let lower = name.trim().to_ascii_lowercase();
-    let named = match lower.as_str() {
-        "leftctrl" => 0xA2,
-        "rightctrl" => 0xA3,
-        "leftshift" => 0xA0,
-        "rightshift" => 0xA1,
-        "leftalt" => 0xA4,
-        "rightalt" => 0xA5,
-        "leftwin" => 0x5B,
-        "rightwin" => 0x5C,
-        "space" => 0x20,
-        "capslock" => 0x14,
-        "scrolllock" => 0x91,
-        "pause" => 0x13,
-        "insert" => 0x2D,
-        "home" => 0x24,
-        "end" => 0x23,
-        "pageup" => 0x21,
-        "pagedown" => 0x22,
-        "escape" => VK_ESCAPE,
-        "tab" => 0x09,
-        "enter" => 0x0D,
-        "backspace" => 0x08,
-        "delete" => 0x2E,
-        "arrowleft" => 0x25,
-        "arrowup" => 0x26,
-        "arrowright" => 0x27,
-        "arrowdown" => 0x28,
-        "printscreen" => 0x2C,
-        "contextmenu" => 0x5D,
-        "numlock" => 0x90,
-        "numpad0" => 0x60,
-        "numpad1" => 0x61,
-        "numpad2" => 0x62,
-        "numpad3" => 0x63,
-        "numpad4" => 0x64,
-        "numpad5" => 0x65,
-        "numpad6" => 0x66,
-        "numpad7" => 0x67,
-        "numpad8" => 0x68,
-        "numpad9" => 0x69,
-        "numpadmultiply" => 0x6A,
-        "numpadadd" => 0x6B,
-        "numpadsubtract" => 0x6D,
-        "numpaddecimal" => 0x6E,
-        "numpaddivide" => 0x6F,
-        "semicolon" => 0xBA,
-        "equal" => 0xBB,
-        "comma" => 0xBC,
-        "minus" => 0xBD,
-        "period" => 0xBE,
-        "slash" => 0xBF,
-        "backquote" => 0xC0,
-        "bracketleft" => 0xDB,
-        "backslash" => 0xDC,
-        "bracketright" => 0xDD,
-        "quote" => 0xDE,
-        "intlbackslash" => 0xE2,
-        "audiovolumemute" => 0xAD,
-        "audiovolumedown" => 0xAE,
-        "audiovolumeup" => 0xAF,
-        "mediatracknext" => 0xB0,
-        "mediatrackprevious" => 0xB1,
-        "mediastop" => 0xB2,
-        "mediaplaypause" => 0xB3,
-        _ => 0,
-    };
-    if named != 0 {
-        return Some(named);
-    }
-    let bytes = lower.as_bytes();
-    if bytes.len() == 1 {
-        return match bytes[0] {
-            c @ b'a'..=b'z' => Some(u32::from(c - b'a') + 0x41),
-            c @ b'0'..=b'9' => Some(u32::from(c - b'0') + 0x30),
-            _ => None,
-        };
-    }
-    // F1..F24 → 0x70..0x87. Reject leading zeros ("F01") and signs so names stay canonical.
-    let digits = lower.strip_prefix('f')?;
-    if digits.starts_with('0') || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    match digits.parse::<u32>() {
-        Ok(n @ 1..=24) => Some(0x6F + n),
-        _ => None,
-    }
-}
-
-/// Resolves key names into a deduplicated list of virtual-key codes (first occurrence wins).
-pub fn parse_combo(names: &[String]) -> Result<Vec<u32>, HotkeyError> {
-    if names.is_empty() {
-        return Err(HotkeyError::Empty);
-    }
-    let mut combo = Vec::with_capacity(names.len());
-    for name in names {
-        let vk = vk_for(name).ok_or_else(|| HotkeyError::UnknownKey(name.clone()))?;
-        if !combo.contains(&vk) {
-            combo.push(vk);
-        }
-    }
-    Ok(combo)
-}
+use super::HotkeyEvent;
+pub use opit_core::hotkey::*;
 
 fn is_ctrl(vk: u32) -> bool {
     matches!(vk, VK_CONTROL | VK_LCONTROL | VK_RCONTROL)
@@ -142,8 +27,13 @@ impl KeyTracker {
     }
 
     /// Switches to a new combo but keeps the held-key set, so keys already down while
-    /// re-registering are still accounted for. Pending ComboDown/LoneCtrl state is dropped.
+    /// re-registering are still accounted for. An unchanged key set keeps its pending release
+    /// and lone-Ctrl state; a changed combination drops that activation state.
     pub fn retarget(&mut self, combo: Vec<u32>) {
+        if same_combo(&self.combo, &combo) {
+            self.combo = combo;
+            return;
+        }
         self.combo = combo;
         self.combo_active = false;
         self.lone_candidate = None;
@@ -231,10 +121,148 @@ impl KeyTracker {
     }
 }
 
+pub fn same_combo(left: &[u32], right: &[u32]) -> bool {
+    left.len() == right.len() && left.iter().all(|key| right.contains(key))
+}
+
+/// Preserve each unchanged action's tracker, including an active push-to-talk release.
+/// New/changed bindings inherit physical held keys without synthesizing a key-down.
+pub fn retarget_shortcuts(
+    main: &KeyTracker,
+    shortcuts: &mut Vec<(HotkeyEvent, KeyTracker)>,
+    mappings: Vec<(HotkeyEvent, Vec<u32>)>,
+) {
+    let mut old = std::mem::take(shortcuts);
+    *shortcuts = mappings
+        .into_iter()
+        .map(|(action, combo)| {
+            let tracker = match old
+                .iter()
+                .position(|(previous, tracker)| *previous == action && same_combo(tracker.combo(), &combo))
+            {
+                Some(index) => old.remove(index).1,
+                None => KeyTracker { held: main.held().to_vec(), ..KeyTracker::new(combo) },
+            };
+            (action, tracker)
+        })
+        .collect();
+}
+
+/// Prune missed key-ups using physical state before feeding a new key-down. Inside the
+/// hook, async key state predates this event: a fresh press reads as up, a repeat as down.
+pub fn track_transition(
+    tracker: &mut KeyTracker,
+    vk: u32,
+    down: bool,
+    key_is_down: impl Fn(u32) -> bool,
+) -> [Option<HotkeyEvent>; 2] {
+    let pruned = if down && !tracker.held().is_empty() { tracker.prune(key_is_down) } else { None };
+    [pruned, tracker.on_key(vk, down)]
+}
+
+/// All registered actions share the same key stream and suppression rules.
+pub fn track_shortcuts(
+    main: &mut KeyTracker,
+    shortcuts: &mut [(HotkeyEvent, KeyTracker)],
+    vk: u32,
+    down: bool,
+    key_is_down: impl Fn(u32) -> bool,
+) -> Vec<HotkeyEvent> {
+    let mut actions = Vec::new();
+    let mut handled = false;
+    for (action, tracker) in shortcuts {
+        let events = track_transition(tracker, vk, down, &key_is_down);
+        if events.contains(&Some(HotkeyEvent::ComboDown)) {
+            actions.push(action.clone());
+        }
+        if events.contains(&Some(HotkeyEvent::ComboUp)) {
+            match action {
+                HotkeyEvent::Edit => actions.push(HotkeyEvent::EditUp),
+                HotkeyEvent::Translate => actions.push(HotkeyEvent::TranslateUp),
+                _ => {}
+            }
+        }
+        handled |= events.iter().flatten().any(|e| matches!(e, HotkeyEvent::ComboDown | HotkeyEvent::ComboUp));
+    }
+    let mut events: Vec<_> = track_transition(main, vk, down, key_is_down).into_iter().flatten().collect();
+    if handled {
+        events.retain(|e| !matches!(e, HotkeyEvent::LoneCtrl | HotkeyEvent::Escape));
+    }
+    events.extend(actions);
+    events
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use HotkeyEvent::*;
+
+    #[test]
+    fn retargeting_an_unchanged_combination_preserves_its_release_and_lone_ctrl() {
+        let mut tracker = rctrl_rshift();
+        assert_eq!(run(&mut tracker, &[(RCTRL, true), (RSHIFT, true)]), [ComboDown]);
+        tracker.retarget(vec![RSHIFT, RCTRL]);
+        assert_eq!(tracker.on_key(RSHIFT, false), Some(ComboUp));
+        assert_eq!(tracker.on_key(RCTRL, false), None);
+        assert_eq!(tracker.on_key(LCTRL, true), None);
+        tracker.retarget(vec![RCTRL, RSHIFT]);
+        assert_eq!(tracker.on_key(LCTRL, false), Some(LoneCtrl));
+    }
+
+    #[test]
+    fn reconfiguring_other_shortcuts_preserves_held_dictation_edit_and_translate_releases() {
+        for (pressed, released, vk) in
+            [(ComboDown, ComboUp, 0x7C), (Edit, EditUp, 0x7D), (Translate, TranslateUp, 0x7E)]
+        {
+            let mut main = KeyTracker::new(vec![0x7C]);
+            let mut shortcuts = vec![(Edit, KeyTracker::new(vec![0x7D])), (Translate, KeyTracker::new(vec![0x7E]))];
+            assert_eq!(track_shortcuts(&mut main, &mut shortcuts, vk, true, |_| true), [pressed]);
+            main.retarget(vec![0x7C]);
+            retarget_shortcuts(
+                &main,
+                &mut shortcuts,
+                vec![(StyleCycle, vec![0x7F]), (Translate, vec![0x7E]), (Edit, vec![0x7D])],
+            );
+            assert!(track_shortcuts(&mut main, &mut shortcuts, vk, true, |_| true).is_empty());
+            assert_eq!(track_shortcuts(&mut main, &mut shortcuts, vk, false, |_| true), [released]);
+            assert!(track_shortcuts(&mut main, &mut shortcuts, vk, false, |_| true).is_empty());
+        }
+    }
+
+    #[test]
+    fn new_bindings_do_not_synthesize_a_release_for_an_unreported_press() {
+        let mut main = KeyTracker::new(vec![0x7C]);
+        let mut shortcuts = Vec::new();
+        assert!(track_shortcuts(&mut main, &mut shortcuts, 0xA2, true, |_| true).is_empty());
+        retarget_shortcuts(&main, &mut shortcuts, vec![(Edit, vec![0xA2])]);
+        assert_eq!(track_shortcuts(&mut main, &mut shortcuts, 0xA2, false, |_| true), [LoneCtrl]);
+    }
+
+    #[test]
+    fn voice_shortcuts_deliver_down_and_up_without_lone_ctrl() {
+        for (action, release) in [(Edit, EditUp), (Translate, TranslateUp)] {
+            let mut main = KeyTracker::new(vec![0x7C]);
+            let mut shortcuts = vec![(action.clone(), KeyTracker::new(vec![0xA2]))];
+            let mut events = Vec::new();
+            for down in [true, true, false] {
+                events.extend(track_shortcuts(&mut main, &mut shortcuts, 0xA2, down, |_| true));
+            }
+            assert_eq!(events, [action, release]);
+        }
+    }
+
+    #[test]
+    fn every_auxiliary_action_fires_once_without_a_lone_ctrl_stop() {
+        for action in [Pause, Ask, StyleCycle, Style("formal".into())] {
+            let mut main = KeyTracker::new(vec![0x7C]);
+            let mut shortcuts = vec![(action.clone(), KeyTracker::new(vec![0xA2]))];
+            let mut events = Vec::new();
+            for (vk, down) in [(0xA2, true), (0xA2, true), (0xA2, false), (0x7C, true), (0x7C, false)] {
+                events.extend(track_shortcuts(&mut main, &mut shortcuts, vk, down, |_| true));
+            }
+            assert_eq!(events, [action, ComboDown, ComboUp]);
+        }
+    }
 
     const LCTRL: u32 = 0xA2;
     const RCTRL: u32 = 0xA3;
@@ -246,6 +274,29 @@ mod tests {
 
     fn names(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn ask_shortcut_is_optional_and_cannot_overlap_either_existing_combo() {
+        let main = names(&["F13"]);
+        let pause = names(&["F14"]);
+        assert!(validate_all_shortcuts(&main, &pause, &[]).is_ok());
+        assert!(validate_all_shortcuts(&main, &pause, &names(&["F15"])).is_ok());
+        for ask in [names(&["F13"]), names(&["F14"]), names(&["LeftCtrl", "F13"]), names(&["Escape"])] {
+            assert!(validate_all_shortcuts(&main, &pause, &ask).is_err());
+        }
+    }
+
+    #[test]
+    fn optional_pause_shortcut_rejects_collisions_and_reserved_escape() {
+        assert!(validate_shortcuts(&names(&["F13"]), &[]).is_ok());
+        assert!(validate_shortcuts(&names(&["F13"]), &names(&["F14"])).is_ok());
+        for pause in [&["f13"][..], &["LeftCtrl", "F13"][..]] {
+            assert_eq!(validate_shortcuts(&names(&["F13"]), &names(pause)), Err(HotkeyError::Collision));
+        }
+        assert_eq!(validate_shortcuts(&names(&["LeftCtrl", "F13"]), &names(&["F13"])), Err(HotkeyError::Collision));
+        assert_eq!(validate_shortcuts(&names(&["F13"]), &names(&["Escape"])), Err(HotkeyError::PauseEscape));
+        assert!(validate_shortcuts(&names(&["F13"]), &names(&["invalid"])).is_err());
     }
 
     /// Feeds `(vk, down)` pairs and collects every emitted event.

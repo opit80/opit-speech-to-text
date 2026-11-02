@@ -8,8 +8,16 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+base64 = "0.22"
+futures-util = { version = "0.3", features = ["sink"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots", "url"] }
+url = "2"
+symphonia = { version = "0.5.5", features = ["all"] }
 flacenc.workspace = true
 hound.workspace = true
+httpdate = "1.0.3"
 indexmap.workspace = true
 regex.workspace = true
 reqwest.workspace = true

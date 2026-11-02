@@ -20,11 +20,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use windows::core::PCWSTR;
 
 use super::call_guarded;
-use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo};
+#[cfg(test)]
+use crate::platform::keys::track_transition as track;
+use crate::platform::keys::{KeyTracker, VK_ESCAPE, parse_combo, retarget_shortcuts, track_shortcuts};
 use crate::platform::{Hotkey, HotkeyError, HotkeyEvent, HotkeySink};
 
 struct HookState {
     tracker: KeyTracker,
+    shortcuts: Vec<(HotkeyEvent, KeyTracker)>,
     sink: HotkeySink,
 }
 
@@ -87,6 +90,17 @@ impl Drop for WinHotkey {
 }
 
 impl Hotkey for WinHotkey {
+    fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError> {
+        let shortcuts = shortcuts
+            .iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(action, keys)| Ok((action.clone(), parse_combo(keys)?)))
+            .collect::<Result<Vec<_>, HotkeyError>>()?;
+        if let Some(st) = state().as_mut() {
+            retarget_shortcuts(&st.tracker, &mut st.shortcuts, shortcuts);
+        }
+        Ok(())
+    }
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError> {
         let combo = parse_combo(keys)?;
         let mut thread = self.thread.lock().unwrap_or_else(PoisonError::into_inner);
@@ -101,7 +115,7 @@ impl Hotkey for WinHotkey {
                     s.tracker.retarget(combo);
                     s.sink = sink;
                 }
-                None => *st = Some(HookState { tracker: KeyTracker::new(combo), sink }),
+                None => *st = Some(HookState { tracker: KeyTracker::new(combo), shortcuts: Vec::new(), sink }),
             }
         }
         if first {
@@ -197,15 +211,6 @@ fn key_is_down(vk: u32) -> bool {
     unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
 }
 
-/// Feeds one transition to the tracker. On a key-down it first drops held keys whose key-up we
-/// missed (e.g. released on the secure desktop) so they cannot block the combo forever. The
-/// key being pressed gets no exemption: inside the hook its async state still predates this
-/// event, so a genuine auto-repeat reads as down and a new press after a missed key-up as up.
-fn track(tracker: &mut KeyTracker, vk: u32, down: bool, key_is_down: impl Fn(u32) -> bool) -> [Option<HotkeyEvent>; 2] {
-    let pruned = if down && !tracker.held().is_empty() { tracker.prune(key_is_down) } else { None };
-    [pruned, tracker.on_key(vk, down)]
-}
-
 /// Updates the tracker, delivers events, and returns true when the key must be swallowed.
 fn handle_key(vk: u32, down: bool) -> bool {
     let (events, sink) = {
@@ -213,11 +218,12 @@ fn handle_key(vk: u32, down: bool) -> bool {
         let Some(st) = guard.as_mut() else {
             return false;
         };
-        (track(&mut st.tracker, vk, down, key_is_down), st.sink.clone())
+        let events = track_shortcuts(&mut st.tracker, &mut st.shortcuts, vk, down, key_is_down);
+        (events, st.sink.clone())
     };
     let paused = PAUSED.load(Ordering::Relaxed);
     if !paused {
-        for event in events.into_iter().flatten() {
+        for event in events {
             call_guarded(|| sink(event));
         }
     }
@@ -254,6 +260,18 @@ mod tests {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let seen2 = Arc::clone(&seen);
         (Arc::new(move |e| seen2.lock().unwrap().push(e)), seen)
+    }
+
+    #[test]
+    fn pause_shortcut_fires_once_and_does_not_emit_a_stop_on_ctrl_release() {
+        let mut main = KeyTracker::new(vec![0x7C]);
+        let mut shortcuts = vec![(HotkeyEvent::Pause, KeyTracker::new(vec![0xA2]))];
+        let transitions = [(0xA2, true), (0xA2, true), (0xA2, false), (0x7C, true), (0x7C, false), (0xA2, true)];
+        let mut events = Vec::new();
+        for (vk, down) in transitions {
+            events.extend(track_shortcuts(&mut main, &mut shortcuts, vk, down, |_| true));
+        }
+        assert_eq!(events, [HotkeyEvent::Pause, HotkeyEvent::ComboDown, HotkeyEvent::ComboUp, HotkeyEvent::Pause]);
     }
 
     #[test]

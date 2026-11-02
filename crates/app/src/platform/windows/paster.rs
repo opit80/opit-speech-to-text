@@ -1,7 +1,10 @@
-//! Paste by clipboard + synthesized Ctrl+V, with clipboard backup/restore and a UIPI check.
+//! Configurable clipboard shortcuts or Unicode typing, with shared foreground/UIPI guards.
 
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use opit_core::config::{PasteAfter, PasteMethod};
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Security::{
@@ -12,21 +15,28 @@ use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+    GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, SendInput, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_INSERT, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetForegroundWindow, GetWindowThreadProcessId};
 use windows::core::Owned;
 
 use super::clipboard::{Clipboard, Snapshot, sequence_number};
-use crate::platform::{CLIPBOARD_RESTORE_DELAY, PasteOutcome, Paster};
+use crate::platform::{CLIPBOARD_RESTORE_DELAY, PasteOutcome, PasteRequest, Paster, SelectionError};
 
-/// Longest wait for the user to let go of modifiers before sending Ctrl+V anyway.
+// Selection capture and insertion share the clipboard, including delayed restoration.
+static CLIPBOARD_OPERATION: Mutex<()> = Mutex::new(());
+
+/// Longest wait for modifier release before falling back to clipboard-only.
 const MODIFIER_WAIT: Duration = Duration::from_secs(1);
 const MODIFIER_POLL: Duration = Duration::from_millis(10);
 const MODIFIERS: [VIRTUAL_KEY; 5] = [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN];
+/// At most 32 UTF-16 units per SendInput, with a short breather for the receiving app.
+const TYPING_CHUNK_INPUTS: usize = 64;
+const TYPING_CHUNK_DELAY: Duration = Duration::from_millis(5);
 
-/// Clipboard + Ctrl+V paster.
+/// Blocking text insertion. The controller serializes calls, including clipboard restoration.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WinPaster;
 
@@ -37,39 +47,172 @@ impl WinPaster {
 }
 
 impl Paster for WinPaster {
-    fn paste(&self, text: &str, restore: bool) -> PasteOutcome {
-        let (backup, seq) = match put_text(text, restore) {
-            Ok(v) => v,
-            Err(e) => return PasteOutcome::Failed(e),
-        };
-        wait_for_modifiers_released(MODIFIER_WAIT);
-        if foreground_is_not_a_paste_target() {
-            return PasteOutcome::ClipboardOnly;
+    fn read_selection(&self) -> Result<Option<String>, SelectionError> {
+        let _operation = CLIPBOARD_OPERATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: plain foreground query; the handle is used only on this blocking thread.
+        let target = unsafe { GetForegroundWindow() };
+        if target.is_invalid() || selection_blocked() {
+            return Ok(None);
         }
-        if ctrl_v_blocked(foreground_is_higher_integrity(), has_foreground_window()) {
-            // UIPI would drop the input silently; leave the text on the clipboard for the user.
-            return PasteOutcome::ClipboardOnly;
+        let mut target_pid = 0;
+        // SAFETY: the out-pointer is valid; target is only queried.
+        unsafe {
+            GetWindowThreadProcessId(target, Some(&mut target_pid));
         }
-        if !send_ctrl_v() {
-            return PasteOutcome::ClipboardOnly;
+        let clipboard = Clipboard::open().map_err(|_| SelectionError::Unavailable)?;
+        let snapshot = clipboard.selection_snapshot()?;
+        let sequence = sequence_number();
+        drop(clipboard);
+        // Fail closed if focus changed while delayed clipboard formats were rendered.
+        if unsafe { GetForegroundWindow() } != target || selection_blocked() {
+            return Ok(None);
         }
-        // Restore only after a real paste: on ClipboardOnly the user still needs our text.
-        if let Some(backup) = backup {
-            let spawned = thread::Builder::new().name("opit-clipboard-restore".into()).spawn(move || {
-                thread::sleep(CLIPBOARD_RESTORE_DELAY);
-                let _ = restore_if_unchanged(&backup, seq);
-            });
-            drop(spawned); // Best effort: if the thread cannot start, our text simply stays.
+        let modifiers: Vec<_> = [VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN]
+            .into_iter()
+            .filter(|vk| unsafe { GetAsyncKeyState(i32::from(vk.0)) } as u16 & 0x8000 != 0)
+            .collect();
+        // One atomic input batch neutralizes held shortcut modifiers and restores them. This
+        // also supports modifier-based push-to-talk without waiting for the release to copy.
+        let inputs = copy_inputs(&modifiers);
+        let sent = send_inputs(&inputs);
+        if !sent {
+            // A partial batch may have released a physically held shortcut modifier.
+            let restore: Vec<_> = modifiers.iter().map(|&vk| key_input(vk, false)).collect();
+            let _ = send_inputs(&restore);
         }
-        PasteOutcome::Pasted
+        let deadline = Instant::now() + Duration::from_millis(400);
+        loop {
+            let changed = sequence_number();
+            if changed != sequence {
+                let clipboard = Clipboard::open().map_err(|_| SelectionError::Unavailable)?;
+                // Preserve an unrelated user copy and never mistake it for the selection.
+                if sequence_number() != changed || !clipboard.owned_by_process(target_pid) {
+                    return Err(SelectionError::Unavailable);
+                }
+                return read_and_restore_selection(
+                    || {
+                        if sent && unsafe { GetForegroundWindow() } == target {
+                            clipboard.selection_text()
+                        } else {
+                            Err(SelectionError::Unavailable)
+                        }
+                    },
+                    || clipboard.restore(&snapshot).map_err(|_| SelectionError::Unavailable),
+                );
+            }
+            if Instant::now() >= deadline {
+                return if sent { Ok(None) } else { Err(SelectionError::Unavailable) };
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn can_auto_paste(&self) -> bool {
+        !foreground_is_not_a_paste_target()
+    }
+
+    fn paste(&self, text: &str, request: PasteRequest) -> PasteOutcome {
+        let _operation = CLIPBOARD_OPERATION.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        paste_with_modifier_guard(
+            text,
+            request,
+            || wait_for_modifiers_released(MODIFIER_WAIT),
+            paste_ready,
+            clipboard_only,
+        )
     }
 }
 
-/// Whether Ctrl+V must be skipped. Fail closed: a foreground window whose integrity we cannot
+/// Restore even when an advertised selection format could not be retrieved.
+fn read_and_restore_selection(
+    read: impl FnOnce() -> Result<Option<String>, SelectionError>,
+    restore: impl FnOnce() -> Result<(), SelectionError>,
+) -> Result<Option<String>, SelectionError> {
+    let result = read();
+    restore()?;
+    result
+}
+
+/// Gate all insertion side effects together, including newline and after-key input.
+/// Callbacks keep timeout regression tests independent of the real keyboard and clipboard.
+fn paste_with_modifier_guard(
+    text: &str,
+    request: PasteRequest,
+    wait: impl FnOnce() -> bool,
+    insert: impl FnOnce(&str, PasteRequest) -> PasteOutcome,
+    copy: impl FnOnce(&str) -> PasteOutcome,
+) -> PasteOutcome {
+    if !request.auto_paste || !wait() {
+        return copy(text);
+    }
+    insert(text, request)
+}
+
+fn paste_ready(text: &str, request: PasteRequest) -> PasteOutcome {
+    if request.method == PasteMethod::Type {
+        if insertion_blocked() {
+            return clipboard_only(text);
+        }
+        let chunks = typing_inputs(text);
+        if chunks.is_empty() {
+            return PasteOutcome::Failed("no text to insert".into());
+        }
+        for (index, chunk) in chunks.iter().enumerate() {
+            if index > 0 {
+                thread::sleep(TYPING_CHUNK_DELAY);
+                // A long insertion must stop if focus moves to an unsafe target.
+                if insertion_blocked() {
+                    return PasteOutcome::Failed("text input interrupted by a target change".into());
+                }
+            }
+            if !send_inputs(chunk) {
+                // Never copy or retry after partial typing: that could duplicate inserted text.
+                return PasteOutcome::Failed("text input could not be delivered".into());
+            }
+        }
+        send_after(request.after);
+        return PasteOutcome::Pasted;
+    }
+    let (backup, seq) = match put_text(text, request.restore) {
+        Ok(v) => v,
+        Err(e) => return PasteOutcome::Failed(e),
+    };
+    if insertion_blocked() {
+        // UIPI would drop the input silently; leave the text on the clipboard for the user.
+        return PasteOutcome::ClipboardOnly;
+    }
+    if !send_inputs(&paste_inputs(request.method)) {
+        return PasteOutcome::ClipboardOnly;
+    }
+    send_after(request.after);
+    // Restore only after a real paste: on ClipboardOnly the user still needs our text.
+    if let Some(backup) = backup {
+        thread::sleep(CLIPBOARD_RESTORE_DELAY);
+        let _ = restore_if_unchanged(&backup, seq);
+    }
+    PasteOutcome::Pasted
+}
+
+fn clipboard_only(text: &str) -> PasteOutcome {
+    match put_text(text, false) {
+        Ok(_) => PasteOutcome::ClipboardOnly,
+        Err(error) => PasteOutcome::Failed(error),
+    }
+}
+
+fn insertion_blocked() -> bool {
+    foreground_is_not_a_paste_target() || input_blocked(foreground_is_higher_integrity(), has_foreground_window())
+}
+
+fn selection_blocked() -> bool {
+    insertion_blocked() || foreground_integrity_rid().is_some_and(|rid| rid >= 0x3000)
+}
+
+/// Whether insertion input must be skipped. Fail closed: a foreground window whose integrity we cannot
 /// read (typically an elevated process of another user) is treated as elevated, because UIPI
 /// would drop our keys silently and the restore would then erase the dictation. Without any
 /// foreground window there is nothing to block, so we paste as before.
-fn ctrl_v_blocked(higher_integrity: Option<bool>, has_foreground_window: bool) -> bool {
+fn input_blocked(higher_integrity: Option<bool>, has_foreground_window: bool) -> bool {
     higher_integrity.unwrap_or(has_foreground_window)
 }
 
@@ -83,7 +226,7 @@ const SHELL_WINDOW_CLASSES: [&str; 6] = [
     "WorkerW",
 ];
 
-/// Whether the foreground window must not get our Ctrl+V: a shell window (clicking the tray
+/// Whether the foreground window must not get our insertion input: a shell window (clicking the tray
 /// icon leaves the taskbar or the overflow flyout in front) or one of our own windows (the
 /// settings window's Stop button). The keys would land there and the restore would then take
 /// the dictation off the clipboard, so the text stays on the clipboard instead.
@@ -155,10 +298,6 @@ pub fn wait_for_modifiers_released(timeout: Duration) -> bool {
     }
 }
 
-/// (virtual key, key-up) for Ctrl down, V down, V up, Ctrl up.
-pub const CTRL_V_SEQUENCE: [(VIRTUAL_KEY, bool); 4] =
-    [(VK_CONTROL, false), (VK_V, false), (VK_V, true), (VK_CONTROL, true)];
-
 fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     let flags = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
     INPUT {
@@ -167,23 +306,107 @@ fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     }
 }
 
-/// The four keyboard INPUTs for Ctrl+V.
-pub fn ctrl_v_inputs() -> [INPUT; 4] {
-    CTRL_V_SEQUENCE.map(|(vk, up)| key_input(vk, up))
+fn chord_inputs(keys: &[VIRTUAL_KEY]) -> Vec<INPUT> {
+    keys.iter().map(|&vk| key_input(vk, false)).chain(keys.iter().rev().map(|&vk| key_input(vk, true))).collect()
 }
 
-/// Sends Ctrl+V; true only if all four events were accepted.
-fn send_ctrl_v() -> bool {
-    let inputs = ctrl_v_inputs();
+fn copy_inputs(held_modifiers: &[VIRTUAL_KEY]) -> Vec<INPUT> {
+    held_modifiers
+        .iter()
+        .map(|&vk| key_input(vk, true))
+        .chain(chord_inputs(&[VK_CONTROL, VK_C]))
+        .chain(held_modifiers.iter().map(|&vk| key_input(vk, false)))
+        .collect()
+}
+
+fn paste_inputs(method: PasteMethod) -> Vec<INPUT> {
+    match method {
+        PasteMethod::CtrlV => chord_inputs(&[VK_CONTROL, VK_V]),
+        PasteMethod::ShiftInsert => chord_inputs(&[VK_SHIFT, VK_INSERT]),
+        PasteMethod::CtrlShiftV => chord_inputs(&[VK_CONTROL, VK_SHIFT, VK_V]),
+        PasteMethod::Type => Vec::new(),
+    }
+}
+
+fn after_inputs(after: PasteAfter) -> Vec<INPUT> {
+    match after {
+        PasteAfter::None => Vec::new(),
+        PasteAfter::Enter => chord_inputs(&[VK_RETURN]),
+        PasteAfter::CtrlEnter => chord_inputs(&[VK_CONTROL, VK_RETURN]),
+    }
+}
+
+fn unicode_input(unit: u16, up: bool) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wScan: unit,
+                dwFlags: KEYEVENTF_UNICODE | if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                ..Default::default()
+            },
+        },
+    }
+}
+
+/// Pure builder: a Unicode scalar (including both surrogate units), each down/up pair,
+/// and a CRLF newline always stay inside one bounded chunk.
+fn typing_inputs(text: &str) -> Vec<Vec<INPUT>> {
+    let mut chunks = Vec::new();
+    let mut chunk = Vec::with_capacity(TYPING_CHUNK_INPUTS);
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let mut units = [0; 2];
+        let next = if ch == '\r' || ch == '\n' {
+            if ch == '\r' && chars.peek() == Some(&'\n') {
+                chars.next();
+            }
+            chord_inputs(&[VK_RETURN])
+        } else {
+            ch.encode_utf16(&mut units)
+                .iter()
+                .flat_map(|&unit| [unicode_input(unit, false), unicode_input(unit, true)])
+                .collect()
+        };
+        if chunk.len() + next.len() > TYPING_CHUNK_INPUTS {
+            chunks.push(std::mem::replace(&mut chunk, Vec::with_capacity(TYPING_CHUNK_INPUTS)));
+        }
+        chunk.extend(next);
+    }
+    if !chunk.is_empty() {
+        chunks.push(chunk);
+    }
+    chunks
+}
+
+/// True only when every event was accepted. Best-effort key releases prevent stuck keys
+/// after a partial send; never retry the text or the shortcut.
+fn send_inputs(inputs: &[INPUT]) -> bool {
+    if inputs.is_empty() {
+        return true;
+    }
     // SAFETY: valid INPUT slice and matching cbSize.
-    let sent = unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) } as usize;
+    let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) } as usize;
     if sent != inputs.len() && sent > 0 {
-        // Partially sent: never leave Ctrl or V logically stuck down.
-        let release = [key_input(VK_V, true), key_input(VK_CONTROL, true)];
+        let release: Vec<_> = inputs
+            .iter()
+            .copied()
+            .filter(|input| {
+                // SAFETY: all callers supply keyboard inputs built above.
+                unsafe { input.Anonymous.ki.dwFlags.contains(KEYEVENTF_KEYUP) }
+            })
+            .collect();
         // SAFETY: as above.
         unsafe { SendInput(&release, size_of::<INPUT>() as i32) };
     }
     sent == inputs.len()
+}
+
+fn send_after(after: PasteAfter) {
+    if !send_inputs(&after_inputs(after)) {
+        // Insertion already succeeded; reporting a failed paste could cause a duplicate retry.
+        tracing::warn!("post-insert key could not be delivered");
+    }
 }
 
 /// Integrity RID (e.g. 0x2000 medium, 0x3000 high) of the process owning the foreground
@@ -250,8 +473,199 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selection_read_error_still_restores_backup_and_restore_failure_is_reported() {
+        let restored = std::cell::Cell::new(false);
+        assert_eq!(
+            read_and_restore_selection(
+                || Err(SelectionError::Unavailable),
+                || {
+                    restored.set(true);
+                    Ok(())
+                }
+            ),
+            Err(SelectionError::Unavailable)
+        );
+        assert!(restored.get());
+        assert_eq!(
+            read_and_restore_selection(|| Ok(Some("selection".into())), || Err(SelectionError::Unavailable)),
+            Err(SelectionError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn modifier_timeout_copies_without_insertion_after_keys_or_restoration() {
+        let text = "queued text\r\n";
+        for method in [PasteMethod::Type, PasteMethod::CtrlV, PasteMethod::ShiftInsert, PasteMethod::CtrlShiftV] {
+            for after in [PasteAfter::None, PasteAfter::Enter, PasteAfter::CtrlEnter] {
+                for restore in [false, true] {
+                    let request = PasteRequest { method, after, restore, auto_paste: true };
+                    let mut copied = None;
+                    let outcome = paste_with_modifier_guard(
+                        text,
+                        request,
+                        || false,
+                        |_, _| panic!("modifier timeout must not run insertion, after-key or restore code"),
+                        |text| {
+                            copied = Some(text.to_owned());
+                            PasteOutcome::ClipboardOnly
+                        },
+                    );
+                    assert_eq!(outcome, PasteOutcome::ClipboardOnly);
+                    assert_eq!(copied.as_deref(), Some(text));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn released_modifiers_allow_insertion_and_preserve_its_request() {
+        let request =
+            PasteRequest { method: PasteMethod::Type, after: PasteAfter::None, restore: true, auto_paste: true };
+        let outcome = paste_with_modifier_guard(
+            "queued text\n",
+            request,
+            || true,
+            |text, received| {
+                assert_eq!(text, "queued text\n");
+                assert_eq!(received, request);
+                PasteOutcome::Pasted
+            },
+            |_| panic!("released modifiers must not force clipboard fallback"),
+        );
+        assert_eq!(outcome, PasteOutcome::Pasted);
+    }
+
+    #[test]
+    fn clipboard_only_skips_the_wait_and_copy_failures_stay_failures() {
+        for auto_paste in [false, true] {
+            let request =
+                PasteRequest { method: PasteMethod::CtrlV, after: PasteAfter::CtrlEnter, restore: true, auto_paste };
+            let outcome = paste_with_modifier_guard(
+                "queued text",
+                request,
+                || {
+                    assert!(auto_paste, "clipboard-only requests must not wait for modifiers");
+                    false
+                },
+                |_, _| panic!("clipboard-only requests must not insert"),
+                |_| PasteOutcome::Failed("clipboard unavailable".into()),
+            );
+            assert_eq!(outcome, PasteOutcome::Failed("clipboard unavailable".into()));
+        }
+    }
+
+    #[test]
+    fn copy_neutralizes_and_restores_held_shortcut_modifiers_in_one_batch() {
+        let held = [VK_RCONTROL, VK_RSHIFT];
+        let copy = copy_inputs(&held);
+        assert_eq!(
+            copy.iter().map(input_signature).collect::<Vec<_>>(),
+            vec![
+                (VK_RCONTROL.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_RSHIFT.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_CONTROL.0, 0, 0),
+                (VK_C.0, 0, 0),
+                (VK_C.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_CONTROL.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_RCONTROL.0, 0, 0),
+                (VK_RSHIFT.0, 0, 0),
+            ]
+        );
+    }
+
+    fn input_signature(input: &INPUT) -> (u16, u16, u32) {
+        assert_eq!(input.r#type, INPUT_KEYBOARD);
+        // SAFETY: the builder only creates keyboard inputs.
+        let key = unsafe { input.Anonymous.ki };
+        (key.wVk.0, key.wScan, key.dwFlags.0)
+    }
+
+    #[test]
+    fn unicode_typing_preserves_utf16_and_pairs_every_down_with_up() {
+        let chunks = typing_inputs("Ağ😀");
+        assert_eq!(chunks.len(), 1);
+        let got: Vec<_> = chunks[0].iter().map(input_signature).collect();
+        let expected: Vec<_> = "Ağ😀"
+            .encode_utf16()
+            .flat_map(|unit| [(0, unit, KEYEVENTF_UNICODE.0), (0, unit, (KEYEVENTF_UNICODE | KEYEVENTF_KEYUP).0)])
+            .collect();
+        assert_eq!(got, expected);
+        assert!(typing_inputs("").is_empty());
+    }
+
+    #[test]
+    fn typing_newlines_are_enter_and_crlf_is_one_enter() {
+        let chunks = typing_inputs("\r\n\n\r");
+        let expected: Vec<_> =
+            (0..3).flat_map(|_| [(VK_RETURN.0, 0, 0), (VK_RETURN.0, 0, KEYEVENTF_KEYUP.0)]).collect();
+        assert_eq!(chunks.iter().flatten().map(input_signature).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn typing_chunks_never_split_surrogate_pairs_or_key_pairs() {
+        let text = format!("{}😀{}\r\n😀", "a".repeat(TYPING_CHUNK_INPUTS / 2 - 1), "b".repeat(100));
+        let chunks = typing_inputs(&text);
+        assert!(chunks.len() > 2);
+        assert_eq!(chunks[0].len(), TYPING_CHUNK_INPUTS - 2);
+        for chunk in &chunks {
+            assert!(chunk.len() <= TYPING_CHUNK_INPUTS);
+            let mut units = Vec::new();
+            let (pairs, remainder) = chunk.as_chunks::<2>();
+            assert!(remainder.is_empty(), "a key pair crossed a chunk boundary");
+            for pair in pairs {
+                let (vk, unit, flags) = input_signature(&pair[0]);
+                assert_eq!(input_signature(&pair[1]), (vk, unit, flags | KEYEVENTF_KEYUP.0));
+                if flags == KEYEVENTF_UNICODE.0 {
+                    units.push(unit);
+                }
+            }
+            assert!(String::from_utf16(&units).is_ok(), "a surrogate pair crossed a chunk boundary");
+        }
+        let units: Vec<_> = chunks
+            .iter()
+            .flatten()
+            .step_by(2)
+            .map(|input| {
+                let (vk, unit, _) = input_signature(input);
+                if vk == VK_RETURN.0 { b'\n' as u16 } else { unit }
+            })
+            .collect();
+        assert_eq!(String::from_utf16(&units).unwrap(), text.replace("\r\n", "\n"));
+    }
+
+    #[test]
+    fn clipboard_shortcuts_and_after_keys_have_balanced_ordered_inputs() {
+        for (method, keys) in [
+            (PasteMethod::CtrlV, vec![VK_CONTROL, VK_V]),
+            (PasteMethod::ShiftInsert, vec![VK_SHIFT, VK_INSERT]),
+            (PasteMethod::CtrlShiftV, vec![VK_CONTROL, VK_SHIFT, VK_V]),
+        ] {
+            let expected: Vec<_> = keys
+                .iter()
+                .map(|key| (key.0, 0, 0))
+                .chain(keys.iter().rev().map(|key| (key.0, 0, KEYEVENTF_KEYUP.0)))
+                .collect();
+            assert_eq!(paste_inputs(method).iter().map(input_signature).collect::<Vec<_>>(), expected);
+        }
+        assert!(after_inputs(PasteAfter::None).is_empty());
+        assert_eq!(
+            after_inputs(PasteAfter::Enter).iter().map(input_signature).collect::<Vec<_>>(),
+            vec![(VK_RETURN.0, 0, 0), (VK_RETURN.0, 0, KEYEVENTF_KEYUP.0)]
+        );
+        assert_eq!(
+            after_inputs(PasteAfter::CtrlEnter).iter().map(input_signature).collect::<Vec<_>>(),
+            vec![
+                (VK_CONTROL.0, 0, 0),
+                (VK_RETURN.0, 0, 0),
+                (VK_RETURN.0, 0, KEYEVENTF_KEYUP.0),
+                (VK_CONTROL.0, 0, KEYEVENTF_KEYUP.0)
+            ]
+        );
+    }
+
+    #[test]
     fn ctrl_v_inputs_are_ctrl_down_v_down_v_up_ctrl_up() {
-        let inputs = ctrl_v_inputs();
+        let inputs = paste_inputs(PasteMethod::CtrlV);
         let got: Vec<(u16, u32)> = inputs
             .iter()
             .map(|i| {
@@ -267,10 +681,10 @@ mod tests {
 
     #[test]
     fn unknown_integrity_blocks_ctrl_v_only_with_a_foreground_window() {
-        assert!(ctrl_v_blocked(Some(true), true));
-        assert!(!ctrl_v_blocked(Some(false), true));
-        assert!(ctrl_v_blocked(None, true));
-        assert!(!ctrl_v_blocked(None, false));
+        assert!(input_blocked(Some(true), true));
+        assert!(!input_blocked(Some(false), true));
+        assert!(input_blocked(None, true));
+        assert!(!input_blocked(None, false));
     }
 
     #[test]

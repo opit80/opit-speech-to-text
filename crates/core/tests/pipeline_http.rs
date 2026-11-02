@@ -6,8 +6,7 @@ use std::time::Duration;
 use opit_core::audio::Recording;
 use opit_core::pipeline::{self, PipelineContext, TranscriptStatus};
 use opit_core::provider::{OpenAiCompatible, presets};
-use opit_core::rules::RuleSet;
-use opit_core::rules::builtin::assemble;
+use opit_core::rules::{RulePack, RuleSet};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -42,7 +41,11 @@ async fn groq_style_round_trip_with_rules() {
     let mut profile = presets::groq();
     profile.base_url = format!("{}/openai/v1", server.uri());
     let client = OpenAiCompatible::new(profile, Some("gsk-test".into())).unwrap();
-    let (rules, _) = RuleSet::compile(&assemble(None, &["tr-core".to_string(), "tr-tech".to_string()]));
+    let personal = RulePack::from_yaml(
+        "schema: 1\nid: user\nname: Test\nlanguage: tr\nterms: [Claude Code]\ncorrections:\n  Claude Code: [cloud code]\n",
+    ).unwrap();
+    let (rules, warnings) = RuleSet::compile(&[personal]);
+    assert!(warnings.is_empty());
     let ctx = PipelineContext {
         primary: &client,
         fallback: None,

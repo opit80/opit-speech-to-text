@@ -1,0 +1,102 @@
+name: Bug report
+description: Something in Opit Speech to Text isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste API keys, transcripts, recordings or other personal data.** Logs never
+        contain what you said or your keys, but check any attachment before posting.
+        Report security vulnerabilities privately as described in SECURITY.md, not here.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system and desktop
+      options:
+        - Windows 10
+        - Windows 11
+        - Linux, KDE Plasma
+        - Linux, GNOME
+        - Linux, other desktop
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: Linux session type
+      description: Leave as "Not Linux" on Windows.
+      options:
+        - Not Linux
+        - Wayland
+        - X11
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: package
+    attributes:
+      label: How did you install it?
+      options:
+        - Windows installer
+        - Linux AppImage
+        - Linux deb
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in Settings → Updates and about.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Transcription provider and model
+      description: Provider name and model only. Do not include API keys.
+      placeholder: "ElevenLabs Scribe v2, Groq whisper-large-v3, local model, custom server …"
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the problem. Describe dictated text instead of pasting it.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Settings → …
+        2. Press the dictation shortcut in …
+        3. See …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log excerpt (optional)
+      description: |
+        Logs are in the `logs` folder of the app data folder (`%APPDATA%\opit-speech-to-text` on
+        Windows, `~/.config/opit-speech-to-text` on Linux). Remove anything personal first.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: This report contains no API keys, transcripts, recordings or personal data.
+          required: true

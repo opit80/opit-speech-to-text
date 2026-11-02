@@ -1,4 +1,4 @@
-//! Accuracy evaluation for provider profiles and rule packs.
+//! Accuracy evaluation for provider profiles and personal rules.
 
 pub mod dataset;
 pub mod metrics;

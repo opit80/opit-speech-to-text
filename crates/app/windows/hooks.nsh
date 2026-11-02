@@ -24,5 +24,6 @@
   ${AndIfNot} ${Silent}
     SetShellVarContext current
     RmDir /r "$APPDATA\opit-speech-to-text"
+    RmDir /r "$LOCALAPPDATA\opit-speech-to-text\local"
   ${EndIf}
 !macroend

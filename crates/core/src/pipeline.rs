@@ -8,7 +8,8 @@ use serde::Serialize;
 use crate::audio::encode::{EncodeError, EncodedAudio, encode};
 use crate::audio::gate::{self, GateVerdict};
 use crate::audio::{self, Recording, TARGET_RATE};
-use crate::provider::retry::with_retry;
+use crate::config::RecordingConfig;
+use crate::provider::retry::{PATIENT_DELAYS, RetryWait};
 use crate::provider::{ProviderError, RawTranscript, TranscribeRequest, Transcriber};
 use crate::rules::prompt::{build_prompt, keywords};
 use crate::rules::{RuleHit, RuleSet};
@@ -21,6 +22,8 @@ pub enum TranscriptStatus {
     Empty,
     /// The whole output matched a known silence hallucination.
     Hallucination,
+    /// Transcription failed; retained audio can be retried.
+    Failed,
 }
 
 impl TranscriptStatus {
@@ -29,6 +32,7 @@ impl TranscriptStatus {
             Self::Ok => "ok",
             Self::Empty => "empty",
             Self::Hallucination => "hallucination",
+            Self::Failed => "failed",
         }
     }
 
@@ -37,6 +41,7 @@ impl TranscriptStatus {
             "ok" => Some(Self::Ok),
             "empty" => Some(Self::Empty),
             "hallucination" => Some(Self::Hallucination),
+            "failed" => Some(Self::Failed),
             _ => None,
         }
     }
@@ -46,6 +51,15 @@ impl TranscriptStatus {
 pub struct Transcript {
     /// Provider output before rules.
     pub raw_text: String,
+    /// Provider detection kept separately when a fixed profile language is used.
+    #[serde(skip)]
+    pub detected_language: Option<String>,
+    pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
+    pub cleanup_model: Option<String>,
+    #[serde(skip)]
+    pub cleanup_error: Option<crate::cleanup::CleanupError>,
+    /// ISO 639-1 language, reported by the provider or fixed by the used profile.
+    pub language: Option<String>,
     /// Text to paste.
     pub text: String,
     pub status: TranscriptStatus,
@@ -66,12 +80,14 @@ pub struct PreparedAudio {
     pub speech_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum PipelineError {
     #[error("the recording is too short")]
     TooShort,
+    #[error("retry cancelled; audio retained for another attempt")]
+    RetryCancelled,
     #[error("no speech was detected")]
-    NoSpeech,
+    NoSpeech { levels: gate::GateLevels },
     #[error(transparent)]
     Encode(#[from] EncodeError),
     #[error(transparent)]
@@ -88,10 +104,15 @@ pub struct PipelineContext<'a, T> {
 }
 
 pub fn prepare(recording: &Recording) -> Result<PreparedAudio, PipelineError> {
+    prepare_with_config(recording, &RecordingConfig::default())
+}
+
+pub fn prepare_with_config(recording: &Recording, config: &RecordingConfig) -> Result<PreparedAudio, PipelineError> {
     let samples = audio::to_mono_16k(recording);
-    match gate::check(&samples) {
+    let result = gate::analyze(&samples, config);
+    match result.verdict {
         GateVerdict::TooShort => Err(PipelineError::TooShort),
-        GateVerdict::NoSpeech => Err(PipelineError::NoSpeech),
+        GateVerdict::NoSpeech => Err(PipelineError::NoSpeech { levels: result.levels }),
         GateVerdict::Speech { speech_ms } => {
             let audio_ms = samples.len() as u64 * 1000 / u64::from(TARGET_RATE);
             Ok(PreparedAudio { samples, audio_ms, speech_ms })
@@ -103,31 +124,133 @@ pub async fn transcribe<T: Transcriber>(
     audio: &PreparedAudio,
     ctx: &PipelineContext<'_, T>,
 ) -> Result<Transcript, PipelineError> {
-    let started = Instant::now();
-    let primary_audio = encode(&audio.samples, ctx.primary.profile().audio_format)?;
-    let (raw, used, used_fallback) = match call(ctx.primary, &primary_audio, audio, ctx, true).await {
-        Ok(raw) => (raw, ctx.primary, false),
-        Err(err) => match ctx.fallback {
-            Some(fallback) if err.is_retryable() => {
-                let format = fallback.profile().audio_format;
-                let fallback_audio;
-                let encoded = if format == primary_audio.format {
-                    &primary_audio
-                } else {
-                    fallback_audio = encode(&audio.samples, format)?;
-                    &fallback_audio
-                };
-                (call(fallback, encoded, audio, ctx, false).await?, fallback, true)
-            }
-            _ => return Err(err.into()),
-        },
-    };
+    transcribe_with_wait(audio, ctx, |_, delay| async move {
+        tokio::time::sleep(delay).await;
+        true
+    })
+    .await
+}
 
+/// Waits are injectable, including the quick retry. Returning false cancels before
+/// another request. Each patient rung calls primary once, then fallback once.
+pub async fn transcribe_with_wait<T, W, F>(
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'_, T>,
+    wait: W,
+) -> Result<Transcript, PipelineError>
+where
+    T: Transcriber,
+    W: FnMut(RetryWait, Duration) -> F,
+    F: Future<Output = bool>,
+{
+    let started = Instant::now();
+    let (raw, used, used_fallback) = transcribe_raw_with_wait(audio, ctx, wait).await?;
+    finish(raw, used, used_fallback, audio, ctx, started)
+}
+
+/// The shared retry ladder without dictation postprocessing, for file transcription callers.
+pub async fn transcribe_raw_with_wait<'a, T, W, F>(
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'a, T>,
+    mut wait: W,
+) -> Result<(RawTranscript, &'a T, bool), PipelineError>
+where
+    T: Transcriber,
+    W: FnMut(RetryWait, Duration) -> F,
+    F: Future<Output = bool>,
+{
+    let primary_audio = encode(&audio.samples, ctx.primary.profile().audio_format)?;
+    let mut fallback_audio = None;
+    let mut result = call(ctx.primary, &primary_audio, audio, ctx).await;
+    if let Err(err) = &result
+        && err.is_retryable()
+    {
+        let delay = ctx.retry_delay.max(err.retry_after().unwrap_or_default());
+        if !wait(RetryWait { kind: err.code(), seconds: delay.as_secs(), attempt: 1, total: 5 }, delay).await {
+            return Err(PipelineError::RetryCancelled);
+        }
+        result = call(ctx.primary, &primary_audio, audio, ctx).await;
+    }
+    let mut used = ctx.primary;
+    let mut used_fallback = false;
+    let mut delays = PATIENT_DELAYS.into_iter().enumerate();
+    loop {
+        // A fallback failure must not discard the primary's rate-limit deadline.
+        let primary_retry_after = result.as_ref().err().and_then(ProviderError::retry_after).unwrap_or_default();
+        if let Err(err) = &result
+            && err.is_retryable()
+            && let Some(fallback) = ctx.fallback
+        {
+            let format = fallback.profile().audio_format;
+            let encoded = if format == primary_audio.format {
+                &primary_audio
+            } else {
+                if fallback_audio.is_none() {
+                    fallback_audio = Some(encode(&audio.samples, format)?);
+                }
+                fallback_audio.as_ref().expect("fallback audio was encoded above")
+            };
+            result = call(fallback, encoded, audio, ctx).await;
+            used = fallback;
+            used_fallback = true;
+        }
+        let err = match &result {
+            Ok(_) => break,
+            Err(err) if err.is_retryable() => err,
+            Err(err) => return Err(err.clone().into()),
+        };
+        let Some((rung, seconds)) = delays.next() else { return Err(err.clone().into()) };
+        let delay = Duration::from_secs(seconds).max(primary_retry_after).max(err.retry_after().unwrap_or_default());
+        let progress = RetryWait { kind: err.code(), seconds: delay.as_secs(), attempt: rung + 2, total: 5 };
+        if !wait(progress, delay).await {
+            return Err(PipelineError::RetryCancelled);
+        }
+        result = call(ctx.primary, &primary_audio, audio, ctx).await;
+        used = ctx.primary;
+        used_fallback = false;
+    }
+    Ok((result?, used, used_fallback))
+}
+
+/// Apply exactly the batch postprocessing to a streaming final after the speech gate passes.
+pub fn from_raw<T: Transcriber>(
+    raw: RawTranscript,
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'_, T>,
+) -> Result<Transcript, PipelineError> {
+    finish(raw, ctx.primary, false, audio, ctx, Instant::now())
+}
+
+fn finish<T: Transcriber>(
+    raw: RawTranscript,
+    used: &T,
+    used_fallback: bool,
+    audio: &PreparedAudio,
+    ctx: &PipelineContext<'_, T>,
+    started: Instant,
+) -> Result<Transcript, PipelineError> {
     let profile = used.profile();
-    let (text, status, hits) =
-        postprocess_with_numbers(&raw.text, ctx.rules, profile.apply_rules, ctx.numbers_as_words, &profile.language);
+    let (text, status, hits) = postprocess_with_numbers(
+        &raw.text,
+        ctx.rules,
+        profile.apply_rules,
+        ctx.numbers_as_words,
+        &profile.language,
+        audio.audio_ms,
+    );
+    let detected_language = raw.language.clone();
+    let language = if matches!(profile.language.trim(), "auto" | "multi" | "") {
+        raw.language
+    } else {
+        crate::provider::language::normalize(&profile.language)
+    };
     Ok(Transcript {
         raw_text: raw.text,
+        detected_language,
+        cleanup_status: Some(crate::cleanup::CleanupStatus::Skipped),
+        cleanup_model: None,
+        cleanup_error: None,
+        language,
         text,
         status,
         profile_id: profile.id.clone(),
@@ -138,8 +261,13 @@ pub async fn transcribe<T: Transcriber>(
     })
 }
 
-pub fn postprocess(raw: &str, rules: &RuleSet, apply_rules: bool) -> (String, TranscriptStatus, Vec<RuleHit>) {
-    postprocess_with_numbers(raw, rules, apply_rules, false, "tr")
+pub fn postprocess(
+    raw: &str,
+    rules: &RuleSet,
+    apply_rules: bool,
+    audio_ms: u64,
+) -> (String, TranscriptStatus, Vec<RuleHit>) {
+    postprocess_with_numbers(raw, rules, apply_rules, false, "tr", audio_ms)
 }
 
 pub fn postprocess_with_numbers(
@@ -148,6 +276,7 @@ pub fn postprocess_with_numbers(
     apply_rules: bool,
     numbers_as_words: bool,
     language: &str,
+    audio_ms: u64,
 ) -> (String, TranscriptStatus, Vec<RuleHit>) {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -156,7 +285,7 @@ pub fn postprocess_with_numbers(
     if !apply_rules {
         return (trimmed.to_string(), TranscriptStatus::Ok, Vec::new());
     }
-    if rules.is_hallucination(trimmed) {
+    if audio_ms <= 6000 && rules.is_hallucination(trimmed) {
         return (String::new(), TranscriptStatus::Hallucination, Vec::new());
     }
     let (mut text, mut hits) = rules.apply_traced(trimmed);
@@ -181,7 +310,6 @@ async fn call<T: Transcriber>(
     encoded: &EncodedAudio,
     audio: &PreparedAudio,
     ctx: &PipelineContext<'_, T>,
-    retry: bool,
 ) -> Result<RawTranscript, ProviderError> {
     let profile = transcriber.profile();
     let prompt = if profile.send_prompt {
@@ -196,11 +324,7 @@ async fn call<T: Transcriber>(
         prompt: prompt.as_deref(),
         keywords: &keyword_list,
     };
-    if retry {
-        with_retry(ctx.retry_delay, || transcriber.transcribe(&request)).await
-    } else {
-        transcriber.transcribe(&request).await
-    }
+    transcriber.transcribe(&request).await
 }
 
 #[cfg(test)]
@@ -211,7 +335,7 @@ mod tests {
 
     use super::*;
     use crate::provider::{Profile, presets};
-    use crate::rules::builtin::assemble;
+    use crate::rules::RulePack;
 
     struct Scripted {
         profile: Profile,
@@ -224,7 +348,14 @@ mod tests {
         fn new(id: &str, script: Vec<Result<&str, ProviderError>>) -> Self {
             let script = script
                 .into_iter()
-                .map(|r| r.map(|text| RawTranscript { text: text.into(), dropped_segments: 0 }))
+                .map(|r| {
+                    r.map(|text| RawTranscript {
+                        text: text.into(),
+                        language: None,
+                        dropped_segments: 0,
+                        segments: Vec::new(),
+                    })
+                })
                 .collect();
             Self {
                 profile: presets::custom(id, id, "http://unused.invalid/v1", "m"),
@@ -285,22 +416,155 @@ mod tests {
         }
     }
 
-    fn tech_rules() -> RuleSet {
-        RuleSet::compile(&assemble(None, &["tr-core".to_string(), "tr-tech".to_string()])).0
+    fn personal_rules() -> RuleSet {
+        let personal = RulePack::from_yaml(
+            "schema: 1\nid: user\nname: Test\nlanguage: tr\nterms: [Claude Code, Claude, GitHub]\ncorrections:\n  Claude Code: [cloud code]\n",
+        ).unwrap();
+        RuleSet::compile(&[personal]).0
+    }
+
+    #[tokio::test]
+    async fn language_uses_the_successful_profile_and_provider_detection_only_in_auto() {
+        let rules = RuleSet::empty();
+        for (configured, detected, expected) in
+            [("auto", Some("tr"), Some("tr")), ("auto", None, None), ("en", Some("tr"), Some("en"))]
+        {
+            let mut primary = Scripted::new("primary", vec![Ok("ok")]);
+            primary.profile.language = configured.into();
+            primary.script.lock().unwrap().front_mut().unwrap().as_mut().unwrap().language =
+                detected.map(str::to_string);
+            let result = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
+            assert_eq!(result.language.as_deref(), expected);
+        }
+        let primary = Scripted::new("primary", vec![Err(ProviderError::Timeout); 2]);
+        let mut fallback = Scripted::new("fallback", vec![Ok("ok")]);
+        fallback.profile.language = "de".into();
+        let result = transcribe(&speech(), &ctx(&primary, Some(&fallback), &rules)).await.unwrap();
+        assert_eq!(result.language.as_deref(), Some("de"));
+    }
+
+    #[tokio::test]
+    async fn default_rules_without_personal_rules_drop_short_audio_hallucinations() {
+        let config = crate::config::AppConfig::default();
+        let rules = RuleSet::compile(&[]).0;
+        assert!(rules.terms().is_empty());
+        let mut primary = Scripted::new("default", vec![Ok("Altyazı M.K.")]);
+        primary.profile = config.active_profile().unwrap().clone();
+        let result = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
+        assert_eq!(result.status, TranscriptStatus::Hallucination);
+        assert!(result.text.is_empty());
+        assert!(result.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn stock_phrases_only_filter_short_audio_and_preserve_single_words() {
+        let rules = RuleSet::empty();
+        for (text, duration, enabled, expected) in [
+            ("THANKS, for watching! Thanks for watching.", 6000, true, TranscriptStatus::Hallucination),
+            ("Thanks for watching", 6001, true, TranscriptStatus::Ok),
+            ("Thanks for watching", 1000, false, TranscriptStatus::Ok),
+            ("a", 1000, true, TranscriptStatus::Ok),
+            ("e", 1000, true, TranscriptStatus::Ok),
+            ("mk", 1000, true, TranscriptStatus::Ok),
+            ("m.k", 1000, true, TranscriptStatus::Ok),
+        ] {
+            let mut primary = Scripted::new("a", vec![Ok(text)]);
+            primary.profile.apply_rules = enabled;
+            let mut audio = speech();
+            audio.audio_ms = duration;
+            let result = transcribe(&audio, &ctx(&primary, None, &rules)).await.unwrap();
+            assert_eq!(result.status, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn patient_ladder_waits_are_injected_and_cancel_stops_requests() {
+        let rules = RuleSet::empty();
+        let primary = Scripted::new("a", vec![Err(ProviderError::Timeout); 6]);
+        let mut waits = Vec::new();
+        let err = transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |progress, delay| {
+            waits.push((progress, delay));
+            async { true }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, PipelineError::Provider(ProviderError::Timeout));
+        assert_eq!(primary.calls(), 6);
+        assert_eq!(waits.iter().map(|(_, d)| d.as_secs()).collect::<Vec<_>>(), [0, 10, 30, 60, 120]);
+        assert_eq!(waits.last().unwrap().0.attempt, 5);
+        let primary = Scripted::new("a", vec![Err(ProviderError::Timeout); 2]);
+        let err = transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |progress, _| async move {
+            progress.attempt == 1
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err, PipelineError::RetryCancelled);
+        assert_eq!(primary.calls(), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_after_is_honoured_and_permanent_errors_never_wait() {
+        let rules = RuleSet::empty();
+        let primary =
+            Scripted::new("a", vec![Err(ProviderError::RateLimitedAfter(Duration::from_secs(300))), Ok("ok")]);
+        let mut waits = Vec::new();
+        transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |_, delay| {
+            waits.push(delay.as_secs());
+            async { true }
+        })
+        .await
+        .unwrap();
+        assert_eq!(waits, [120]);
+        for status in [400, 401, 403, 404, 413] {
+            let primary = Scripted::new("a", vec![Err(ProviderError::Http { status, message: "private".into() })]);
+            let err = transcribe_with_wait(&speech(), &ctx(&primary, None, &rules), |_, _| async {
+                panic!("permanent errors must not wait")
+            })
+            .await;
+            assert!(err.is_err());
+            assert_eq!(primary.calls(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fallback_failure_preserves_the_primary_retry_after() {
+        let rules = RuleSet::empty();
+        let primary = Scripted::new(
+            "primary",
+            vec![
+                Err(ProviderError::Timeout),
+                Err(ProviderError::RateLimitedAfter(Duration::from_secs(90))),
+                Ok("recovered"),
+            ],
+        );
+        let fallback = Scripted::new("fallback", vec![Err(ProviderError::Server(503))]);
+        let mut waits = Vec::new();
+        let transcript = transcribe_with_wait(&speech(), &ctx(&primary, Some(&fallback), &rules), |_, delay| {
+            waits.push(delay.as_secs());
+            async { true }
+        })
+        .await
+        .unwrap();
+        assert_eq!(waits, [0, 90]);
+        assert_eq!(transcript.profile_id, "primary");
+        assert_eq!(transcript.text, "recovered");
+        assert_eq!((primary.calls(), fallback.calls()), (3, 1));
     }
 
     #[test]
     fn prepare_rejects_short_and_silent_recordings() {
         assert_eq!(prepare(&tone_recording(0.2)).unwrap_err(), PipelineError::TooShort);
         let silent = Recording { samples: vec![0.0; 96_000], sample_rate: 48_000, channels: 2 };
-        assert_eq!(prepare(&silent).unwrap_err(), PipelineError::NoSpeech);
+        assert!(matches!(prepare(&silent).unwrap_err(), PipelineError::NoSpeech { .. }));
         let ok = speech();
         assert_eq!((ok.audio_ms, ok.samples.len()), (1_000, 16_000));
     }
 
     #[test]
     fn status_strings_round_trip() {
-        for status in [TranscriptStatus::Ok, TranscriptStatus::Empty, TranscriptStatus::Hallucination] {
+        for status in
+            [TranscriptStatus::Ok, TranscriptStatus::Empty, TranscriptStatus::Hallucination, TranscriptStatus::Failed]
+        {
             assert_eq!(TranscriptStatus::parse(status.as_str()), Some(status));
         }
         assert_eq!(TranscriptStatus::parse("nope"), None);
@@ -309,10 +573,10 @@ mod tests {
     #[test]
     fn number_setting_preserves_raw_output_when_off_or_rules_disabled() {
         let rules = RuleSet::empty();
-        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, true, "tr").0, "On iki kişi");
-        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, false, "tr").0, "12 kişi");
-        assert_eq!(postprocess_with_numbers("12 kişi", &rules, false, true, "tr").0, "12 kişi");
-        assert_eq!(postprocess_with_numbers(" ", &rules, true, true, "tr").1, TranscriptStatus::Empty);
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, true, "tr", 1000).0, "On iki kişi");
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, true, false, "tr", 1000).0, "12 kişi");
+        assert_eq!(postprocess_with_numbers("12 kişi", &rules, false, true, "tr", 1000).0, "12 kişi");
+        assert_eq!(postprocess_with_numbers(" ", &rules, true, true, "tr", 1000).1, TranscriptStatus::Empty);
     }
 
     #[tokio::test]
@@ -353,11 +617,13 @@ mod tests {
     #[tokio::test]
     async fn fallback_gets_a_single_attempt() {
         let rules = RuleSet::empty();
-        let primary = Scripted::new("a", vec![Err(ProviderError::RateLimited), Err(ProviderError::RateLimited)]);
-        let fallback = Scripted::new("b", vec![Err(ProviderError::Server(500))]);
-        let err = transcribe(&speech(), &ctx(&primary, Some(&fallback), &rules)).await.unwrap_err();
+        let primary = Scripted::new("a", vec![Err(ProviderError::RateLimited); 6]);
+        let fallback = Scripted::new("b", vec![Err(ProviderError::Server(500)); 5]);
+        let err = transcribe_with_wait(&speech(), &ctx(&primary, Some(&fallback), &rules), |_, _| async { true })
+            .await
+            .unwrap_err();
         assert_eq!(err, PipelineError::Provider(ProviderError::Server(500)));
-        assert_eq!(fallback.calls(), 1);
+        assert_eq!(fallback.calls(), 5);
     }
 
     #[tokio::test]
@@ -372,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn rules_run_on_the_provider_text() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let primary = Scripted::new("a", vec![Ok("cloud code'u aç")]);
         let t = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
         assert_eq!(t.raw_text, "cloud code'u aç");
@@ -383,7 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn rules_are_skipped_when_the_profile_says_so() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let mut primary = Scripted::new("a", vec![Ok(" cloud code'u aç ")]);
         primary.profile.apply_rules = false;
         let t = transcribe(&speech(), &ctx(&primary, None, &rules)).await.unwrap();
@@ -393,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_and_hallucinated_outputs_are_flagged() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let blank = Scripted::new("a", vec![Ok("   ")]);
         let t = transcribe(&speech(), &ctx(&blank, None, &rules)).await.unwrap();
         assert_eq!((t.text.as_str(), t.status), ("", TranscriptStatus::Empty));
@@ -406,7 +672,7 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_follows_the_profile() {
-        let rules = tech_rules();
+        let rules = personal_rules();
         let primary = Scripted::new("a", vec![Ok("x")]);
         let mut with_context = ctx(&primary, None, &rules);
         with_context.prompt_context = "Yazılım konuşması";

@@ -12,11 +12,11 @@ pub use audio_store::AudioStore;
 use crate::pipeline::TranscriptStatus;
 use crate::text::{fold, is_word_char};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS dictations (
-    id            INTEGER PRIMARY KEY,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at_ms INTEGER NOT NULL,
     profile_id    TEXT    NOT NULL,
     raw_text      TEXT    NOT NULL,
@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS dictations (
     audio_ms      INTEGER NOT NULL,
     latency_ms    INTEGER NOT NULL,
     audio_path    TEXT,
+    error_code    TEXT,
+    language      TEXT,
     -- Turkish-folded copies (see text::fold) that the FTS index is built from.
     search_text   TEXT    NOT NULL,
     search_raw    TEXT    NOT NULL
@@ -49,7 +51,7 @@ CREATE TRIGGER IF NOT EXISTS dictations_au AFTER UPDATE OF search_text, search_r
 END;
 ";
 
-const COLUMNS: &str = "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path";
+const COLUMNS: &str = "id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, error_code, language, cleanup_status, cleanup_model, mode, agent, cleanup_style_id, source_text, instruction";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
@@ -70,6 +72,15 @@ pub struct Dictation {
     pub audio_ms: u64,
     pub latency_ms: u64,
     pub audio_path: Option<String>,
+    pub error_code: Option<String>,
+    pub language: Option<String>,
+    pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
+    pub cleanup_model: Option<String>,
+    pub cleanup_style_id: Option<String>,
+    pub source_text: Option<String>,
+    pub instruction: Option<String>,
+    pub mode: String,
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -81,6 +92,15 @@ pub struct NewDictation<'a> {
     pub status: TranscriptStatus,
     pub audio_ms: u64,
     pub latency_ms: u64,
+    pub error_code: Option<&'a str>,
+    pub language: Option<&'a str>,
+    pub cleanup_status: Option<crate::cleanup::CleanupStatus>,
+    pub cleanup_model: Option<&'a str>,
+    pub cleanup_style_id: Option<&'a str>,
+    pub source_text: Option<&'a str>,
+    pub instruction: Option<&'a str>,
+    pub mode: &'a str,
+    pub agent: Option<&'a str>,
 }
 
 pub struct HistoryStore {
@@ -116,7 +136,42 @@ impl HistoryStore {
             // One transaction, idempotent statements: a crash mid-setup can neither
             // leave a half schema behind nor block the next start.
             let tx = conn.transaction()?;
-            tx.execute_batch(SCHEMA)?;
+            let existing: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'dictations')",
+                [],
+                |r| r.get(0),
+            )?;
+            if existing && version >= 2 {
+                if version < 3 {
+                    tx.execute_batch("ALTER TABLE dictations ADD COLUMN language TEXT;")?;
+                }
+            } else {
+                if existing {
+                    tx.execute_batch(
+                        "DROP TRIGGER IF EXISTS dictations_ai;
+                    DROP TRIGGER IF EXISTS dictations_ad; DROP TRIGGER IF EXISTS dictations_au;
+                    DROP TABLE IF EXISTS dictations_fts; DROP INDEX IF EXISTS dictations_created;
+                    ALTER TABLE dictations RENAME TO dictations_v1;",
+                    )?;
+                }
+                tx.execute_batch(SCHEMA)?;
+                if existing {
+                    tx.execute_batch("INSERT INTO dictations
+                    (id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, search_text, search_raw)
+                    SELECT id, created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, search_text, search_raw FROM dictations_v1;
+                    DROP TABLE dictations_v1;")?;
+                }
+            }
+            if version < 4 {
+                tx.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT; ALTER TABLE dictations ADD COLUMN cleanup_model TEXT;")?;
+            }
+            if version < 5 {
+                tx.execute_batch("ALTER TABLE dictations ADD COLUMN mode TEXT NOT NULL DEFAULT 'dictation'; ALTER TABLE dictations ADD COLUMN agent TEXT;")?;
+            }
+            if version < 6 {
+                tx.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_style_id TEXT;")?;
+            }
+            tx.execute_batch("ALTER TABLE dictations ADD COLUMN source_text TEXT; ALTER TABLE dictations ADD COLUMN instruction TEXT;")?;
             tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             tx.commit()?;
         }
@@ -124,20 +179,30 @@ impl HistoryStore {
     }
 
     pub fn insert(&self, d: &NewDictation<'_>) -> Result<i64, HistoryError> {
+        let (raw_text, text) = if d.status == TranscriptStatus::Failed { ("", "") } else { (d.raw_text, d.text) };
         self.conn.execute(
             "INSERT INTO dictations
-               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+               (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw, error_code, language, cleanup_status, cleanup_model, mode, agent, cleanup_style_id, source_text, instruction)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
             params![
                 d.created_at_ms,
                 d.profile_id,
-                d.raw_text,
-                d.text,
+                raw_text,
+                text,
                 d.status.as_str(),
                 d.audio_ms as i64,
                 d.latency_ms as i64,
-                fold(d.text),
-                fold(d.raw_text)
+                fold(text),
+                fold(raw_text),
+                safe_error_code(d.error_code),
+                d.language,
+                d.cleanup_status.map(|s| s.as_str()),
+                d.cleanup_model,
+                d.mode,
+                d.agent,
+                d.cleanup_style_id,
+                d.source_text,
+                d.instruction
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -146,6 +211,52 @@ impl HistoryStore {
     pub fn set_audio_path(&self, id: i64, path: &str) -> Result<(), HistoryError> {
         self.conn.execute("UPDATE dictations SET audio_path = ?1 WHERE id = ?2", params![path, id])?;
         Ok(())
+    }
+
+    /// Edits only the displayed transcript and its search index. The recognized
+    /// `raw_text`, audio, timestamps and processing metadata remain retrievable.
+    /// Failed/filtered rows must be recovered rather than edited into successes.
+    pub fn update_text(&self, id: i64, text: &str) -> Result<Option<Dictation>, HistoryError> {
+        if self.conn.execute(
+            "UPDATE dictations SET text=?2, search_text=?3 WHERE id=?1 AND status='ok'",
+            params![id, text, fold(text)],
+        )? == 0
+        {
+            return Ok(None);
+        }
+        self.get(id)
+    }
+
+    /// Replaces content in place; id and original recording time remain unchanged.
+    /// Returns false if the user deleted the row while a retry was running.
+    pub fn replace(&self, id: i64, d: &NewDictation<'_>, keep_audio: bool) -> Result<bool, HistoryError> {
+        let (raw_text, text) = if d.status == TranscriptStatus::Failed { ("", "") } else { (d.raw_text, d.text) };
+        Ok(self.conn.execute(
+            "UPDATE dictations SET profile_id=?2, raw_text=?3, text=?4, status=?5, audio_ms=?6,
+             latency_ms=?7, search_text=?8, search_raw=?9, error_code=?10,
+             audio_path=CASE WHEN ?11 THEN audio_path ELSE NULL END, language=?12, cleanup_status=?13, cleanup_model=?14, mode=?15, agent=?16, cleanup_style_id=?17, source_text=?18, instruction=?19 WHERE id=?1",
+            params![
+                id,
+                d.profile_id,
+                raw_text,
+                text,
+                d.status.as_str(),
+                d.audio_ms as i64,
+                d.latency_ms as i64,
+                fold(text),
+                fold(raw_text),
+                safe_error_code(d.error_code),
+                keep_audio,
+                d.language,
+                d.cleanup_status.map(|s| s.as_str()),
+                d.cleanup_model,
+                d.mode,
+                d.agent,
+                d.cleanup_style_id,
+                d.source_text,
+                d.instruction
+            ],
+        )? != 0)
     }
 
     /// Aggregates all retained history, without returning transcript content to the caller.
@@ -211,12 +322,41 @@ impl HistoryStore {
         Ok(paths)
     }
 
+    /// Deletes the oldest recording dates first (id breaks ties), including failures.
+    /// Returns detached audio paths for the caller to delete. Zero means unlimited.
+    pub fn trim_to_max_entries(&mut self, max_entries: u32) -> Result<Vec<String>, HistoryError> {
+        if max_entries == 0 {
+            return Ok(Vec::new());
+        }
+        let tx = self.conn.transaction()?;
+        let paths = {
+            let mut stmt = tx.prepare(
+                "SELECT audio_path FROM dictations WHERE id IN (
+                    SELECT id FROM dictations ORDER BY created_at_ms DESC, id DESC LIMIT -1 OFFSET ?1
+                ) AND audio_path IS NOT NULL ORDER BY created_at_ms, id",
+            )?;
+            stmt.query_map([max_entries], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?
+        };
+        tx.execute(
+            "DELETE FROM dictations WHERE id IN (
+                SELECT id FROM dictations ORDER BY created_at_ms DESC, id DESC LIMIT -1 OFFSET ?1
+            )",
+            [max_entries],
+        )?;
+        tx.commit()?;
+        Ok(paths)
+    }
+
     /// Detaches audio files of dictations created before `older_than_ms` and
     /// returns their paths for deletion.
     pub fn take_expired_audio(&self, older_than_ms: i64) -> Result<Vec<String>, HistoryError> {
-        let paths = self.audio_paths_before(older_than_ms)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT audio_path FROM dictations
+            WHERE audio_path IS NOT NULL AND created_at_ms < ?1 AND status != 'failed' ORDER BY id",
+        )?;
+        let paths = stmt.query_map([older_than_ms], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
         self.conn.execute(
-            "UPDATE dictations SET audio_path = NULL WHERE audio_path IS NOT NULL AND created_at_ms < ?1",
+            "UPDATE dictations SET audio_path = NULL WHERE audio_path IS NOT NULL AND created_at_ms < ?1 AND status != 'failed'",
             [older_than_ms],
         )?;
         Ok(paths)
@@ -243,6 +383,23 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<Dictation> {
         audio_ms: row.get::<_, i64>(6)? as u64,
         latency_ms: row.get::<_, i64>(7)? as u64,
         audio_path: row.get(8)?,
+        error_code: row.get(9)?,
+        language: row.get(10)?,
+        cleanup_status: row.get::<_, Option<String>>(11)?.as_deref().and_then(crate::cleanup::CleanupStatus::parse),
+        cleanup_model: row.get(12)?,
+        mode: row.get(13)?,
+        agent: row.get(14)?,
+        cleanup_style_id: row.get(15)?,
+        source_text: row.get(16)?,
+        instruction: row.get(17)?,
+    })
+}
+
+fn safe_error_code(code: Option<&str>) -> Option<&str> {
+    code.map(|code| match code {
+        "invalid_key" | "too_large" | "rate_limited" | "server" | "network" | "timeout" | "bad_response"
+        | "rejected" | "audio" | "cancelled" => code,
+        _ => "rejected",
     })
 }
 
@@ -257,6 +414,281 @@ pub fn fts_query(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn correcting_text_preserves_recognition_and_updates_fts_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let store = HistoryStore::open(&path).unwrap();
+        let id = store.insert(&entry("Displayed original", "Recognized original", 1)).unwrap();
+        let original = store.get(id).unwrap().unwrap();
+        let updated = store.update_text(id, "Corrected İstanbul").unwrap().unwrap();
+        let mut expected = original;
+        expected.text = "Corrected İstanbul".into();
+        assert_eq!(updated, expected);
+        assert!(store.search("Displayed", 10).unwrap().is_empty());
+        assert_eq!(store.search("ıstanbul", 10).unwrap()[0].id, id);
+        assert_eq!(store.search("Recognized", 10).unwrap()[0].id, id);
+        assert!(store.update_text(i64::MAX, "Missing").unwrap().is_none());
+        let mut failed = entry("", "", 2);
+        failed.status = TranscriptStatus::Failed;
+        let failed_id = store.insert(&failed).unwrap();
+        assert!(store.update_text(failed_id, "Not a recovery").unwrap().is_none());
+        drop(store);
+        let reopened = HistoryStore::open(&path).unwrap();
+        assert_eq!(reopened.get(id).unwrap().unwrap(), expected);
+    }
+
+    #[test]
+    fn version_six_migrates_modes_and_preserves_originals_on_failed_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v6.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT;
+            ALTER TABLE dictations ADD COLUMN cleanup_model TEXT;
+            ALTER TABLE dictations ADD COLUMN mode TEXT NOT NULL DEFAULT 'dictation';
+            ALTER TABLE dictations ADD COLUMN agent TEXT;
+            ALTER TABLE dictations ADD COLUMN cleanup_style_id TEXT;
+            PRAGMA user_version=6;
+            INSERT INTO dictations (id,created_at_ms,profile_id,raw_text,text,status,audio_ms,latency_ms,audio_path,search_text,search_raw,cleanup_style_id)
+            VALUES (9,1,'old','Original','Retained','ok',100,10,'old.wav','retained','original','formal');").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let old = store.get(9).unwrap().unwrap();
+        assert_eq!(old.source_text, None);
+        assert_eq!(old.instruction, None);
+        assert_eq!(old.mode, "dictation");
+        assert_eq!(old.cleanup_style_id.as_deref(), Some("formal"));
+        assert_eq!(store.search("retained", 10).unwrap()[0].id, 9);
+        let mut next = entry("Result", "Instruction", 10);
+        next.mode = "edit";
+        next.source_text = Some("Selected original");
+        next.instruction = Some("Make this polite");
+        let id = store.insert(&next).unwrap();
+        assert!(id > 9);
+        next.status = TranscriptStatus::Failed;
+        next.error_code = Some("rejected");
+        store.replace(id, &next, false).unwrap();
+        let failed = store.get(id).unwrap().unwrap();
+        assert!(failed.text.is_empty());
+        assert_eq!(failed.mode, "edit");
+        assert_eq!(failed.source_text.as_deref(), next.source_text);
+        assert_eq!(failed.instruction.as_deref(), next.instruction);
+        next.status = TranscriptStatus::Ok;
+        next.mode = "translate";
+        next.instruction = None;
+        store.replace(id, &next, false).unwrap();
+        let translated = store.get(id).unwrap().unwrap();
+        assert_eq!(translated.mode, "translate");
+        assert_eq!(translated.text, "Result");
+        assert_eq!(translated.source_text.as_deref(), Some("Selected original"));
+        drop(store);
+        assert_eq!(HistoryStore::open(&path).unwrap().get(id).unwrap().unwrap(), translated);
+    }
+
+    #[test]
+    fn version_five_adds_nullable_style_and_preserves_search_audio_and_replacements() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v5.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT;
+            ALTER TABLE dictations ADD COLUMN cleanup_model TEXT;
+            ALTER TABLE dictations ADD COLUMN mode TEXT NOT NULL DEFAULT 'dictation';
+            ALTER TABLE dictations ADD COLUMN agent TEXT; PRAGMA user_version=5;
+            INSERT INTO dictations (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, audio_path, search_text, search_raw)
+            VALUES (10, 'old', 'original', 'retained', 'ok', 100, 10, 'old.wav', 'retained', 'original');").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let old = store.get(1).unwrap().unwrap();
+        assert_eq!(old.cleanup_style_id, None);
+        assert_eq!(old.audio_path.as_deref(), Some("old.wav"));
+        assert_eq!(store.search("retained", 10).unwrap().len(), 1);
+        let mut next = entry("new result", "original", 20);
+        next.cleanup_style_id = Some("raw");
+        let id = store.insert(&next).unwrap();
+        assert_eq!(store.get(id).unwrap().unwrap().cleanup_style_id.as_deref(), Some("raw"));
+        next.cleanup_style_id = Some("formal");
+        store.replace(1, &next, true).unwrap();
+        let replaced = store.get(1).unwrap().unwrap();
+        assert_eq!(replaced.created_at_ms, 10);
+        assert_eq!(replaced.cleanup_style_id.as_deref(), Some("formal"));
+        assert_eq!(replaced.audio_path.as_deref(), Some("old.wav"));
+        drop(store);
+        assert_eq!(HistoryStore::open(&path).unwrap().get(1).unwrap().unwrap(), replaced);
+    }
+
+    #[test]
+    fn version_four_migration_preserves_dictations_and_round_trips_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v4.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch("ALTER TABLE dictations ADD COLUMN cleanup_status TEXT; ALTER TABLE dictations ADD COLUMN cleanup_model TEXT; PRAGMA user_version=4;").unwrap();
+        conn.execute("INSERT INTO dictations (created_at_ms, profile_id, raw_text, text, status, audio_ms, latency_ms, search_text, search_raw) VALUES (1, 'old', 'original', 'retained', 'ok', 100, 10, 'retained', 'original')", []).unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(1).unwrap().unwrap();
+        assert_eq!((row.mode.as_str(), row.agent), ("dictation", None));
+        assert_eq!(row.text, "retained");
+        let mut ask = entry("answer", "request", 2);
+        ask.mode = "ask";
+        ask.agent = Some("Codex");
+        let id = store.insert(&ask).unwrap();
+        let row = store.get(id).unwrap().unwrap();
+        assert_eq!(
+            (row.raw_text.as_str(), row.text.as_str(), row.mode.as_str(), row.agent.as_deref()),
+            ("request", "answer", "ask", Some("Codex"))
+        );
+        assert_eq!(store.search("request", 10).unwrap().len(), 1);
+        drop(store);
+        assert_eq!(HistoryStore::open(&path).unwrap().recent(10, None).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cap_removes_oldest_dates_then_ids_including_failed_audio_and_fts() {
+        let mut store = HistoryStore::open_in_memory().unwrap();
+        let newer = store.insert(&entry("retained", "retained", 300)).unwrap();
+        let older = store.insert(&entry("removed", "removed", 100)).unwrap();
+        store.set_audio_path(older, "old.wav").unwrap();
+        let mut failed = entry("", "", 100);
+        failed.status = TranscriptStatus::Failed;
+        let failure = store.insert(&failed).unwrap();
+        store.set_audio_path(failure, "failed.wav").unwrap();
+        let newest = store.insert(&entry("latest", "latest", 400)).unwrap();
+        assert!(store.trim_to_max_entries(0).unwrap().is_empty());
+        assert_eq!(store.recent(10, None).unwrap().len(), 4);
+        assert_eq!(store.trim_to_max_entries(3).unwrap(), ["old.wav"]);
+        assert!(store.get(older).unwrap().is_none());
+        assert!(store.search("removed", 10).unwrap().is_empty());
+        assert_eq!(store.trim_to_max_entries(2).unwrap(), ["failed.wav"]);
+        assert_eq!(ids(&store.recent(10, None).unwrap()), [newest, newer]);
+        assert!(store.trim_to_max_entries(2).unwrap().is_empty());
+        assert!(store.trim_to_max_entries(1000).unwrap().is_empty());
+        assert!(store.insert(&entry("next", "next", 500)).unwrap() > newest);
+    }
+
+    #[test]
+    fn version_three_migration_keeps_raw_final_and_search_and_round_trips_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v3.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute_batch("PRAGMA user_version=3;
+            INSERT INTO dictations VALUES (10, 123, 'old', 'raw words', 'final words', 'ok', 1000, 10, NULL, NULL, 'en', 'final words', 'raw words');").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let old = store.get(10).unwrap().unwrap();
+        assert_eq!(old.raw_text, "raw words");
+        assert_eq!(old.text, "final words");
+        assert_eq!((old.cleanup_status, old.cleanup_model), (None, None));
+        assert_eq!(store.search("final", 5).unwrap()[0].id, 10);
+        let mut next = entry("edited text", "original input", 456);
+        next.cleanup_status = Some(crate::cleanup::CleanupStatus::Ok);
+        next.cleanup_model = Some("custom-model");
+        let id = store.insert(&next).unwrap();
+        assert!(id > 10);
+        assert_eq!(store.get(id).unwrap().unwrap().cleanup_status, next.cleanup_status);
+        assert_eq!(store.get(id).unwrap().unwrap().cleanup_model.as_deref(), next.cleanup_model);
+        next.cleanup_status = Some(crate::cleanup::CleanupStatus::Failed);
+        store.replace(10, &next, false).unwrap();
+        drop(store);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(10).unwrap().unwrap();
+        assert_eq!(row.created_at_ms, 123);
+        assert_eq!(row.cleanup_status, next.cleanup_status);
+        assert_eq!(row.cleanup_model.as_deref(), next.cleanup_model);
+        assert_eq!(store.search("edited", 5).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn version_two_migration_keeps_failures_search_audio_and_id_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&SCHEMA.replace("    language      TEXT,", "")).unwrap();
+        conn.execute_batch("PRAGMA user_version=2;
+            INSERT INTO dictations VALUES (42, 123, 'old', '', '', 'failed', 1000, 10, 'audio/42.wav', 'timeout', '', '');
+            INSERT INTO dictations VALUES (99, 124, 'old', 'original', 'retained', 'ok', 1000, 10, NULL, NULL, 'retained', 'original');
+            DELETE FROM dictations WHERE id=99;").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(42).unwrap().unwrap();
+        assert_eq!(row.language, None);
+        assert_eq!(row.error_code.as_deref(), Some("timeout"));
+        assert_eq!(row.audio_path.as_deref(), Some("audio/42.wav"));
+        let mut replacement = entry("retained", "original", 999);
+        replacement.language = Some("tr");
+        store.replace(42, &replacement, true).unwrap();
+        assert_eq!(store.get(42).unwrap().unwrap().language.as_deref(), Some("tr"));
+        assert_eq!(store.get(42).unwrap().unwrap().created_at_ms, 123);
+        assert_eq!(ids(&store.search("retained", 10).unwrap()), [42]);
+        assert!(store.insert(&replacement).unwrap() > 99);
+        drop(store);
+        let store = HistoryStore::open(&path).unwrap();
+        assert_eq!(store.get(42).unwrap().unwrap().language.as_deref(), Some("tr"));
+        assert_eq!(store.recent(10, None).unwrap()[0].language.as_deref(), Some("tr"));
+    }
+
+    #[test]
+    fn version_one_migration_preserves_rows_fts_and_never_reuses_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let legacy = SCHEMA
+            .replace("INTEGER PRIMARY KEY AUTOINCREMENT", "INTEGER PRIMARY KEY")
+            .replace("    error_code    TEXT,", "");
+        let legacy = legacy.replace("    language      TEXT,", "");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(&legacy).unwrap();
+        conn.execute_batch("PRAGMA user_version=1;
+            INSERT INTO dictations VALUES (42, 123, 'old', 'original', 'retained', 'ok', 500, 10, '42.wav', 'retained', 'original');").unwrap();
+        drop(conn);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(42).unwrap().unwrap();
+        assert_eq!(row.created_at_ms, 123);
+        assert_eq!(row.audio_path.as_deref(), Some("42.wav"));
+        assert_eq!(row.error_code, None);
+        assert_eq!(ids(&store.search("retained", 10).unwrap()), [42]);
+        store.delete(42).unwrap();
+        let next = store.insert(&entry("new", "new", 200)).unwrap();
+        assert!(next > 42);
+        store.clear().unwrap();
+        drop(store);
+        let store = HistoryStore::open(&path).unwrap();
+        assert!(store.insert(&entry("after reopen", "", 300)).unwrap() > next);
+    }
+
+    #[test]
+    fn failures_are_sanitized_retained_and_replaced_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.db");
+        let store = HistoryStore::open(&path).unwrap();
+        let mut failed = entry("private provider body", "private key", 123);
+        failed.status = TranscriptStatus::Failed;
+        failed.error_code = Some("timeout");
+        let id = store.insert(&failed).unwrap();
+        store.set_audio_path(id, "audio.wav").unwrap();
+        assert!(store.take_expired_audio(1000).unwrap().is_empty());
+        drop(store);
+        let store = HistoryStore::open(&path).unwrap();
+        let row = store.get(id).unwrap().unwrap();
+        assert_eq!(row.status, TranscriptStatus::Failed);
+        assert_eq!(row.error_code.as_deref(), Some("timeout"));
+        assert!(row.text.is_empty() && row.raw_text.is_empty());
+        let recovered = entry("recovered", "raw", 999);
+        assert!(store.replace(id, &recovered, false).unwrap());
+        let row = store.get(id).unwrap().unwrap();
+        assert_eq!((row.id, row.created_at_ms), (id, 123));
+        assert_eq!(row.error_code, None);
+        assert_eq!(row.audio_path, None);
+        assert_eq!(ids(&store.search("recovered", 10).unwrap()), [id]);
+        store.delete(id).unwrap();
+        assert!(!store.replace(id, &recovered, false).unwrap());
+        failed.error_code = Some("private provider body");
+        let id = store.insert(&failed).unwrap();
+        assert_eq!(store.get(id).unwrap().unwrap().error_code.as_deref(), Some("rejected"));
+    }
 
     #[test]
     fn usage_aggregates_all_rows_with_inclusive_start_and_exclusive_end() {
@@ -281,6 +713,10 @@ mod tests {
 
     fn entry<'a>(text: &'a str, raw_text: &'a str, created_at_ms: i64) -> NewDictation<'a> {
         NewDictation {
+            source_text: None,
+            instruction: None,
+            mode: "dictation",
+            agent: None,
             created_at_ms,
             profile_id: "groq",
             raw_text,
@@ -288,6 +724,11 @@ mod tests {
             status: TranscriptStatus::Ok,
             audio_ms: 1_000,
             latency_ms: 800,
+            error_code: None,
+            language: None,
+            cleanup_status: None,
+            cleanup_model: None,
+            cleanup_style_id: None,
         }
     }
 

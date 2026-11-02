@@ -1,0 +1,20 @@
+[package]
+name = "opit-ipc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+
+[target.'cfg(windows)'.dependencies]
+tokio = { workspace = true, features = ["net"] }
+windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Pipes"] }
+
+[target.'cfg(unix)'.dependencies]
+tokio = { workspace = true, features = ["net", "time"] }
+libc = "0.2"

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { toasts } from "../toast.svelte";
+  import { toasts } from "../state/toast.svelte";
 </script>
 
 <div class="toasts" aria-live="polite" aria-atomic="false">

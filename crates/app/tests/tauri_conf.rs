@@ -1,4 +1,5 @@
 //! The installer, the uninstaller hooks and the app must agree on names and paths.
+#![cfg(windows)]
 
 use opit_app::platform::windows::autostart::VALUE_NAME;
 
@@ -7,6 +8,16 @@ const HOOKS: &str = include_str!("../windows/hooks.nsh");
 
 fn conf() -> serde_json::Value {
     serde_json::from_str(CONF).expect("tauri.conf.json is valid JSON")
+}
+
+#[test]
+fn the_cli_is_staged_before_build_and_installed_next_to_the_app() {
+    let config = conf();
+    assert_eq!(config["bundle"]["resources"]["../../target/cli-bundle/"], "");
+    assert_eq!(config["build"]["beforeBuildCommand"]["script"], "node ../scripts/build-cli.mjs && npm run build");
+    let script = include_str!("../../../scripts/build-cli.mjs");
+    assert!(script.contains("\"opit-cli\""));
+    assert!(script.contains("\"opit.exe\""));
 }
 
 #[test]
@@ -47,6 +58,7 @@ fn the_hooks_target_the_apps_data_folder_and_cleanup_flag() {
     // "$INSTDIR\${MAINBINARYNAME}.exe" --delete-credentials
     let cleanup = format!("\"$INSTDIR\\${{MAINBINARYNAME}}.exe\" {}", opit_app::uninstall::DELETE_CREDENTIALS_FLAG);
     assert!(HOOKS.contains(&data), "missing: {data}");
+    assert!(HOOKS.contains("RmDir /r \"$LOCALAPPDATA\\opit-speech-to-text\\local\""));
     assert!(HOOKS.contains(&cleanup), "missing: {cleanup}");
 }
 

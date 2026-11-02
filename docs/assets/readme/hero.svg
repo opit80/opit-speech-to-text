@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="380" viewBox="0 0 1200 380" role="img" aria-labelledby="t d" aria-label="Opit Speech to Text. Press a shortcut, speak, and your words land at the cursor. A recording overlay with a timer and waveform previews the words as they are typed into a text field.">
+<title id="t">Opit Speech to Text</title>
+<desc id="d">Press a shortcut. Speak. Your words land at the cursor. On the right, the recording overlay shows a busy dot, a 0:07 timer and a 25-bar microphone waveform while the live preview of the words flows into a text field ending in a caret.</desc>
+<rect x="0.5" y="0.5" width="1199" height="379" rx="24" fill="#111216" stroke="#2a2c33"/>
+<g font-family="'Segoe UI Variable Display','Segoe UI',-apple-system,BlinkMacSystemFont,system-ui,Inter,'Noto Sans','Helvetica Neue',Arial,sans-serif">
+<g transform="translate(64 64) scale(0.0625)"><rect x="32" y="32" width="960" height="960" rx="208" fill="#2563eb"/><rect x="392" y="176" width="240" height="420" rx="120" fill="#ffffff"/><path d="M288 480v24c0 124 100 224 224 224s224-100 224-224v-24M512 728v104M392 840h240" fill="none" stroke="#ffffff" stroke-width="56" stroke-linecap="round"/></g>
+<text x="62" y="182" font-size="50" font-weight="700" letter-spacing="-0.6" fill="#f3f3f3">Opit Speech to Text</text>
+<text font-size="30" fill="#b5b5b5"><tspan x="64" y="234">Press a shortcut. Speak.</tspan><tspan x="64" y="275">Your words land at the cursor.</tspan></text>
+<text x="64" y="324" font-size="20" fill="#b5b5b5">Windows · Linux · your own API key · MIT</text>
+</g>
+<g transform="translate(632 66)" font-family="'Segoe UI Variable Display','Segoe UI',-apple-system,BlinkMacSystemFont,system-ui,Inter,'Noto Sans','Helvetica Neue',Arial,sans-serif">
+<rect width="504" height="105.6" rx="19.2" fill="#1e1f24" fill-opacity="0.92" stroke="#34363e"/>
+<circle cx="25.2" cy="25.2" r="6" fill="#b292ff"/>
+<text font-size="18" fill="#ececf0"><tspan x="43.2" y="31.6">Thanks for the notes. Let’s move the design</tspan><tspan x="43.2" y="58">review to Thursday at ten.</tspan></text>
+<rect x="43.2" y="81" width="10.8" height="3.6" fill="#b292ff"/>
+<rect x="56.4" y="79.2" width="10.8" height="7.2" fill="#b292ff"/>
+<rect x="69.6" y="76.2" width="10.8" height="13.2" fill="#b292ff"/>
+<rect x="82.8" y="78" width="10.8" height="9.6" fill="#b292ff"/>
+<rect x="96" y="74.4" width="10.8" height="16.8" fill="#b292ff"/>
+<rect x="109.2" y="76.8" width="10.8" height="12" fill="#b292ff"/>
+<rect x="122.4" y="79.8" width="10.8" height="6" fill="#b292ff"/>
+<rect x="135.6" y="81.6" width="10.8" height="2.4" fill="#b292ff"/>
+<rect x="148.8" y="82.2" width="10.8" height="1.2" fill="#3e3f48"/>
+<rect x="162" y="80.4" width="10.8" height="4.8" fill="#b292ff"/>
+<rect x="175.2" y="77.4" width="10.8" height="10.8" fill="#b292ff"/>
+<rect x="188.4" y="74.4" width="10.8" height="16.8" fill="#b292ff"/>
+<rect x="201.6" y="72.6" width="10.8" height="20.4" fill="#b292ff"/>
+<rect x="214.8" y="75" width="10.8" height="15.6" fill="#b292ff"/>
+<rect x="228" y="78.6" width="10.8" height="8.4" fill="#b292ff"/>
+<rect x="241.2" y="76.2" width="10.8" height="13.2" fill="#b292ff"/>
+<rect x="254.4" y="73.8" width="10.8" height="18" fill="#b292ff"/>
+<rect x="267.6" y="77.4" width="10.8" height="10.8" fill="#b292ff"/>
+<rect x="280.8" y="80.4" width="10.8" height="4.8" fill="#b292ff"/>
+<rect x="294" y="81.6" width="10.8" height="2.4" fill="#b292ff"/>
+<rect x="307.2" y="79.8" width="10.8" height="6" fill="#b292ff"/>
+<rect x="320.4" y="75.6" width="10.8" height="14.4" fill="#b292ff"/>
+<rect x="333.6" y="73.2" width="10.8" height="19.2" fill="#b292ff"/>
+<rect x="346.8" y="76.8" width="10.8" height="12" fill="#b292ff"/>
+<rect x="360" y="79.2" width="10.8" height="7.2" fill="#b292ff"/>
+<text x="484.8" y="90" font-size="18" text-anchor="end" fill="#ececf0" style="font-variant-numeric:tabular-nums">0:07</text>
+</g>
+<path d="M675.2 183.6V212M669.2 206l6 6 6-6" fill="none" stroke="#6b6e78" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<g transform="translate(632 226)" font-family="'Segoe UI Variable Display','Segoe UI',-apple-system,BlinkMacSystemFont,system-ui,Inter,'Noto Sans','Helvetica Neue',Arial,sans-serif">
+<rect x="0.5" y="0.5" width="503" height="98" rx="10" fill="#1b1c20" stroke="#3d3f47"/>
+<path d="M10 97.5H494" stroke="#4cc2ff" stroke-width="3" stroke-linecap="round"/>
+<text font-size="22" fill="#f3f3f3"><tspan x="43.2" y="40">Thanks for the notes. Let’s move the</tspan><tspan x="43.2" y="74">design review to Thursday at ten.</tspan><tspan dx="3" font-weight="300" font-size="28" fill="#4cc2ff">|</tspan></text>
+</g>
+</svg>

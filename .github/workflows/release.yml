@@ -1,8 +1,8 @@
 name: Release
 
-# Pushing a tag vX.Y.Z builds the signed NSIS installer and the updater manifest and attaches
+# Pushing a tag vX.Y.Z builds signed Windows and Linux packages and one updater manifest and attaches
 # them to a DRAFT GitHub Release. Nothing reaches users until a person runs
-# docs/RELEASE-CHECKLIST.md and publishes the draft (releases/latest ignores drafts).
+# docs/release/RELEASE-CHECKLIST.md and publishes the draft (releases/latest ignores drafts).
 on:
   push:
     tags: ["v*.*.*"]
@@ -15,12 +15,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  windows:
     runs-on: windows-latest
     env:
       OPIT_RELEASE_TAG: ${{ github.ref_name }}
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -71,7 +69,97 @@ jobs:
         env:
           OPIT_RELEASE_ASSETS: ${{ github.workspace }}/release-assets
         run: cargo test -p opit-speech-to-text --test updater_artifacts -- --ignored
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  linux:
+    # Build against an older supported base to avoid accidentally requiring a newer glibc.
+    runs-on: ubuntu-22.04
+    env:
+      OPIT_RELEASE_TAG: ${{ github.ref_name }}
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Check the tag against the app version
+        run: node scripts/release/latest-json.mjs check-version "$OPIT_RELEASE_TAG"
+      - name: Refuse to rebuild a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/release/draft-release.mjs check "$OPIT_RELEASE_TAG"
+      - name: Install Linux app build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libgtk-layer-shell-dev patchelf libasound2-dev libgtk-layer-shell-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version 2.12.0 --locked
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Check Rust lints
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Check and test the UI
+        working-directory: ui
+        run: |
+          npm run check
+          npm test
+      - name: Test release helpers
+        run: node --test scripts/release/*.test.mjs
+      - name: Build signed AppImage and deb packages
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --ci --bundles appimage,deb
+      - name: Prepare and verify Linux release assets
+        run: |
+          node scripts/release/latest-json.mjs linux-assets "$OPIT_RELEASE_TAG" target/release/bundle/appimage target/release/bundle/deb release-assets
+          node scripts/release/latest-json.mjs verify "$OPIT_RELEASE_TAG" release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets
+          path: release-assets/*
+          if-no-files-found: error
+
+  draft:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      OPIT_RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release-assets
+          path: windows-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets
+          path: linux-assets
+      - name: Merge verified platform artifacts into one manifest and checksum list
+        run: node scripts/release/latest-json.mjs merge-assets "$OPIT_RELEASE_TAG" windows-assets linux-assets release-assets
+      - name: Verify all release assets
+        run: node scripts/release/latest-json.mjs verify "$OPIT_RELEASE_TAG" release-assets
       - name: Create or refresh the draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/release/draft-release.mjs upload "$env:OPIT_RELEASE_TAG" release-assets
+        run: node scripts/release/draft-release.mjs upload "$OPIT_RELEASE_TAG" release-assets

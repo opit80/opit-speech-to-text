@@ -94,11 +94,7 @@ impl RulePack {
         }
         let folded = fold(&variant);
         if fold(&canonical) == folded {
-            if self.terms.contains(&canonical) {
-                return Ok(CorrectionOutcome::AlreadyPresent);
-            }
-            self.terms.push(canonical);
-            return Ok(CorrectionOutcome::AddedTerm);
+            return self.add_term(&canonical);
         }
         for (key, variants) in &self.corrections {
             if *key != canonical && variants.iter().any(|v| fold(v) == folded) {
@@ -111,6 +107,24 @@ impl RulePack {
         }
         variants.push(variant);
         Ok(CorrectionOutcome::AddedVariant)
+    }
+
+    /// Add or update a canonical spelling without creating a casing-only duplicate.
+    pub fn add_term(&mut self, canonical: &str) -> Result<CorrectionOutcome, CorrectionError> {
+        let canonical = collapse_ws(canonical);
+        if canonical.is_empty() {
+            return Err(CorrectionError::Empty);
+        }
+        let key = fold(&canonical);
+        if let Some(existing) = self.terms.iter_mut().find(|term| fold(&collapse_ws(term)) == key) {
+            if *existing == canonical {
+                return Ok(CorrectionOutcome::AlreadyPresent);
+            }
+            *existing = canonical;
+        } else {
+            self.terms.push(canonical);
+        }
+        Ok(CorrectionOutcome::AddedTerm)
     }
 }
 
@@ -176,10 +190,19 @@ fn is_false(value: &bool) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn term_updates_casing_in_place_with_turkish_folding() {
+        let mut pack = RulePack::from_yaml("schema: 1\nid: user\nname: Personal\nterms: [github, ıstanbul]\n").unwrap();
+        assert_eq!(pack.add_correction("GitHub", "GITHUB"), Ok(CorrectionOutcome::AddedTerm));
+        assert_eq!(pack.add_term("İstanbul"), Ok(CorrectionOutcome::AddedTerm));
+        assert_eq!(pack.terms, ["GitHub", "İstanbul"]);
+        assert_eq!(pack.add_term("GitHub"), Ok(CorrectionOutcome::AlreadyPresent));
+    }
+
     const FULL: &str = r#"
 schema: 1
-id: tr-tech
-name: Turkish – software terms
+id: user
+name: Personal rules
 language: tr
 terms: [Claude Code, GitHub]
 corrections:
@@ -193,7 +216,7 @@ hallucinations: [altyazı m.k]
     #[test]
     fn parses_a_full_pack() {
         let pack = RulePack::from_yaml(FULL).unwrap();
-        assert_eq!(pack.id, "tr-tech");
+        assert_eq!(pack.id, "user");
         assert_eq!(pack.terms, vec!["Claude Code", "GitHub"]);
         assert_eq!(pack.corrections["Claude Code"], vec!["cloud code", "clod code"]);
         assert_eq!(pack.replacements[1].to, "$1 TL");
@@ -243,7 +266,7 @@ hallucinations: [altyazı m.k]
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("user.yaml");
         std::fs::write(&path, FULL).unwrap();
-        assert_eq!(load_pack_file(&path).unwrap().id, "tr-tech");
+        assert_eq!(load_pack_file(&path).unwrap().id, "user");
         let missing = load_pack_file(&dir.path().join("nope.yaml")).unwrap_err();
         assert!(matches!(missing, PackError::Io(_)));
     }

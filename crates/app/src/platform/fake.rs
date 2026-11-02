@@ -1,13 +1,158 @@
 //! In-memory platform doubles for controller and app-state tests.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use opit_core::audio::Recording;
 use opit_core::config::OverlayPosition;
 
 use super::*;
+
+/// Streaming test double shared by controller tests. No real socket or credentials.
+pub struct FakeStreaming {
+    pub connections: AtomicUsize,
+    pub dropped: AtomicUsize,
+    pub finishes: AtomicUsize,
+    pub audio: Mutex<Vec<i16>>,
+    pub updates: Mutex<
+        std::collections::VecDeque<
+            Result<opit_core::provider::streaming::LiveUpdate, opit_core::provider::ProviderError>,
+        >,
+    >,
+    pub result: Mutex<Result<opit_core::provider::RawTranscript, opit_core::provider::ProviderError>>,
+    pub connect_error: Mutex<Option<opit_core::provider::ProviderError>>,
+    pub send_error: Mutex<Option<opit_core::provider::ProviderError>>,
+    pub connect_gate: tokio::sync::Semaphore,
+    pub hang_finish: AtomicBool,
+    pub keepalives: AtomicUsize,
+}
+
+impl Default for FakeStreaming {
+    fn default() -> Self {
+        Self {
+            connections: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+            finishes: AtomicUsize::new(0),
+            audio: Mutex::default(),
+            updates: Mutex::new([Ok(opit_core::provider::streaming::LiveUpdate { text: "live draft".into() })].into()),
+            result: Mutex::new(Ok(opit_core::provider::RawTranscript {
+                text: "stream final words".into(),
+                language: Some("tr".into()),
+                dropped_segments: 0,
+                segments: Vec::new(),
+            })),
+            connect_error: Mutex::default(),
+            send_error: Mutex::default(),
+            connect_gate: tokio::sync::Semaphore::new(1000),
+            hang_finish: AtomicBool::new(false),
+            keepalives: AtomicUsize::new(0),
+        }
+    }
+}
+
+pub struct FakeLiveSession(pub Arc<FakeStreaming>);
+impl Drop for FakeLiveSession {
+    fn drop(&mut self) {
+        self.0.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl opit_core::provider::streaming::LiveSession for FakeLiveSession {
+    fn send_audio<'a>(&'a mut self, samples: &'a [i16]) -> opit_core::provider::streaming::LiveFuture<'a, ()> {
+        Box::pin(async move {
+            if let Some(error) = self.0.send_error.lock().unwrap().clone() {
+                return Err(error);
+            }
+            self.0.audio.lock().unwrap().extend_from_slice(samples);
+            Ok(())
+        })
+    }
+    fn next_update(
+        &mut self,
+    ) -> opit_core::provider::streaming::LiveFuture<'_, Option<opit_core::provider::streaming::LiveUpdate>> {
+        Box::pin(async move {
+            let update = self.0.updates.lock().unwrap().pop_front();
+            match update {
+                Some(update) => update.map(Some),
+                None => std::future::pending().await,
+            }
+        })
+    }
+    fn keep_alive(&mut self) -> opit_core::provider::streaming::LiveFuture<'_, ()> {
+        Box::pin(async {
+            self.0.keepalives.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        })
+    }
+    fn finish(
+        self: Box<Self>,
+    ) -> opit_core::provider::streaming::LiveFuture<'static, opit_core::provider::RawTranscript> {
+        Box::pin(async move {
+            self.0.finishes.fetch_add(1, Ordering::SeqCst);
+            if self.0.hang_finish.load(Ordering::SeqCst) {
+                return std::future::pending().await;
+            }
+            // Like the real socket's finish handshake, consume queued frames before
+            // accepting a final result, even if stopping wins over next_update.
+            while let Some(update) = self.0.updates.lock().unwrap().pop_front() {
+                update?;
+            }
+            self.0.result.lock().unwrap().clone()
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct FakeForegroundApp {
+    pub info: Mutex<Option<ForegroundInfo>>,
+    pub calls: Mutex<Vec<bool>>,
+    pub running: Mutex<Vec<ForegroundInfo>>,
+}
+
+impl ForegroundApp for FakeForegroundApp {
+    fn current(&self, include_title: bool) -> Option<ForegroundInfo> {
+        self.calls.lock().unwrap().push(include_title);
+        self.info.lock().unwrap().clone().map(|mut info| {
+            if !include_title {
+                info.title.clear();
+            }
+            info
+        })
+    }
+
+    fn list_running(&self) -> Result<Vec<ForegroundInfo>, String> {
+        Ok(self.running.lock().unwrap().clone())
+    }
+}
+
+#[derive(Default)]
+pub struct FakeMedia {
+    pub calls: Mutex<Vec<Option<(MediaMode, u8)>>>,
+    active: Mutex<bool>,
+}
+
+impl MediaControl for FakeMedia {
+    fn engage(&self, mode: MediaMode, percent: u8) {
+        let mut active = self.active.lock().unwrap();
+        if !*active {
+            self.calls.lock().unwrap().push(Some((mode, percent)));
+            *active = true;
+        }
+    }
+
+    fn release(&self) {
+        let mut active = self.active.lock().unwrap();
+        if *active {
+            self.calls.lock().unwrap().push(None);
+            *active = false;
+        }
+    }
+
+    fn shutdown(&self) {
+        self.release();
+    }
+}
 
 /// A 1 s 220 Hz tone at 48 kHz stereo: passes the silence gate.
 pub fn speech_recording() -> Recording {
@@ -26,6 +171,7 @@ pub fn silent_recording() -> Recording {
 
 #[derive(Default)]
 pub struct FakeMic {
+    pub audio_sink: Arc<Mutex<Option<AudioSink>>>,
     pub recording: Mutex<Option<Recording>>,
     pub fail_start: Mutex<Option<MicError>>,
     pub fell_back: Mutex<bool>,
@@ -33,11 +179,24 @@ pub struct FakeMic {
     pub sink: Mutex<Option<CaptureSink>>,
     pub finished: Arc<AtomicUsize>,
     pub dropped: Arc<AtomicUsize>,
+    pub paused: Arc<Mutex<bool>>,
+    pub samples: Arc<Mutex<Vec<f32>>>,
+    pub captured: Arc<Mutex<Vec<Recording>>>,
     /// One-shot callback after opening a capture, before returning it to the caller.
     pub before_start_returns: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl FakeMic {
+    pub fn append_samples(&self, samples: &[f32]) {
+        if !*self.paused.lock().unwrap() {
+            self.samples.lock().unwrap().extend_from_slice(samples);
+            if let Some(sink) = self.audio_sink.lock().unwrap().as_ref() {
+                let mono: Vec<_> =
+                    samples.chunks(2).map(|frame| frame.iter().sum::<f32>() / frame.len() as f32).collect();
+                sink(mono, 48_000);
+            }
+        }
+    }
     pub fn starts(&self) -> usize {
         self.requested.lock().unwrap().len()
     }
@@ -61,11 +220,17 @@ impl Microphone for FakeMic {
         }
         *self.sink.lock().unwrap() = Some(sink);
         let recording = self.recording.lock().unwrap().clone().unwrap_or_else(speech_recording);
+        *self.paused.lock().unwrap() = false;
+        self.samples.lock().unwrap().clear();
         let started = Started {
             capture: Box::new(FakeCapture {
+                audio_sink: self.audio_sink.clone(),
                 recording: Some(recording),
                 finished: self.finished.clone(),
                 dropped: self.dropped.clone(),
+                paused: self.paused.clone(),
+                samples: self.samples.clone(),
+                captured: self.captured.clone(),
             }),
             device: "Fake Mic".into(),
             fell_back: *self.fell_back.lock().unwrap(),
@@ -79,20 +244,42 @@ impl Microphone for FakeMic {
 }
 
 struct FakeCapture {
+    audio_sink: Arc<Mutex<Option<AudioSink>>>,
     recording: Option<Recording>,
     finished: Arc<AtomicUsize>,
     dropped: Arc<AtomicUsize>,
+    paused: Arc<Mutex<bool>>,
+    samples: Arc<Mutex<Vec<f32>>>,
+    captured: Arc<Mutex<Vec<Recording>>>,
 }
 
 impl Capture for FakeCapture {
+    fn set_audio_sink(&self, sink: Option<AudioSink>) {
+        let mut current = self.audio_sink.lock().unwrap();
+        if let Some(sink) = &sink {
+            let recording = self.recording.as_ref().unwrap();
+            let mono = opit_core::audio::downmix(&recording.samples, recording.channels);
+            for chunk in mono.chunks((recording.sample_rate / 5).max(1) as usize) {
+                sink(chunk.to_vec(), recording.sample_rate);
+            }
+        }
+        *current = sink;
+    }
+    fn set_paused(&self, paused: bool) {
+        *self.paused.lock().unwrap() = paused;
+    }
     fn finish(mut self: Box<Self>) -> Recording {
         self.finished.fetch_add(1, Ordering::SeqCst);
-        self.recording.take().unwrap()
+        let mut recording = self.recording.take().unwrap();
+        recording.samples.extend(self.samples.lock().unwrap().iter());
+        self.captured.lock().unwrap().push(recording.clone());
+        recording
     }
 }
 
 impl Drop for FakeCapture {
     fn drop(&mut self) {
+        self.audio_sink.lock().unwrap().take();
         if self.recording.is_some() {
             self.dropped.fetch_add(1, Ordering::SeqCst);
         }
@@ -101,7 +288,9 @@ impl Drop for FakeCapture {
 
 #[derive(Default)]
 pub struct FakeHotkey {
+    pub press_only: Mutex<bool>,
     pub registered: Mutex<Vec<Vec<String>>>,
+    pub shortcuts: Mutex<Vec<(HotkeyEvent, Vec<String>)>>,
     pub sink: Mutex<Option<HotkeySink>>,
     pub fail_register: Mutex<Option<HotkeyError>>,
     pub paused: Mutex<bool>,
@@ -115,6 +304,13 @@ impl FakeHotkey {
 }
 
 impl Hotkey for FakeHotkey {
+    fn supports_release(&self) -> bool {
+        !*self.press_only.lock().unwrap()
+    }
+    fn register_shortcuts(&self, shortcuts: &[(HotkeyEvent, Vec<String>)]) -> Result<(), HotkeyError> {
+        *self.shortcuts.lock().unwrap() = shortcuts.to_vec();
+        Ok(())
+    }
     fn register(&self, keys: &[String], sink: HotkeySink) -> Result<(), HotkeyError> {
         if let Some(err) = self.fail_register.lock().unwrap().take() {
             return Err(err);
@@ -133,14 +329,37 @@ impl Hotkey for FakeHotkey {
     }
 }
 
+pub type PasteGate = (Mutex<bool>, Condvar);
+
 pub struct FakePaster {
+    pub selection: Mutex<Option<String>>,
+    pub selection_error: Mutex<Option<SelectionError>>,
     pub outcome: Mutex<PasteOutcome>,
     pub pasted: Mutex<Vec<(String, bool)>>,
+    pub policies: Mutex<Vec<bool>>,
+    pub requests: Mutex<Vec<PasteRequest>>,
+    pub clipboard_writes: Mutex<Vec<String>>,
+    pub typed: Mutex<Vec<String>>,
+    pub after_keys: Mutex<Vec<PasteAfter>>,
+    pub allow_auto: Mutex<Option<bool>>,
+    pub gate: Mutex<Option<Arc<PasteGate>>>,
 }
 
 impl Default for FakePaster {
     fn default() -> Self {
-        Self { outcome: Mutex::new(PasteOutcome::Pasted), pasted: Mutex::default() }
+        Self {
+            selection: Mutex::default(),
+            selection_error: Mutex::default(),
+            outcome: Mutex::new(PasteOutcome::Pasted),
+            pasted: Mutex::default(),
+            policies: Mutex::default(),
+            requests: Mutex::default(),
+            clipboard_writes: Mutex::default(),
+            typed: Mutex::default(),
+            after_keys: Mutex::default(),
+            allow_auto: Mutex::default(),
+            gate: Mutex::default(),
+        }
     }
 }
 
@@ -151,9 +370,37 @@ impl FakePaster {
 }
 
 impl Paster for FakePaster {
-    fn paste(&self, text: &str, restore: bool) -> PasteOutcome {
-        self.pasted.lock().unwrap().push((text.to_string(), restore));
-        self.outcome.lock().unwrap().clone()
+    fn read_selection(&self) -> Result<Option<String>, SelectionError> {
+        if let Some(error) = *self.selection_error.lock().unwrap() {
+            return Err(error);
+        }
+        Ok(self.selection.lock().unwrap().clone())
+    }
+
+    fn can_auto_paste(&self) -> bool {
+        self.allow_auto.lock().unwrap().unwrap_or(true)
+    }
+    fn paste(&self, text: &str, request: PasteRequest) -> PasteOutcome {
+        self.policies.lock().unwrap().push(request.auto_paste);
+        self.requests.lock().unwrap().push(request);
+        self.pasted.lock().unwrap().push((text.to_string(), request.restore));
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            let _ = gate.1.wait_timeout_while(gate.0.lock().unwrap(), Duration::from_secs(5), |open| !*open).unwrap();
+        }
+        let outcome = match self.outcome.lock().unwrap().clone() {
+            PasteOutcome::Pasted if !request.auto_paste => PasteOutcome::ClipboardOnly,
+            outcome => outcome,
+        };
+        if outcome == PasteOutcome::Pasted && request.method == PasteMethod::Type {
+            self.typed.lock().unwrap().push(text.to_string());
+        } else if !matches!(outcome, PasteOutcome::Failed(_)) {
+            self.clipboard_writes.lock().unwrap().push(text.to_string());
+        }
+        if outcome == PasteOutcome::Pasted && request.after != PasteAfter::None {
+            self.after_keys.lock().unwrap().push(request.after);
+        }
+        outcome
     }
 }
 

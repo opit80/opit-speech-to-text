@@ -23,6 +23,7 @@ pub struct OpenAiCompatible {
     profile: Profile,
     api_key: Option<String>,
     base_timeout: Duration,
+    file_mode: bool,
 }
 
 impl OpenAiCompatible {
@@ -32,7 +33,15 @@ impl OpenAiCompatible {
             .build()
             .map_err(|e| ProviderError::Network(e.to_string()))?;
         let api_key = api_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
-        Ok(Self { client, profile, api_key, base_timeout: BASE_REQUEST_TIMEOUT })
+        Ok(Self { client, profile, api_key, base_timeout: BASE_REQUEST_TIMEOUT, file_mode: false })
+    }
+
+    /// File transcription asks for timing but can still produce plain text on servers
+    /// that explicitly reject verbose JSON. Dictation keeps its configured behavior.
+    pub fn for_file(mut self) -> Self {
+        self.profile.response_format = ResponseFormat::VerboseJson;
+        self.file_mode = true;
+        self
     }
 
     /// Overrides the 30 s base timeout (tests, slow self-hosted servers).
@@ -84,7 +93,7 @@ impl OpenAiCompatible {
         self.transcribe(&request).await.map(|_| ())
     }
 
-    fn form(&self, request: &TranscribeRequest<'_>) -> Form {
+    fn form(&self, request: &TranscribeRequest<'_>, format: ResponseFormat) -> Form {
         let audio = request.audio;
         let file = Part::bytes(audio.bytes.clone())
             .file_name(audio.file_name())
@@ -94,7 +103,7 @@ impl OpenAiCompatible {
             .part("file", file)
             .text("model", self.profile.model.clone())
             .text("temperature", "0")
-            .text("response_format", self.profile.response_format.as_str());
+            .text("response_format", format.as_str());
         let language = self.profile.language.trim();
         if !language.is_empty() && language != "auto" {
             form = form.text("language", language.to_string());
@@ -111,6 +120,18 @@ impl OpenAiCompatible {
         }
         form
     }
+
+    fn request(&self, request: &TranscribeRequest<'_>, format: ResponseFormat) -> reqwest::RequestBuilder {
+        let mut builder = self
+            .client
+            .post(self.endpoint())
+            .timeout(request_timeout(self.base_timeout, request.audio_ms))
+            .multipart(self.form(request, format));
+        if let Some(key) = &self.api_key {
+            builder = builder.bearer_auth(key);
+        }
+        builder
+    }
 }
 
 impl Transcriber for OpenAiCompatible {
@@ -118,67 +139,60 @@ impl Transcriber for OpenAiCompatible {
         &self.profile
     }
 
-    fn transcribe(
-        &self,
-        request: &TranscribeRequest<'_>,
-    ) -> impl Future<Output = Result<RawTranscript, ProviderError>> + Send {
-        let mut builder = self
-            .client
-            .post(self.endpoint())
-            .timeout(request_timeout(self.base_timeout, request.audio_ms))
-            .multipart(self.form(request));
-        if let Some(key) = &self.api_key {
-            builder = builder.bearer_auth(key);
+    async fn transcribe(&self, request: &TranscribeRequest<'_>) -> Result<RawTranscript, ProviderError> {
+        let mut verbose = self.profile.response_format == ResponseFormat::VerboseJson;
+        let mut response = self.request(request, self.profile.response_format).send().await.map_err(send_error)?;
+        if self.file_mode && verbose && matches!(response.status().as_u16(), 400 | 422) {
+            response = self.request(request, ResponseFormat::Json).send().await.map_err(send_error)?;
+            verbose = false;
         }
-        let verbose = self.profile.response_format == ResponseFormat::VerboseJson;
-        async move {
-            let response = builder.send().await.map_err(send_error)?;
-            let status = response.status().as_u16();
-            let body = response.text().await.map_err(send_error)?;
-            if !(200..300).contains(&status) {
-                return Err(status_error(status, &body));
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            if status == 429
+                && let Some(delay) = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| super::retry::retry_after(v, std::time::SystemTime::now()))
+            {
+                return Err(ProviderError::RateLimitedAfter(delay));
             }
-            parse_body(&body, verbose)
+            return Err(status_error(status, ""));
         }
+        let body = response.text().await.map_err(send_error)?;
+        parse_body(&body, verbose)
     }
 }
 
 fn send_error(err: reqwest::Error) -> ProviderError {
-    if err.is_timeout() { ProviderError::Timeout } else { ProviderError::Network(err.to_string()) }
+    if err.is_timeout() { ProviderError::Timeout } else { ProviderError::Network("connection failed".into()) }
 }
 
-fn status_error(status: u16, body: &str) -> ProviderError {
+fn status_error(status: u16, _body: &str) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Unauthorized(status),
         413 => ProviderError::PayloadTooLarge,
         429 => ProviderError::RateLimited,
         500..=599 => ProviderError::Server(status),
-        _ => ProviderError::Http { status, message: error_message(body) },
+        _ => ProviderError::Http { status, message: "request refused".into() },
     }
-}
-
-/// OpenAI-style `{"error":{"message":…}}`, else the first 200 chars of the body.
-fn error_message(body: &str) -> String {
-    #[derive(Deserialize)]
-    struct Envelope {
-        error: ErrorBody,
-    }
-    #[derive(Deserialize)]
-    struct ErrorBody {
-        message: String,
-    }
-    serde_json::from_str::<Envelope>(body).map(|e| e.error.message).unwrap_or_else(|_| body.chars().take(200).collect())
 }
 
 #[derive(Deserialize)]
 struct ApiResponse {
     text: String,
     #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
     segments: Option<Vec<Segment>>,
 }
 
 #[derive(Deserialize)]
 struct Segment {
+    #[serde(default)]
+    start: Option<f64>,
+    #[serde(default)]
+    end: Option<f64>,
     #[serde(default)]
     text: String,
     #[serde(default)]
@@ -199,13 +213,23 @@ fn describe(err: &serde_json::Error) -> String {
     format!("invalid JSON ({kind} error at line {}, column {})", err.line(), err.column())
 }
 
-fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
+pub(super) fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError> {
     let response: ApiResponse = serde_json::from_str(body).map_err(|e| ProviderError::BadResponse(describe(&e)))?;
+    let language = if verbose { response.language.as_deref().and_then(super::language::normalize) } else { None };
     let segments = if verbose { response.segments.unwrap_or_default() } else { Vec::new() };
     let is_silence = |s: &Segment| s.no_speech_prob > NO_SPEECH_PROB_LIMIT && s.avg_logprob < AVG_LOGPROB_LIMIT;
     let dropped = segments.iter().filter(|s| is_silence(s)).count();
+    let kept = segments.iter().filter(|s| !is_silence(s) && !s.text.trim().is_empty()).collect::<Vec<_>>();
+    let timed =
+        kept.iter().filter_map(|s| crate::files::timed_segment(s.start, s.end, &s.text, None)).collect::<Vec<_>>();
+    let timed = if timed.len() == kept.len() { timed } else { Vec::new() };
     if dropped == 0 {
-        return Ok(RawTranscript { text: response.text.trim().to_string(), dropped_segments: 0 });
+        return Ok(RawTranscript {
+            text: response.text.trim().to_string(),
+            language,
+            dropped_segments: 0,
+            segments: timed,
+        });
     }
     let text = segments
         .iter()
@@ -214,12 +238,26 @@ fn parse_body(body: &str, verbose: bool) -> Result<RawTranscript, ProviderError>
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(RawTranscript { text, dropped_segments: dropped })
+    Ok(RawTranscript { text, language, dropped_segments: dropped, segments: timed })
 }
 
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
+
+    #[test]
+    fn verbose_language_survives_silence_segments_and_plain_json_has_none() {
+        for (value, expected) in [("turkish", Some("tr")), ("eng", Some("en")), ("unknown", None)] {
+            let body = serde_json::json!({"text":"ok", "language":value,
+                "segments":[{"text":"ok"},{"text":"discard","no_speech_prob":0.9,"avg_logprob":-2.0}]})
+            .to_string();
+            let raw = super::parse_body(&body, true).unwrap();
+            assert_eq!(raw.language.as_deref(), expected);
+            assert_eq!(raw.dropped_segments, 1);
+            assert_eq!(super::parse_body(&body, false).unwrap().language, None);
+        }
+        assert_eq!(super::parse_body(r#"{"text":"ok"}"#, true).unwrap().language, None);
+    }
 
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -287,7 +325,10 @@ mod tests {
         let mut profile = profile_for(&server);
         profile.send_keywords = true;
         let raw = send(profile, Some("sk-test"), Some("Bağlam."), &keywords).await.unwrap();
-        assert_eq!(raw, RawTranscript { text: "Merhaba dünya".into(), dropped_segments: 0 });
+        assert_eq!(
+            raw,
+            RawTranscript { text: "Merhaba dünya".into(), language: None, dropped_segments: 0, segments: Vec::new() }
+        );
 
         let request = only_request(&server).await;
         assert_eq!(request.headers.get("authorization").unwrap(), "Bearer sk-test");
@@ -326,7 +367,10 @@ mod tests {
             {"text":" altyazı m.k","no_speech_prob":0.9,"avg_logprob":-1.5}]}"#;
         let server = server(200, body).await;
         let raw = send(profile_for(&server), None, None, &[]).await.unwrap();
-        assert_eq!(raw, RawTranscript { text: "Merhaba".into(), dropped_segments: 1 });
+        assert_eq!(
+            raw,
+            RawTranscript { text: "Merhaba".into(), language: None, dropped_segments: 1, segments: Vec::new() }
+        );
     }
 
     #[tokio::test]
@@ -350,13 +394,29 @@ mod tests {
             (
                 400,
                 r#"{"error":{"message":"model not found"}}"#,
-                ProviderError::Http { status: 400, message: "model not found".into() },
+                ProviderError::Http { status: 400, message: "request refused".into() },
             ),
         ];
         for (status, body, expected) in cases {
             let server = server(status, body).await;
             assert_eq!(send(profile_for(&server), None, None, &[]).await.unwrap_err(), expected, "HTTP {status}");
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_header_is_preserved_without_reading_the_error_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("Retry-After", "300").set_body_string("private body"),
+            )
+            .mount(&server)
+            .await;
+        assert_eq!(
+            send(profile_for(&server), None, None, &[]).await.unwrap_err(),
+            ProviderError::RateLimitedAfter(Duration::from_secs(120))
+        );
+        assert!(!status_error(400, "private body").to_string().contains("private"));
     }
 
     #[tokio::test]

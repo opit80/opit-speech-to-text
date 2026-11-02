@@ -1,42 +1,51 @@
 # AGENTS.md — Opit Speech to Text
 
-Windows voice-dictation tray app: press a hotkey, speak, the transcript is pasted at the cursor.
+Voice-dictation tray app: press a hotkey, speak, the transcript is delivered at the cursor or kept on the clipboard.
 Transcription uses the user's own API key (Groq / OpenAI / any OpenAI-compatible server).
-Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/superpowers/specs/2026-09-30-opit-speech-to-text-design.md`.
+Rust workspace + Tauri 2 + Svelte 5. Design spec: `docs/design/2026-09-30-opit-speech-to-text-design.md`.
 
-## Status (2026-10-03)
+## Working context
 
-- Plans 1–4 are all implemented and merged to `main` (core, app shell, UI, release). Plan index,
-  outcomes, open manual passes and **deferred findings** (candidates for the next work):
-  `docs/superpowers/plans/README.md` — read it before starting new work.
-- The first public release **v0.1.3** is published as stable **Latest** at
-  `https://github.com/opit80/opit-speech-to-text/releases/tag/v0.1.3`; `origin` is configured.
-  Windows/Linux/UI CI, release packaging and production updater downloads passed. See
-  `docs/PUBLICATION-REPORT.md` for evidence and the explicitly untested installation/hardware boundary.
-- Do **not** push additional changes, tag or create releases unless the user asks in that conversation.
+- Read [documentation](docs/README.md) and [known issues / pending acceptance](docs/development/known-issues.md)
+  before new work. The [publication snapshot](docs/archive/PUBLICATION-REPORT.md) is historical
+  release evidence, not a current acceptance claim.
+- Layout cleanup plan: `docs/archive/2026-10-30-layout-cleanup.md`;
+  layout/Linux spec: `docs/design/2026-10-30-layout-and-linux-design.md`.
+  Both design specs are retained in `docs/design/`; the layout plan is archived. Implement only the assigned task.
+- No pushes, tags or releases unless the user asks in the current conversation.
+- Layout changes preserve behavior, public contracts, test discovery and installed-copy identity.
+  Linux app backends, packages and desktop support require separate implementation and evidence.
 
 ## Layout
 
 | Path | What |
 |---|---|
-| `crates/core` | `opit-core`: audio prep, provider client, rule engine, prompt builder, history, config. **No Tauri or Windows crates**; must build and test on Linux. |
-| `crates/eval` | `opit-eval` CLI: WER / term accuracy against a real provider (`docs/eval.md`). |
-| `crates/app` | `opit-speech-to-text` (lib `opit_app`): Tauri 2 tray app — `commands.rs` (invoke API), `app_core.rs`, `controller/` (dictation state machine), `platform/` (cpal mic, WH_KEYBOARD_LL hook, SendInput paste, Win32 overlay, keyring, autostart), `updates.rs`, `uninstall.rs`, `windows/hooks.nsh` (NSIS hooks), `tauri.conf.json`. |
-| `ui/` | Svelte 5 + Vite + Vitest. `src/lib/` = typed `api.ts`/`events.ts`/`types.ts`, live state `app.svelte.ts`, `i18n/en.ts` + `tr.ts`, `components/`; `src/pages/` (+ `pages/setup/` wizard). |
-| `rules/` | Built-in rule packs (`tr-core`, `tr-tech`, `fivem`). |
-| `scripts/release/` | `latest-json.mjs` (+ `node:test` tests): release asset renaming and updater manifest. |
-| `.github/workflows/` | `ci.yml` (fmt/clippy/test on Windows + Linux, UI check/test/build), `release.yml` (tag → signed NSIS + `latest.json` → draft release). |
-| `docs/` | Spec, plans, `RELEASE-CHECKLIST.md`, `signpath-application.md`, `eval.md`. |
+| `crates/core` | `opit-core`: audio, providers, config, pipeline, rules, history, cleanup, file transcription and domain logic. **No Tauri or Windows crates**; builds and tests on Linux. |
+| `crates/eval` | `opit-eval`: real-provider WER/term accuracy CLI; see `docs/guides/eval.md`. |
+| `crates/ipc` | `opit-ipc`: protocol types in `src/protocol.rs`, framing in `src/framing.rs`, Windows named-pipe transport in `src/transport/windows.rs`, Unix socket transport in `src/transport/unix.rs`. |
+| `crates/cli` | `opit-cli`: standalone `opit` console tool; see `docs/guides/cli.md`. |
+| `crates/app` | Tauri app (`opit_app`): `src/app_core/mod.rs`, `commands/`, `controller/`, `ask/`, `local/`, `platform/windows/`, `platform/linux/`, `platform/factory.rs`, `platform/microphone.rs`; `src/shell/` owns startup/logging/events/i18n/tray/window/updates and the Tauri lifecycle, with root compatibility re-exports. `src/platform/windows/uninstall.rs`, `windows/hooks.nsh`, `tauri.conf.json` own installation guards. |
+| `ui/` | Svelte 5 + Vite + Vitest: `src/features/` owns home, dictation, history, profiles, rules, settings, setup (including `steps/`), files, usage and updates. Shared `src/lib/` owns `bridge/` (API, events, types, errors), `state/`, `navigation/`, `utils/`, `i18n/` and primitive `components/`. Dev-only preview: `src/preview/app-preview.ts`, `src/preview/BrowserPreview.svelte`, `app-preview.html`. |
+| `scripts/` | CLI staging and release asset/signature/draft helpers; release tests in `scripts/release/`. |
+| `.github/workflows/` | `ci.yml`: Windows/Linux full workspace and UI, plus Linux app build; `release.yml`: verified NSIS/AppImage/deb assets aggregated into one draft. Workflow execution remains separate acceptance evidence. |
+| `docs/` | `README.md` index; `guides/`, `reference/`, `development/`, `release/`, `design/`, dated `archive/` (including the layout plan), `releases/`. |
 
 ## Commands
 
-Run from the repo root unless noted. All of these must pass before every commit that touches them:
+Run from the repo root unless noted. Run builds/tests sequentially. Windows CI must pass
+full-workspace clippy/tests. Linux app status and unverified desktop paths are recorded in
+`docs/development/linux-status.md`. Before every
+commit touching the relevant files:
 
 ```sh
 cargo fmt --all --check
+# Windows CI / suitable Windows runner:
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-node --test scripts/release/latest-json.test.mjs      # when scripts/release changes
+# Linux portable fallback gate (socket-binding tests need an unrestricted runner):
+cargo clippy --workspace --exclude opit-speech-to-text --all-targets -- -D warnings
+cargo test --workspace --exclude opit-speech-to-text
+node --test scripts/release/*.test.mjs                # when scripts/release changes
 cd ui && npm run check && npm test && npm run build   # svelte-check must give 0 errors AND 0 warnings
 ```
 
@@ -53,17 +62,18 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
 - Code, comments, docs and commit messages are in **English**. Every user-facing UI string exists
   in both `ui/src/lib/i18n/en.ts` and `tr.ts` (parity is tested) — no literal user text in
   `.svelte` files. Turkish strings use correct orthography (ç, ğ, ı, İ, ö, ş, ü). The Rust side
-  (tray, overlay) has its own strings in `crates/app/src/i18n.rs`.
+  (tray, overlay) has its own strings in `crates/app/src/shell/i18n.rs`.
 - **Never log or put in error messages** transcript text or API keys. API keys live only in
   Windows Credential Manager (`<api_key_ref>.opit-speech-to-text`); the UI only passes them to
   `set_api_key` and clears the input afterwards.
-- Commands reject with `CommandError { code, message, kind }`; keep `ui/src/lib/types.ts` /
-  `api.ts` in sync with Rust command names and argument names (JS uses camelCase args).
+- Commands reject with `CommandError { code, message, kind }`; keep `ui/src/lib/bridge/types.ts` /
+  `ui/src/lib/bridge/api.ts` in sync with Rust command names and argument names (JS uses camelCase args).
 - Blocking work (file I/O, keyring, SQLite, rule compilation) never runs on the Tauri main thread:
   such commands are `async` + `spawn_blocking`.
 - UI config writes go through the serialized `saveConfig(mutate)` chain in
-  `ui/src/lib/app.svelte.ts`; components never keep their own copy of `config` except a form draft.
-- UI: only components from `ui/src/lib/components/` and tokens from `ui/src/app.css` (no raw
+  `ui/src/lib/state/app.svelte.ts`; components never keep their own copy of `config` except a form draft.
+- UI: use existing primitives from `ui/src/lib/components/`, domain components from
+  `ui/src/features/` and tokens from `ui/src/app.css` (no raw
   colours), native `<dialog>` + `showModal()`, every input labelled, keyboard reachable, WCAG AA in
   light and dark. No new UI dependencies without a reason. CSP stays `default-src 'self'`
   (+ `media-src 'self' blob:`); no network requests from the UI.
@@ -73,8 +83,17 @@ cd ui && npm run check && npm test && npm run build   # svelte-check must give 0
 - Commit style: Conventional-ish prefixes as in `git log` (`feat(ui): …`, `fix(updater): …`,
   `docs: …`, `ci: …`). Work on a feature branch; merge to `main` locally with `--no-ff` only when
   the user agrees.
+- Commits and pull requests never carry AI attribution: no `Co-Authored-By: Claude`, no
+  `noreply@anthropic.com`, no "Generated with" line. The `commit-identity` CI job rejects them, and
+  `.claude/settings.json` must stay in the repo because it turns the trailer off.
+- Branch names and commit titles are written for a public history: name the change (`feat/…`,
+  `refactor/…`), never the tool that made it. Merge titles copy the branch name.
 
 ## Do not touch / be careful
+
+- Preserve product name, identifier `io.github.opit80.opit-speech-to-text`, executable/asset names,
+  `APP_DIR_NAME`, credential service/suffix, autostart value, updater endpoint/public key and NSIS
+  guards. Autostart registration requires both `ui.autostart` and `ui.setup_done`.
 
 - **Updater signing key** `%USERPROFILE%\.tauri\opit-speech-to-text.key` (+ `.pub`, `.password`):
   never print, copy into the repo, commit or regenerate it — a new key strands every installed

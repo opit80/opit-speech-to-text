@@ -4,7 +4,6 @@
 use std::sync::{Arc, PoisonError, RwLock};
 
 use opit_core::config::AppConfig;
-use opit_core::rules::builtin::assemble;
 use opit_core::rules::{RulePack, RuleSet, RuleWarning};
 
 use crate::i18n::{self, Lang};
@@ -16,14 +15,14 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Compiles the personal pack (if any) and the enabled built-in packs. Broken rules
+    /// Compiles the personal pack (if any). Broken rules
     /// are skipped and returned as warnings.
     pub fn build(
         config: AppConfig,
         user_pack: Option<RulePack>,
         system_locale: Option<&str>,
     ) -> (Self, Vec<RuleWarning>) {
-        let (rules, warnings) = RuleSet::compile(&assemble(user_pack, &config.rules.enabled_packs));
+        let (rules, warnings) = RuleSet::compile(user_pack.as_slice());
         let lang = i18n::resolve(config.ui_language.as_deref(), system_locale);
         (Self { config, rules: Arc::new(rules), lang }, warnings)
     }

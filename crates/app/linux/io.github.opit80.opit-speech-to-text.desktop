@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Opit Speech to Text
+Comment=Voice dictation with your own transcription provider
+Exec=opit-speech-to-text
+Icon=opit-speech-to-text
+Terminal=false
+Categories=Utility;Audio;
+NoDisplay=true
